@@ -8,9 +8,17 @@ BASE_URL = "https://api.bybit.com"
 WS_URL = "wss://stream.bybit.com/v5/public/linear"
 FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1"
 
+# 공유 httpx 클라이언트 설정
+TIMEOUT = httpx.Timeout(15.0, connect=10.0)
+HEADERS = {"User-Agent": "BybitDashboard/1.0"}
+
+
+def _get_client():
+    return httpx.AsyncClient(timeout=TIMEOUT, headers=HEADERS)
+
 
 async def get_orderbook(symbol: str = "BTCUSDT", limit: int = 200) -> dict:
-    async with httpx.AsyncClient() as client:
+    async with _get_client() as client:
         resp = await client.get(
             f"{BASE_URL}/v5/market/orderbook",
             params={"category": "linear", "symbol": symbol, "limit": limit},
@@ -22,7 +30,7 @@ async def get_orderbook(symbol: str = "BTCUSDT", limit: int = 200) -> dict:
 
 
 async def get_long_short_ratio(symbol: str = "BTCUSDT", period: str = "1h", limit: int = 50) -> list:
-    async with httpx.AsyncClient() as client:
+    async with _get_client() as client:
         resp = await client.get(
             f"{BASE_URL}/v5/market/account-ratio",
             params={"category": "linear", "symbol": symbol, "period": period, "limit": limit},
@@ -34,7 +42,7 @@ async def get_long_short_ratio(symbol: str = "BTCUSDT", period: str = "1h", limi
 
 
 async def get_open_interest(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 50) -> list:
-    async with httpx.AsyncClient() as client:
+    async with _get_client() as client:
         resp = await client.get(
             f"{BASE_URL}/v5/market/open-interest",
             params={"category": "linear", "symbol": symbol, "intervalTime": interval, "limit": limit},
@@ -46,7 +54,7 @@ async def get_open_interest(symbol: str = "BTCUSDT", interval: str = "1h", limit
 
 
 async def get_tickers(symbol: str = "BTCUSDT") -> dict:
-    async with httpx.AsyncClient() as client:
+    async with _get_client() as client:
         resp = await client.get(
             f"{BASE_URL}/v5/market/tickers",
             params={"category": "linear", "symbol": symbol},
@@ -59,7 +67,7 @@ async def get_tickers(symbol: str = "BTCUSDT") -> dict:
 
 
 async def get_kline(symbol: str = "BTCUSDT", interval: str = "60", limit: int = 500) -> list:
-    async with httpx.AsyncClient() as client:
+    async with _get_client() as client:
         resp = await client.get(
             f"{BASE_URL}/v5/market/kline",
             params={"category": "linear", "symbol": symbol, "interval": interval, "limit": limit},
@@ -71,7 +79,7 @@ async def get_kline(symbol: str = "BTCUSDT", interval: str = "60", limit: int = 
 
 
 async def get_all_tickers() -> list:
-    async with httpx.AsyncClient() as client:
+    async with _get_client() as client:
         resp = await client.get(
             f"{BASE_URL}/v5/market/tickers",
             params={"category": "linear"},
@@ -84,7 +92,7 @@ async def get_all_tickers() -> list:
 
 async def get_fear_greed_index() -> dict:
     try:
-        async with httpx.AsyncClient() as client:
+        async with _get_client() as client:
             resp = await client.get(FEAR_GREED_URL, timeout=5.0)
             data = resp.json()
             if data.get("data"):

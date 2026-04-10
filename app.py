@@ -41,39 +41,54 @@ async def index(request: Request):
 
 @app.get("/api/orderbook/{symbol}")
 async def api_orderbook(symbol: str):
-    return await bybit_api.get_orderbook(symbol, limit=200)
+    try:
+        return await bybit_api.get_orderbook(symbol, limit=200)
+    except Exception as e:
+        return {"error": str(e), "b": [], "a": []}
 
 
 @app.get("/api/ratio/{symbol}")
 async def api_ratio(symbol: str, period: str = "1h"):
-    return {"list": await bybit_api.get_long_short_ratio(symbol, period=period)}
+    try:
+        return {"list": await bybit_api.get_long_short_ratio(symbol, period=period)}
+    except Exception as e:
+        return {"list": [], "error": str(e)}
 
 
 @app.get("/api/open-interest/{symbol}")
 async def api_open_interest(symbol: str, interval: str = "1h"):
-    return {"list": await bybit_api.get_open_interest(symbol, interval=interval)}
+    try:
+        return {"list": await bybit_api.get_open_interest(symbol, interval=interval)}
+    except Exception as e:
+        return {"list": [], "error": str(e)}
 
 
 @app.get("/api/tickers/{symbol}")
 async def api_tickers(symbol: str):
-    return await bybit_api.get_tickers(symbol)
+    try:
+        return await bybit_api.get_tickers(symbol)
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/api/kline/{symbol}")
 async def api_kline(symbol: str, interval: str = "60", limit: int = 500):
-    data = await bybit_api.get_kline(symbol, interval=interval, limit=limit)
-    candles = []
-    for c in reversed(data):
-        candles.append({
-            "time": int(c[0]) // 1000,
-            "open": float(c[1]),
-            "high": float(c[2]),
-            "low": float(c[3]),
-            "close": float(c[4]),
-            "volume": float(c[5]),
-            "turnover": float(c[6]),
-        })
-    return candles
+    try:
+        data = await bybit_api.get_kline(symbol, interval=interval, limit=limit)
+        candles = []
+        for c in reversed(data):
+            candles.append({
+                "time": int(c[0]) // 1000,
+                "open": float(c[1]),
+                "high": float(c[2]),
+                "low": float(c[3]),
+                "close": float(c[4]),
+                "volume": float(c[5]),
+                "turnover": float(c[6]),
+            })
+        return candles
+    except Exception as e:
+        return {"error": str(e), "candles": []}
 
 
 @app.get("/api/cme-gaps/{symbol}")
@@ -126,16 +141,19 @@ async def api_cme_gaps(symbol: str):
 
 @app.get("/api/liquidation/{symbol}")
 async def api_liquidation(symbol: str):
-    ticker, oi_list, ob = await asyncio.gather(
-        bybit_api.get_tickers(symbol),
-        bybit_api.get_open_interest(symbol, interval="1h", limit=1),
-        bybit_api.get_orderbook(symbol, limit=200),
-    )
-    current_price = float(ticker.get("lastPrice", 0))
-    oi_value = float(oi_list[0]["openInterest"]) * current_price if oi_list else 0
-    bids = ob.get("b", [])
-    asks = ob.get("a", [])
-    return estimate_liquidation_levels(current_price, oi_value, bids, asks)
+    try:
+        ticker, oi_list, ob = await asyncio.gather(
+            bybit_api.get_tickers(symbol),
+            bybit_api.get_open_interest(symbol, interval="1h", limit=1),
+            bybit_api.get_orderbook(symbol, limit=200),
+        )
+        current_price = float(ticker.get("lastPrice", 0))
+        oi_value = float(oi_list[0]["openInterest"]) * current_price if oi_list else 0
+        bids = ob.get("b", [])
+        asks = ob.get("a", [])
+        return estimate_liquidation_levels(current_price, oi_value, bids, asks)
+    except Exception as e:
+        return {"levels": [], "error": str(e)}
 
 
 @app.get("/api/fear-greed")
