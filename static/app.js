@@ -24,6 +24,37 @@ function fmt(n,d=2){if(n==null)return'-';const v=parseFloat(n);if(isNaN(v))retur
 function fp(n){const v=parseFloat(n);if(isNaN(v))return'-';if(v>=1000)return v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});if(v>=1)return v.toFixed(4);return v.toFixed(6);}
 async function fetchJSON(u){const r=await fetch(u);if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json();}
 
+/* ───── Bybit 직접 호출 (서버 403 우회) ───── */
+const BYBIT_API='https://api.bybit.com';
+async function bybitGet(path,params={}){
+    const qs=new URLSearchParams(params).toString();
+    const url=`${BYBIT_API}${path}${qs?'?'+qs:''}`;
+    const r=await fetch(url);
+    if(!r.ok)throw new Error(`Bybit HTTP ${r.status}`);
+    const d=await r.json();
+    if(d.retCode!==0)throw new Error(`Bybit: ${d.retMsg}`);
+    return d.result;
+}
+async function bybitKline(sym,interval='60',limit=500){
+    const res=await bybitGet('/v5/market/kline',{category:'linear',symbol:sym,interval,limit});
+    return res.list.reverse().map(c=>({time:parseInt(c[0])/1000,open:+c[1],high:+c[2],low:+c[3],close:+c[4],volume:+c[5],turnover:+c[6]}));
+}
+async function bybitTickers(sym){
+    const res=await bybitGet('/v5/market/tickers',{category:'linear',symbol:sym});
+    return res.list[0]||{};
+}
+async function bybitOrderbook(sym,limit=200){
+    return await bybitGet('/v5/market/orderbook',{category:'linear',symbol:sym,limit});
+}
+async function bybitOI(sym,interval='1h',limit=50){
+    const res=await bybitGet('/v5/market/open-interest',{category:'linear',symbol:sym,intervalTime:interval,limit});
+    return res.list;
+}
+async function bybitRatio(sym,period='1h',limit=50){
+    const res=await bybitGet('/v5/market/account-ratio',{category:'linear',symbol:sym,period,limit});
+    return res.list;
+}
+
 /* ═══════════════════════════════════
    기술적 지표 계산 함수들
    ═══════════════════════════════════ */
@@ -149,7 +180,7 @@ async function initTVChart(){
 
 async function updateTVChart(){
     try{
-        const d=await fetchJSON(`/api/kline/${currentSymbol}?interval=${currentInterval}&limit=500`);
+        const d=await bybitKline(currentSymbol,currentInterval,500);
         if(!d.length)return;
         lastKlineData=d;
         candleSeries.setData(d);
@@ -1044,7 +1075,7 @@ async function updateMarketIndicators(){
 
     try{
         // 미결제약정
-        const oi=await fetchJSON(`/api/open-interest/${currentSymbol}?interval=1h`);
+        const oi={list:await bybitOI(currentSymbol,'1h',50)};
         const list=oi.list||[];
         if(list.length){
             const oiEl=document.getElementById('indOI');
@@ -1055,7 +1086,7 @@ async function updateMarketIndicators(){
 
     try{
         // 풋콜비율 (롱숏비율 기반 추정)
-        const ratio=await fetchJSON(`/api/ratio/${currentSymbol}?period=1h`);
+        const ratio={list:await bybitRatio(currentSymbol,'1h',50)};
         const rlist=ratio.list||[];
         if(rlist.length){
             const buy=parseFloat(rlist[0].buyRatio);
@@ -1081,7 +1112,7 @@ async function updateMarketIndicators(){
    ═══════════════════════════════════ */
 async function updateTicker(){
     try{
-        const t=await fetchJSON(`/api/tickers/${currentSymbol}`);
+        const t=await bybitTickers(currentSymbol);
         document.getElementById('tickPrice').textContent=fp(t.lastPrice);
         const ch=parseFloat(t.price24hPcnt)*100;
         const ce=document.getElementById('tickChange');
@@ -1101,7 +1132,7 @@ async function updateTicker(){
    ═══════════════════════════════════ */
 async function updateOrderbook(){
     try{
-        const d=await fetchJSON(`/api/orderbook/${currentSymbol}`);
+        const d=await bybitOrderbook(currentSymbol);
         const bids=d.b||[],asks=d.a||[];
         const tb=bids.slice(0,25).reverse(),ta=asks.slice(0,25);
         const prices=[...tb.map(b=>parseFloat(b[0])),...ta.map(a=>parseFloat(a[0]))];
