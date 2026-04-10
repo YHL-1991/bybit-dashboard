@@ -34,6 +34,21 @@ SYMBOLS = [
 import time as _time
 
 
+@app.get("/api/debug")
+async def api_debug():
+    """API 연결 디버그 - 각 Bybit 도메인 테스트"""
+    import httpx as _httpx
+    results = {}
+    for url in ["https://api.bybit.com", "https://api.bytick.com"]:
+        try:
+            async with _httpx.AsyncClient(timeout=10.0, headers={"User-Agent": "Mozilla/5.0"}, follow_redirects=True) as c:
+                r = await c.get(f"{url}/v5/market/tickers", params={"category": "linear", "symbol": "BTCUSDT"})
+                results[url] = {"status": r.status_code, "body_preview": r.text[:300]}
+        except Exception as e:
+            results[url] = {"error": str(e)}
+    return results
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request, "symbols": SYMBOLS})

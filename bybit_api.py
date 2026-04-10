@@ -2,92 +2,98 @@ import httpx
 import json
 import asyncio
 import websockets
+import logging
 from typing import Optional
 
-BASE_URL = "https://api.bybit.com"
+logger = logging.getLogger(__name__)
+
+# Bybit API - 여러 도메인 시도 (클라우드 IP 차단 대비)
+API_URLS = [
+    "https://api.bybit.com",
+    "https://api.bytick.com",
+]
+BASE_URL = API_URLS[0]
 WS_URL = "wss://stream.bybit.com/v5/public/linear"
 FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1"
 
 # 공유 httpx 클라이언트 설정
 TIMEOUT = httpx.Timeout(15.0, connect=10.0)
-HEADERS = {"User-Agent": "BybitDashboard/1.0"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
 
 
 def _get_client():
-    return httpx.AsyncClient(timeout=TIMEOUT, headers=HEADERS)
+    return httpx.AsyncClient(timeout=TIMEOUT, headers=HEADERS, follow_redirects=True)
+
+
+async def _api_get(path: str, params: dict) -> dict:
+    """여러 API 도메인을 시도하는 GET 요청"""
+    last_error = None
+    for base_url in API_URLS:
+        try:
+            async with _get_client() as client:
+                resp = await client.get(f"{base_url}{path}", params=params)
+                if resp.status_code != 200:
+                    logger.warning(f"API {base_url} returned status {resp.status_code}: {resp.text[:200]}")
+                    last_error = Exception(f"HTTP {resp.status_code} from {base_url}")
+                    continue
+                data = resp.json()
+                return data
+        except Exception as e:
+            logger.warning(f"API {base_url} failed: {e}")
+            last_error = e
+            continue
+    raise last_error or Exception("All API endpoints failed")
 
 
 async def get_orderbook(symbol: str = "BTCUSDT", limit: int = 200) -> dict:
-    async with _get_client() as client:
-        resp = await client.get(
-            f"{BASE_URL}/v5/market/orderbook",
-            params={"category": "linear", "symbol": symbol, "limit": limit},
-        )
-        data = resp.json()
-        if data["retCode"] != 0:
-            raise Exception(f"Bybit API error: {data['retMsg']}")
-        return data["result"]
+    data = await _api_get("/v5/market/orderbook",
+                          {"category": "linear", "symbol": symbol, "limit": limit})
+    if data["retCode"] != 0:
+        raise Exception(f"Bybit API error: {data['retMsg']}")
+    return data["result"]
 
 
 async def get_long_short_ratio(symbol: str = "BTCUSDT", period: str = "1h", limit: int = 50) -> list:
-    async with _get_client() as client:
-        resp = await client.get(
-            f"{BASE_URL}/v5/market/account-ratio",
-            params={"category": "linear", "symbol": symbol, "period": period, "limit": limit},
-        )
-        data = resp.json()
-        if data["retCode"] != 0:
-            raise Exception(f"Bybit API error: {data['retMsg']}")
-        return data["result"]["list"]
+    data = await _api_get("/v5/market/account-ratio",
+                          {"category": "linear", "symbol": symbol, "period": period, "limit": limit})
+    if data["retCode"] != 0:
+        raise Exception(f"Bybit API error: {data['retMsg']}")
+    return data["result"]["list"]
 
 
 async def get_open_interest(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 50) -> list:
-    async with _get_client() as client:
-        resp = await client.get(
-            f"{BASE_URL}/v5/market/open-interest",
-            params={"category": "linear", "symbol": symbol, "intervalTime": interval, "limit": limit},
-        )
-        data = resp.json()
-        if data["retCode"] != 0:
-            raise Exception(f"Bybit API error: {data['retMsg']}")
-        return data["result"]["list"]
+    data = await _api_get("/v5/market/open-interest",
+                          {"category": "linear", "symbol": symbol, "intervalTime": interval, "limit": limit})
+    if data["retCode"] != 0:
+        raise Exception(f"Bybit API error: {data['retMsg']}")
+    return data["result"]["list"]
 
 
 async def get_tickers(symbol: str = "BTCUSDT") -> dict:
-    async with _get_client() as client:
-        resp = await client.get(
-            f"{BASE_URL}/v5/market/tickers",
-            params={"category": "linear", "symbol": symbol},
-        )
-        data = resp.json()
-        if data["retCode"] != 0:
-            raise Exception(f"Bybit API error: {data['retMsg']}")
-        items = data["result"]["list"]
-        return items[0] if items else {}
+    data = await _api_get("/v5/market/tickers",
+                          {"category": "linear", "symbol": symbol})
+    if data["retCode"] != 0:
+        raise Exception(f"Bybit API error: {data['retMsg']}")
+    items = data["result"]["list"]
+    return items[0] if items else {}
 
 
 async def get_kline(symbol: str = "BTCUSDT", interval: str = "60", limit: int = 500) -> list:
-    async with _get_client() as client:
-        resp = await client.get(
-            f"{BASE_URL}/v5/market/kline",
-            params={"category": "linear", "symbol": symbol, "interval": interval, "limit": limit},
-        )
-        data = resp.json()
-        if data["retCode"] != 0:
-            raise Exception(f"Bybit API error: {data['retMsg']}")
-        return data["result"]["list"]
+    data = await _api_get("/v5/market/kline",
+                          {"category": "linear", "symbol": symbol, "interval": interval, "limit": limit})
+    if data["retCode"] != 0:
+        raise Exception(f"Bybit API error: {data['retMsg']}")
+    return data["result"]["list"]
 
 
 async def get_all_tickers() -> list:
-    async with _get_client() as client:
-        resp = await client.get(
-            f"{BASE_URL}/v5/market/tickers",
-            params={"category": "linear"},
-        )
-        data = resp.json()
-        if data["retCode"] != 0:
-            raise Exception(f"Bybit API error: {data['retMsg']}")
-        return data["result"]["list"]
+    data = await _api_get("/v5/market/tickers", {"category": "linear"})
+    if data["retCode"] != 0:
+        raise Exception(f"Bybit API error: {data['retMsg']}")
+    return data["result"]["list"]
 
 
 async def get_fear_greed_index() -> dict:
