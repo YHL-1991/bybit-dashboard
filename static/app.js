@@ -54,6 +54,182 @@ async function bybitRatio(sym,period='1h',limit=50){
     const res=await bybitGet('/v5/market/account-ratio',{category:'linear',symbol:sym,period,limit});
     return res.list;
 }
+async function bybitAllTickers(){
+    const res=await bybitGet('/v5/market/tickers',{category:'linear'});
+    return res.list;
+}
+
+/* ───── 청산 히트맵 추정 (liquidation.py → JS 포팅) ───── */
+const LEV_WEIGHTS={3:0.15,5:0.25,10:0.25,25:0.20,50:0.10,100:0.05};
+const LEV_LEVELS=[3,5,10,25,50,100];
+
+function estimateLiquidationLevels(currentPrice,oiValue,bids,asks,rangeP=0.15,bins=100){
+    if(currentPrice<=0)return{price_levels:[],long_liquidations:[],short_liquidations:[],leverage_markers:[],current_price:0};
+    const low=currentPrice*(1-rangeP),high=currentPrice*(1+rangeP);
+    const priceLevels=[];
+    for(let i=0;i<bins;i++)priceLevels.push(low+(high-low)*i/(bins-1));
+    const longLiqs=new Float64Array(bins);
+    const shortLiqs=new Float64Array(bins);
+    const leverageMarkers=[];
+    const SQRT2PI=Math.sqrt(2*Math.PI);
+
+    for(const lev of LEV_LEVELS){
+        const weight=LEV_WEIGHTS[lev];
+        const oiPortion=oiValue*weight;
+        const mm=0.005;
+        const longLiqP=currentPrice*(1-(1/lev)+mm);
+        const shortLiqP=currentPrice*(1+(1/lev)-mm);
+        leverageMarkers.push({leverage:`${lev}x`,long_liq_price:+longLiqP.toFixed(6),short_liq_price:+shortLiqP.toFixed(6)});
+        const sigma=currentPrice*(0.003+0.05/lev);
+        const invSigma=1/sigma;
+        for(let i=0;i<bins;i++){
+            const p=priceLevels[i];
+            if(p<currentPrice){
+                const dist=Math.abs(p-longLiqP);
+                const w=Math.exp(-0.5*(dist*invSigma)**2);
+                longLiqs[i]+=oiPortion*w*invSigma/SQRT2PI;
+            }else{
+                const dist=Math.abs(p-shortLiqP);
+                const w=Math.exp(-0.5*(dist*invSigma)**2);
+                shortLiqs[i]+=oiPortion*w*invSigma/SQRT2PI;
+            }
+        }
+    }
+    // 호가창 대형 매물벽 반영
+    if(bids&&asks&&bids.length&&asks.length){
+        let maxQ=1;
+        const allQ=[...bids.map(b=>parseFloat(b[1])),...asks.map(a=>parseFloat(a[1]))];
+        if(allQ.length)maxQ=Math.max(...allQ);
+        for(const bid of bids.slice(0,50)){
+            const bp=parseFloat(bid[0]),bq=parseFloat(bid[1]);
+            if(bq>maxQ*0.3){
+                for(let i=0;i<bins;i++){
+                    if(Math.abs(priceLevels[i]-bp*0.98)<currentPrice*0.005)
+                        longLiqs[i]+=bq/maxQ*20;
+                }
+            }
+        }
+        for(const ask of asks.slice(0,50)){
+            const ap=parseFloat(ask[0]),aq=parseFloat(ask[1]);
+            if(aq>maxQ*0.3){
+                for(let i=0;i<bins;i++){
+                    if(Math.abs(priceLevels[i]-ap*1.02)<currentPrice*0.005)
+                        shortLiqs[i]+=aq/maxQ*20;
+                }
+            }
+        }
+    }
+    // 정규화: 최대값=100
+    let maxV=1;
+    for(let i=0;i<bins;i++){if(longLiqs[i]>maxV)maxV=longLiqs[i];if(shortLiqs[i]>maxV)maxV=shortLiqs[i];}
+    const longArr=[],shortArr=[],plArr=[];
+    for(let i=0;i<bins;i++){
+        longArr.push(+(longLiqs[i]/maxV*100).toFixed(2));
+        shortArr.push(+(shortLiqs[i]/maxV*100).toFixed(2));
+        plArr.push(+priceLevels[i].toFixed(6));
+    }
+    return{price_levels:plArr,long_liquidations:longArr,short_liquidations:shortArr,leverage_markers:leverageMarkers,current_price:currentPrice};
+}
+
+/* ───── 브라우저에서 청산 데이터 계산 ───── */
+async function fetchLiquidationData(sym){
+    const [ticker,oiList,ob]=await Promise.all([
+        bybitTickers(sym),
+        bybitOI(sym,'1h',1),
+        bybitOrderbook(sym,200)
+    ]);
+    const curPrice=parseFloat(ticker.lastPrice||0);
+    const oiVal=oiList.length?parseFloat(oiList[0].openInterest)*curPrice:0;
+    return estimateLiquidationLevels(curPrice,oiVal,ob.b||[],ob.a||[]);
+}
+
+/* ───── CME 갭 감지 (브라우저 측) ───── */
+async function fetchCMEGaps(sym){
+    const kline=await bybitKline(sym,'60',500);
+    const fridayCloses={},sundayOpens={};
+    for(const c of kline){
+        const dt=new Date(c.time*1000);
+        const utcDay=dt.getUTCDay(),utcHour=dt.getUTCHours();
+        // ISO week number
+        const d2=new Date(Date.UTC(dt.getUTCFullYear(),dt.getUTCMonth(),dt.getUTCDate()));
+        d2.setUTCDate(d2.getUTCDate()+4-(d2.getUTCDay()||7));
+        const wk=Math.ceil(((d2-new Date(Date.UTC(d2.getUTCFullYear(),0,1)))/86400000+1)/7);
+        if(utcDay===5&&utcHour===21)fridayCloses[wk]=c; // 금요일 21시
+        if(utcDay===0&&utcHour===22)sundayOpens[wk+1]=c; // 일요일 22시
+    }
+    const gaps=[];
+    for(const[wkStr,sun] of Object.entries(sundayOpens)){
+        const wk=parseInt(wkStr);
+        const fri=fridayCloses[wk-1]||fridayCloses[wk];
+        if(!fri)continue;
+        const gap=sun.open-fri.close;
+        const gapPct=gap/fri.close*100;
+        if(Math.abs(gapPct)<0.05)continue;
+        let filled=false;
+        for(const c of kline){
+            if(c.time>sun.time){
+                if(gap>0&&c.low<=fri.close){filled=true;break;}
+                if(gap<0&&c.high>=fri.close){filled=true;break;}
+            }
+        }
+        gaps.push({time:sun.time,gap_open:sun.open,prev_close:fri.close,gap:+gap.toFixed(2),gap_pct:+gapPct.toFixed(2),filled});
+    }
+    return gaps.slice(-5);
+}
+
+/* ───── 거래량 급증 감지 (브라우저 측) ───── */
+async function fetchVolumeAlerts(){
+    const allTickers=await bybitAllTickers();
+    const candidates=[];
+    for(const t of allTickers){
+        const sym=t.symbol;
+        if(!sym.endsWith('USDT'))continue;
+        const priceChg=Math.abs(parseFloat(t.price24hPcnt||0)*100);
+        const turnover=parseFloat(t.turnover24h||0);
+        if(turnover>1000000||priceChg>10)candidates.push(t);
+    }
+    candidates.sort((a,b)=>parseFloat(b.turnover24h||0)-parseFloat(a.turnover24h||0));
+    const checkList=candidates.slice(0,30); // 30개로 제한 (브라우저 부하 고려)
+    const alerts=[];
+    // 병렬로 15분봉 체크 (5개씩 배치)
+    for(let b=0;b<checkList.length;b+=5){
+        const batch=checkList.slice(b,b+5);
+        const results=await Promise.allSettled(batch.map(async t=>{
+            const sym=t.symbol;
+            const price=parseFloat(t.lastPrice||0);
+            const priceChg=parseFloat(t.price24hPcnt||0)*100;
+            const turnover=parseFloat(t.turnover24h||0);
+            const alertReasons=[];
+            let score=0;
+            if(Math.abs(priceChg)>=15){
+                alertReasons.push(`24h ${priceChg>0?'급등':'급락'} ${priceChg>0?'+':''}${priceChg.toFixed(1)}%`);
+                score+=Math.abs(priceChg);
+            }
+            try{
+                const kl=await bybitGet('/v5/market/kline',{category:'linear',symbol:sym,interval:'15',limit:'6'});
+                const klList=kl.list||[];
+                if(klList.length>=6){
+                    const curVol=parseFloat(klList[0][5]);
+                    const prevVols=klList.slice(1,6).map(k=>parseFloat(k[5]));
+                    const avgPrev=prevVols.reduce((a,b)=>a+b,0)/prevVols.length;
+                    if(avgPrev>0&&curVol>avgPrev*3){
+                        const ratio=curVol/avgPrev;
+                        alertReasons.push(`15분봉 거래량 ${ratio.toFixed(1)}배 급증`);
+                        score+=ratio*20;
+                    }
+                }
+            }catch(e){}
+            if(Math.abs(priceChg)>=30)score+=100;
+            if(score>0&&alertReasons.length){
+                return{symbol:sym,reasons:alertReasons,score:+score.toFixed(1),price,price_change:+priceChg.toFixed(2),volume:parseFloat(t.volume24h||0),turnover};
+            }
+            return null;
+        }));
+        results.forEach(r=>{if(r.status==='fulfilled'&&r.value)alerts.push(r.value);});
+    }
+    alerts.sort((a,b)=>b.score-a.score);
+    return alerts.slice(0,15);
+}
 
 /* ═══════════════════════════════════
    기술적 지표 계산 함수들
@@ -325,7 +501,7 @@ function drawSupportResistance(d){
 let cmeGapLines=[];
 async function updateCMEGaps(){
     try{
-        const gaps=await fetchJSON(`/api/cme-gaps/${currentSymbol}`);
+        const gaps=await fetchCMEGaps(currentSymbol);
         // 이전 갭 라인 제거
         cmeGapLines.forEach(s=>{try{tvChartObj.removeSeries(s);}catch(e){}});
         cmeGapLines=[];
@@ -867,7 +1043,7 @@ function ensureLiqOverlay(){
 
 async function updateLiqLevels(){
     try{
-        const d=await fetchJSON(`/api/liquidation/${currentSymbol}`);
+        const d=await fetchLiquidationData(currentSymbol);
         const cv=ensureLiqOverlay();
         if(!cv||!lastKlineData.length)return;
         const ctx=cv.getContext('2d');
@@ -1003,7 +1179,7 @@ async function updateLiqLevels(){
 
         // 5) CME 갭 영역 시각화 (반투명 배경)
         try{
-            const gaps=await fetchJSON(`/api/cme-gaps/${currentSymbol}`);
+            const gaps=await fetchCMEGaps(currentSymbol);
             gaps.filter(g=>!g.filled).forEach(g=>{
                 const y1=priceToY(g.prev_close);
                 const y2=priceToY(g.gap_open);
@@ -1063,8 +1239,14 @@ function updateIndicatorPanels(d){
    ═══════════════════════════════════ */
 async function updateMarketIndicators(){
     try{
-        // 공포탐욕지수
-        const fg=await fetchJSON('/api/fear-greed');
+        // 공포탐욕지수 (직접 호출)
+        let fg;
+        try{
+            const fgResp=await fetch('https://api.alternative.me/fng/?limit=1');
+            const fgData=await fgResp.json();
+            if(fgData.data&&fgData.data[0])fg={value:parseInt(fgData.data[0].value),classification:fgData.data[0].value_classification};
+            else fg={value:50,classification:'Neutral'};
+        }catch(e){fg={value:50,classification:'Neutral'};}
         const fgEl=document.getElementById('indFearGreed');
         const fgTick=document.getElementById('tickFearGreed');
         fgEl.textContent=`${fg.value} (${fg.classification})`;
@@ -1158,7 +1340,7 @@ async function updateOrderbook(){
    ═══════════════════════════════════ */
 async function updateLiquidation(){
     try{
-        const d=await fetchJSON(`/api/liquidation/${currentSymbol}`);
+        const d=await fetchLiquidationData(currentSymbol);
         const labels=d.price_levels.map(p=>fp(p));
         if(liqChart){liqChart.data.labels=labels;liqChart.data.datasets[0].data=d.long_liquidations;liqChart.data.datasets[1].data=d.short_liquidations;liqChart.update('none');}
         else{const ctx=document.getElementById('liqChart').getContext('2d');liqChart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'롱 청산',data:d.long_liquidations,backgroundColor:GD,borderColor:G,borderWidth:1},{label:'숏 청산',data:d.short_liquidations,backgroundColor:RD,borderColor:R,borderWidth:1}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,position:'top',labels:{boxWidth:10}}},scales:{x:{...dso,stacked:true,ticks:{...dso.ticks,maxRotation:45,maxTicksLimit:8}},y:{...dso,stacked:true}}}});}
@@ -1171,7 +1353,7 @@ async function updateLiquidation(){
    ═══════════════════════════════════ */
 async function checkAlerts(){
     try{
-        const alerts=await fetchJSON('/api/volume-alerts');
+        const alerts=await fetchVolumeAlerts();
         const banner=document.getElementById('alertBanner');
         const list=document.getElementById('alertList');
         if(alerts.length>0){
