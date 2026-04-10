@@ -1381,8 +1381,11 @@ let liqFeedItems=[],whaleFeedItems=[];
 let tradeVolAccum={buy:0,sell:0,count:0}; // 1초간 체결량 누적
 function connectWS(){
     if(ws){ws.close();ws=null;}
-    const proto=location.protocol==='https:'?'wss:':'ws:';
-    ws=new WebSocket(`${proto}//${location.host}/ws/${currentSymbol}`);
+    // Bybit WebSocket에 직접 연결 (서버 프록시 우회 — Railway IP 차단 대비)
+    ws=new WebSocket('wss://stream.bybit.com/v5/public/linear');
+    ws.onopen=()=>{
+        ws.send(JSON.stringify({op:'subscribe',args:[`orderbook.200.${currentSymbol}`,`liquidation.${currentSymbol}`,`publicTrade.${currentSymbol}`]}));
+    };
     ws.onmessage=(e)=>{try{
         const m=JSON.parse(e.data);
         if(m.data){
