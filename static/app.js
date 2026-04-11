@@ -396,6 +396,8 @@ async function updateTVChart(){
         updateIndicatorPanels(d);
         // 저항선/지지선
         drawSupportResistance(d);
+        // 청산물량 히트맵 바 (버블 제외)
+        updateLiqLevels();
         // CME 갭 표시
         updateCMEGaps();
         // 차트패턴 감지 + 롱/숏 신호 + 타점 화살표
@@ -1097,42 +1099,17 @@ async function updateLiqLevels(){
             }
         }
 
-        // 2) 원(버블) — 레버리지별 청산가 + 물량 큰 곳
-        const drawBubble=(price,vol,type)=>{
-            const y=priceToY(price);
-            if(y===null||y<0||y>H)return;
-            const norm=vol/maxLiq;
-            const radius=Math.max(6,Math.min(40,norm*45))*2;
-            const x=W*0.55+(norm*W*0.15); // 물량 클수록 오른쪽 (고정 위치)
-
-            ctx.beginPath();
-            ctx.arc(x,y,radius,0,Math.PI*2);
-            if(type==='long'){
-                ctx.fillStyle=`rgba(0,210,106,${0.1+norm*0.3})`;
-                ctx.strokeStyle=`rgba(0,210,106,${0.3+norm*0.4})`;
-            }else{
-                ctx.fillStyle=`rgba(255,71,87,${0.1+norm*0.3})`;
-                ctx.strokeStyle=`rgba(255,71,87,${0.3+norm*0.4})`;
-            }
-            ctx.fill();
-            ctx.lineWidth=2;
-            ctx.stroke();
-        };
-
-        // 물량 큰 상위 포인트에 버블
-        // 핵심: 롱 청산(초록)=현재가 아래에만, 숏 청산(빨강)=현재가 위에만
+        // 2) 왼쪽 Y축 청산물량 수치 라벨 (버블 제거, 라벨만 유지)
         const longPts=prices.map((p,i)=>({price:p,vol:longLiqs[i],type:'long'})).filter(x=>x.vol>5&&x.price<curPrice);
         const shortPts=prices.map((p,i)=>({price:p,vol:shortLiqs[i],type:'short'})).filter(x=>x.vol>5&&x.price>curPrice);
         longPts.sort((a,b)=>b.vol-a.vol);
         shortPts.sort((a,b)=>b.vol-a.vol);
 
-        // 상위 12개씩 버블 + 왼쪽 Y축에 청산물량 수치 표시
         const drawnLabels=new Set();
-        const drawWithLabel=(b)=>{
-            drawBubble(b.price,b.vol,b.type);
-            // 왼쪽에 청산물량 수치 라벨
+        const drawLabel=(b)=>{
             if(b.price>=visLow&&b.price<=visHigh){
                 const y=priceToY(b.price);
+                if(y===null)return;
                 const yKey=Math.round(y/30);
                 if(!drawnLabels.has(yKey)){
                     drawnLabels.add(yKey);
@@ -1144,22 +1121,8 @@ async function updateLiqLevels(){
                 }
             }
         };
-        longPts.slice(0,12).forEach(drawWithLabel);
-        shortPts.slice(0,12).forEach(drawWithLabel);
-
-        // 3) 레버리지별 청산가에 큰 원 + 라벨
-        d.leverage_markers.forEach(m=>{
-            const drawLevLabel=(price,color,xOff)=>{
-                const y=priceToY(price);
-                if(y===null||y<0||y>H)return;
-                ctx.beginPath();ctx.arc(W*0.8+xOff,y,14,0,Math.PI*2);
-                ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke();
-                ctx.fillStyle=color;ctx.font='bold 16px sans-serif';ctx.textAlign='center';
-                ctx.fillText(m.leverage,W*0.8+xOff,y+5);
-            };
-            drawLevLabel(m.long_liq_price,'rgba(0,210,106,0.8)',0);
-            drawLevLabel(m.short_liq_price,'rgba(255,71,87,0.8)',W*0.05);
-        });
+        longPts.slice(0,12).forEach(drawLabel);
+        shortPts.slice(0,12).forEach(drawLabel);
 
         // 4) 현재가 점선
         const curY=priceToY(curPrice);
