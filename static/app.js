@@ -396,10 +396,8 @@ async function updateTVChart(){
         updateIndicatorPanels(d);
         // 저항선/지지선
         drawSupportResistance(d);
-        // 청산물량 히트맵 바 (버블 제외)
-        updateLiqLevels();
-        // 풀롱/풀숏 가격대 존 표시
-        drawFullSignalZones();
+        // 청산물량 히트맵 + 풀롱/풀숏 가격대 (더블 버퍼링, 깜빡임 방지)
+        renderChartOverlay();
         // CME 갭 표시
         updateCMEGaps();
         // 차트패턴 감지 + 롱/숏 신호 + 타점 화살표
@@ -1032,6 +1030,8 @@ function updateIndicatorHints(d,rsiData,macdD,cci,wr){
    ═══════════════════════════════════ */
 let liqLevelChart=null;
 let liqOverlayCanvas=null;
+let offscreenOverlay=null,overlayCtx=null;
+let cachedCMEGaps=null,lastCMEGapFetchTime=0;
 
 function ensureLiqOverlay(){
     const wrap=document.getElementById('tvChart');
@@ -1044,10 +1044,10 @@ function ensureLiqOverlay(){
         cv.style.cssText='position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;';
         wrap.appendChild(cv);
     }
-    cv.width=wrap.clientWidth*2; // retina
-    cv.height=wrap.clientHeight*2;
-    cv.style.width=wrap.clientWidth+'px';
-    cv.style.height=wrap.clientHeight+'px';
+    const w2=wrap.clientWidth*2,h2=wrap.clientHeight*2;
+    if(cv.width!==w2||cv.height!==h2){cv.width=w2;cv.height=h2;cv.style.width=wrap.clientWidth+'px';cv.style.height=wrap.clientHeight+'px';}
+    if(!offscreenOverlay)offscreenOverlay=document.createElement('canvas');
+    if(offscreenOverlay.width!==w2||offscreenOverlay.height!==h2){offscreenOverlay.width=w2;offscreenOverlay.height=h2;}
     return cv;
 }
 
@@ -1056,8 +1056,8 @@ async function updateLiqLevels(){
         const d=await fetchLiquidationData(currentSymbol);
         const cv=ensureLiqOverlay();
         if(!cv||!lastKlineData.length)return;
-        const ctx=cv.getContext('2d');
-        ctx.clearRect(0,0,cv.width,cv.height);
+        const ctx=overlayCtx||cv.getContext('2d');
+        if(!overlayCtx)ctx.clearRect(0,0,cv.width,cv.height);
 
         const prices=d.price_levels;
         const longLiqs=d.long_liquidations;
@@ -1148,10 +1148,11 @@ async function updateLiqLevels(){
             ctx.restore();
         }
 
-        // 5) CME 갭 영역 시각화 (반투명 배경)
+        // 5) CME 갭 영역 시각화 (캐시 사용, 60초마다 갱신)
         try{
-            const gaps=await fetchCMEGaps(currentSymbol);
-            gaps.filter(g=>!g.filled).forEach(g=>{
+            const now=Date.now();
+            if(!cachedCMEGaps||now-lastCMEGapFetchTime>60000){try{cachedCMEGaps=await fetchCMEGaps(currentSymbol);lastCMEGapFetchTime=now;}catch(e){}}
+            (cachedCMEGaps||[]).filter(g=>!g.filled).forEach(g=>{
                 const y1=priceToY(g.prev_close);
                 const y2=priceToY(g.gap_open);
                 if(y1===null||y2===null)return;
@@ -1181,7 +1182,7 @@ function drawFullSignalZones(){
     if(!d||d.length<100)return;
     const cv=document.getElementById('liqHeatmapOverlay');
     if(!cv)return;
-    const ctx=cv.getContext('2d');
+    const ctx=overlayCtx||cv.getContext('2d');
     const W=cv.width,H=cv.height;
     const rightPad=W*0.06;
     const priceToY=(p)=>{const c=candleSeries.priceToCoordinate(p);return c!==null?c*2:null;};
@@ -1360,6 +1361,23 @@ function drawFullSignalZones(){
 
     longMerged.forEach((z,i)=>drawZone(z,i));
     shortMerged.forEach((z,i)=>drawZone(z,i));
+}
+
+/* ───── 차트 오버레이 더블 버퍼링 렌더러 (깜빡임 방지) ───── */
+async function renderChartOverlay(){
+    const cv=ensureLiqOverlay();
+    if(!cv||!lastKlineData.length)return;
+    const w=cv.width,h=cv.height;
+    if(offscreenOverlay.width!==w||offscreenOverlay.height!==h){offscreenOverlay.width=w;offscreenOverlay.height=h;}
+    overlayCtx=offscreenOverlay.getContext('2d');
+    overlayCtx.clearRect(0,0,w,h);
+    try{await updateLiqLevels();}catch(e){}
+    try{drawFullSignalZones();}catch(e){}
+    // 원자적 스왑: 오프스크린 → 가시 캔버스 (한번에 복사하여 깜빡임 제거)
+    const vctx=cv.getContext('2d');
+    vctx.clearRect(0,0,w,h);
+    vctx.drawImage(offscreenOverlay,0,0);
+    overlayCtx=null;
 }
 
 /* ═══════════════════════════════════
@@ -1733,6 +1751,7 @@ async function updateExpertConsensus(){
             score=score*0.5+techScore*0.5;
             factors.push(`기술:${net>0?'+':''}${net}`);
         }
+        lastConsensusScore=score;
 
         let verdict,vColor;
         if(score>=70){verdict='강세 (BULLISH)';vColor=G;}
@@ -1912,6 +1931,7 @@ async function updateOnchainData(){
 let lastFearGreedValue=50; // 공포탐욕지수 캐시
 let lastLongShortRatio={buy:0.5,sell:0.5}; // 롱숏비율 캐시
 let lastOIChange=0; // 미결제약정 변동률 캐시
+let lastConsensusScore=50; // 전문가 컨센서스 점수 캐시
 
 function calcStochasticRSI(d,rsiPeriod=14,stochPeriod=14,kSmooth=3,dSmooth=3){
     const rsiData=calcRSI(d,rsiPeriod);
@@ -2077,16 +2097,115 @@ function generateFullSignal(d){
         }
     }
 
-    // 풀롱: 10개+ 롱 && 숏 3개 미만
-    // 풀숏: 10개+ 숏 && 롱 3개 미만
+    // === 추가 17개 조건 (총 37개) ===
+    // 21) Williams %R
+    const wrVal=calcWilliamsR(d,14);
+    if(wrVal!==null){
+        if(wrVal<-80){longConds++;longReasons.push('W%R과매도');}
+        if(wrVal>-20){shortConds++;shortReasons.push('W%R과매수');}
+    }
+    // 22) CCI
+    const cciVal=calcCCI(d,20);
+    if(cciVal!==null){
+        if(cciVal<-100){longConds++;longReasons.push('CCI과매도');}
+        if(cciVal>100){shortConds++;shortReasons.push('CCI과매수');}
+    }
+    // 23) 차트 패턴 (더블바텀/탑, 삼각형, 플래그 등)
+    const cpats=detectChartPatterns(d);
+    let cpL=0,cpS=0;cpats.forEach(p=>{if(p.type==='long')cpL+=p.strength;else cpS+=p.strength;});
+    if(cpL>60){longConds++;longReasons.push('차트패턴롱');}
+    if(cpS>60){shortConds++;shortReasons.push('차트패턴숏');}
+    // 24) RSI 다이버전스
+    const rsiDivSigs=detectRSIDivergence(d,rsiData);
+    rsiDivSigs.forEach(s=>{
+        if(s.type==='bullish_div'){longConds++;longReasons.push('RSI상승다이버');}
+        if(s.type==='bearish_div'){shortConds++;shortReasons.push('RSI하락다이버');}
+    });
+    // 25) 유동성 스윕
+    const sweepSigs=detectLiquiditySweep(d,20);
+    if(sweepSigs.length){const ls=sweepSigs[sweepSigs.length-1];
+        if(ls.type==='bullish_sweep'&&last.time-ls.time<86400*2){longConds++;longReasons.push('유동성스윕↑');}
+        if(ls.type==='bearish_sweep'&&last.time-ls.time<86400*2){shortConds++;shortReasons.push('유동성스윕↓');}
+    }
+    // 26) 와이코프 VSA
+    detectWyckoff(d).forEach(w=>{
+        if(w.type==='wyckoff_spring'){longConds++;longReasons.push('와이코프스프링');}
+        if(w.type==='wyckoff_upthrust'){shortConds++;shortReasons.push('와이코프업스러스트');}
+    });
+    // 27) FVG (공정가치갭)
+    const fvgSigs=detectFVG(d);
+    if(fvgSigs.length){const lf=fvgSigs[fvgSigs.length-1];
+        if(lf.type==='bullish_fvg'&&price<=lf.top&&price>=lf.bottom){longConds++;longReasons.push('상승FVG');}
+        if(lf.type==='bearish_fvg'&&price>=lf.bottom&&price<=lf.top){shortConds++;shortReasons.push('하락FVG');}
+    }
+    // 28) 오더블록
+    const obSigs=detectOrderBlocks(d);
+    if(obSigs.length){const lo=obSigs[obSigs.length-1];
+        if(lo.type==='bullish_ob'&&price<=lo.high&&price>=lo.price){longConds++;longReasons.push('상승오더블록');}
+        if(lo.type==='bearish_ob'&&price>=lo.low&&price<=lo.price){shortConds++;shortReasons.push('하락오더블록');}
+    }
+    // 29) 매크로: DXY 달러인덱스 (역상관 — DXY↓=BTC 강세)
+    if(macroCache['DX-Y.NYB']){
+        if(macroCache['DX-Y.NYB'].change<-0.1){longConds++;longReasons.push('DXY↓');}
+        if(macroCache['DX-Y.NYB'].change>0.1){shortConds++;shortReasons.push('DXY↑');}
+    }
+    // 30) 매크로: US10Y 미국금리 (역상관 — 금리↓=BTC 강세)
+    if(macroCache['^TNX']){
+        if(macroCache['^TNX'].change<-0.5){longConds++;longReasons.push('금리↓');}
+        if(macroCache['^TNX'].change>0.5){shortConds++;shortReasons.push('금리↑');}
+    }
+    // 31) 매크로: S&P500 (정상관 — S&P↑=BTC 강세)
+    if(macroCache['^GSPC']){
+        if(macroCache['^GSPC'].change>0.3){longConds++;longReasons.push('S&P↑');}
+        if(macroCache['^GSPC'].change<-0.3){shortConds++;shortReasons.push('S&P↓');}
+    }
+    // 32) 매크로: Gold+BTC 방향 일치 (동반 상승/하락)
+    if(macroCache['GC=F']){
+        if(macroCache['GC=F'].change>0.5&&last.close>prev.close){longConds++;longReasons.push('골드+BTC↑');}
+        if(macroCache['GC=F'].change<-0.5&&last.close<prev.close){shortConds++;shortReasons.push('골드+BTC↓');}
+    }
+    // 33) CoinGecko 커뮤니티 센티먼트
+    if(lastSentimentData){
+        if(lastSentimentData.up>65){longConds++;longReasons.push('센티먼트강세');}
+        if(lastSentimentData.up<35){shortConds++;shortReasons.push('센티먼트약세');}
+    }
+    // 34) 전문가 종합 컨센서스
+    if(lastConsensusScore>65){longConds++;longReasons.push('컨센서스강세');}
+    if(lastConsensusScore<35){shortConds++;shortReasons.push('컨센서스약세');}
+    // 35) 이치모쿠 구름 포지션
+    const ichFS=calcIchimoku(d);
+    if(ichFS.senkouA.length&&ichFS.senkouB.length){
+        const sa=ichFS.senkouA[ichFS.senkouA.length-1].value;
+        const sb=ichFS.senkouB[ichFS.senkouB.length-1].value;
+        if(price>Math.max(sa,sb)){longConds++;longReasons.push('구름위');}
+        if(price<Math.min(sa,sb)){shortConds++;shortReasons.push('구름아래');}
+    }
+    // 36) 하모닉 패턴
+    const harm=detectHarmonic(d);
+    if(harm){
+        if(harm.bullish){longConds++;longReasons.push(harm.name+'강세');}
+        else{shortConds++;shortReasons.push(harm.name+'약세');}
+    }
+    // 37) MA 정배열/역배열 (MA7>MA20>MA100>MA200)
+    const ma200f=calcSMA(d,200);
+    if(ma7.length&&ma20.length&&ma100.length&&ma200f.length){
+        const v7=ma7[ma7.length-1].value,v20=ma20[ma20.length-1].value;
+        const v100=ma100[ma100.length-1].value,v200=ma200f[ma200f.length-1].value;
+        if(price>v7&&v7>v20&&v20>v100){longConds++;longReasons.push('MA정배열');}
+        if(price<v7&&v7<v20&&v20<v100){shortConds++;shortReasons.push('MA역배열');}
+    }
+
+    const TOTAL_CONDS=37;
+    // 풀롱: 18개+ 롱 && 숏 6개 미만 (37개 조건 중)
+    // 풀숏: 18개+ 숏 && 롱 6개 미만
     let signal=null;
-    if(longConds>=10&&shortConds<3){
+    if(longConds>=18&&shortConds<6){
         signal={type:'풀롱',color:'#FFD700',longConds,shortConds,reasons:longReasons};
-    }else if(shortConds>=10&&longConds<3){
+    }else if(shortConds>=18&&longConds<6){
         signal={type:'풀숏',color:'#9400D3',shortConds,longConds,reasons:shortReasons};
     }
 
-    return{longConds,shortConds,signal,longReasons,shortReasons};
+    return{longConds,shortConds,signal,longReasons,shortReasons,totalConds:TOTAL_CONDS};
 }
 
 // 개별 캔들에 대한 풀롱/풀숏 기술적 조건 검사 (과거 캔들용, 15개 기술적 조건만)
@@ -2181,9 +2300,25 @@ function checkFullSignalAtCandle(d,idx){
             if(c.close<c.open)sc++;
         }
     }
-    // 기술적 조건만 15개: 롱 8개+, 숏 2개 미만 = 풀롱
-    if(lc>=8&&sc<2)return{type:'풀롱',lc,sc};
-    if(sc>=8&&lc<2)return{type:'풀숏',lc,sc};
+    // 16) Williams %R
+    const wrH=calcWilliamsR(sliceForMA,14);
+    if(wrH!==null){if(wrH<-80)lc++;if(wrH>-20)sc++;}
+    // 17) CCI
+    const cciH=calcCCI(sliceForMA,20);
+    if(cciH!==null){if(cciH<-100)lc++;if(cciH>100)sc++;}
+    // 18) 이치모쿠 구름 포지션
+    if(sliceForMA.length>=52){
+        const ichH=calcIchimoku(sliceForMA);
+        if(ichH.senkouA.length&&ichH.senkouB.length){
+            const saH=ichH.senkouA[ichH.senkouA.length-1].value;
+            const sbH=ichH.senkouB[ichH.senkouB.length-1].value;
+            if(price>Math.max(saH,sbH))lc++;
+            if(price<Math.min(saH,sbH))sc++;
+        }
+    }
+    // 기술적 조건 18개: 롱 10개+, 숏 3개 미만 = 풀롱
+    if(lc>=10&&sc<3)return{type:'풀롱',lc,sc};
+    if(sc>=10&&lc<3)return{type:'풀숏',lc,sc};
     return null;
 }
 
@@ -2215,11 +2350,12 @@ function addFullSignalMarkers(d,existingMarkers){
         const spans=sigEl.querySelectorAll('span');
         spans.forEach(s=>{if(s.textContent.includes('풀롱')||s.textContent.includes('풀숏'))s.remove();});
         // 현재 상태 표시
+        const tc=result.totalConds||37;
         const tag=result.signal
             ?(result.signal.type==='풀롱'
-                ?`<span style="background:#FFD700;color:#000;padding:3px 10px;border-radius:4px;font-weight:900;font-size:16px;margin-left:8px;animation:pulse 1s infinite;">⚡ 풀롱 (${result.longConds}/20)</span>`
-                :`<span style="background:#9400D3;color:#fff;padding:3px 10px;border-radius:4px;font-weight:900;font-size:16px;margin-left:8px;animation:pulse 1s infinite;">⚡ 풀숏 (${result.shortConds}/20)</span>`)
-            :`<span style="color:var(--text-secondary);font-size:11px;margin-left:8px;">풀롱/풀숏: 롱${result.longConds} 숏${result.shortConds}/20</span>`;
+                ?`<span style="background:#FFD700;color:#000;padding:3px 10px;border-radius:4px;font-weight:900;font-size:16px;margin-left:8px;animation:pulse 1s infinite;">⚡ 풀롱 (${result.longConds}/${tc})</span>`
+                :`<span style="background:#9400D3;color:#fff;padding:3px 10px;border-radius:4px;font-weight:900;font-size:16px;margin-left:8px;animation:pulse 1s infinite;">⚡ 풀숏 (${result.shortConds}/${tc})</span>`)
+            :`<span style="color:var(--text-secondary);font-size:11px;margin-left:8px;">풀롱/풀숏: 롱${result.longConds} 숏${result.shortConds}/${tc}</span>`;
         sigEl.innerHTML+=tag;
     }
 
@@ -2229,20 +2365,20 @@ function addFullSignalMarkers(d,existingMarkers){
     const futureTime=d[d.length-1].time+intSec;
     const futureTime2=d[d.length-1].time+intSec*2;
 
+    const tc=result.totalConds||37;
     if(result.signal){
-        // 강한 시그널 (10/20+): 큰 금색/보라색 화살표
+        // 강한 시그널 (18/37+): 큰 금색/보라색 화살표
         if(result.signal.type==='풀롱'){
-            markers.push({time:futureTime,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`⚡풀롱(${result.longConds}/20)`});
+            markers.push({time:futureTime,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`⚡풀롱(${result.longConds}/${tc})`});
             markers.push({time:futureTime2,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`풀롱 진입▲`});
         }else{
-            markers.push({time:futureTime,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`⚡풀숏(${result.shortConds}/20)`});
+            markers.push({time:futureTime,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`⚡풀숏(${result.shortConds}/${tc})`});
             markers.push({time:futureTime2,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`풀숏 진입▼`});
         }
     }else{
         // 미달이어도 방향 예측 항상 표시
         const isLongBias=result.longConds>result.shortConds;
-        const dominant=isLongBias?result.longConds:result.shortConds;
-        const label=isLongBias?`롱 대기(${result.longConds}/20)`:`숏 대기(${result.shortConds}/20)`;
+        const label=isLongBias?`롱 대기(${result.longConds}/${tc})`:`숏 대기(${result.shortConds}/${tc})`;
         const color=isLongBias?'rgba(255,215,0,0.6)':'rgba(148,0,211,0.6)';
         const pos=isLongBias?'belowBar':'aboveBar';
         const shape=isLongBias?'arrowUp':'arrowDown';
