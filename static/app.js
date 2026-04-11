@@ -398,6 +398,8 @@ async function updateTVChart(){
         drawSupportResistance(d);
         // 청산물량 히트맵 바 (버블 제외)
         updateLiqLevels();
+        // 풀롱/풀숏 가격대 존 표시
+        drawFullSignalZones();
         // CME 갭 표시
         updateCMEGaps();
         // 차트패턴 감지 + 롱/숏 신호 + 타점 화살표
@@ -1168,6 +1170,196 @@ async function updateLiqLevels(){
         }catch(e){}
 
     }catch(e){console.error('LiqHeatmap error:',e);}
+}
+
+/* ═══════════════════════════════════
+   풀롱/풀숏 가격대 표시 (모든 지표 총동원)
+   BB, Fib, MA, S/R, 청산클러스터, VWAP, ATR 기반
+   ═══════════════════════════════════ */
+function drawFullSignalZones(){
+    const d=lastKlineData;
+    if(!d||d.length<100)return;
+    const cv=document.getElementById('liqHeatmapOverlay');
+    if(!cv)return;
+    const ctx=cv.getContext('2d');
+    const W=cv.width,H=cv.height;
+    const rightPad=W*0.06;
+    const priceToY=(p)=>{const c=candleSeries.priceToCoordinate(p);return c!==null?c*2:null;};
+    const price=d[d.length-1].close;
+
+    // ── 모든 지표에서 주요 가격대 수집 ──
+    const longZones=[]; // {price, score, label}
+    const shortZones=[];
+
+    // 1) Bollinger Bands
+    const bb=calcBollingerBands(d,20,2);
+    if(bb){
+        longZones.push({price:bb.lower,score:25,label:'BB 하단'});
+        shortZones.push({price:bb.upper,score:25,label:'BB 상단'});
+        longZones.push({price:bb.middle,score:10,label:'BB 중간'});
+    }
+
+    // 2) 이동평균선
+    const ma7=calcSMA(d,7),ma20=calcSMA(d,20),ma100=calcSMA(d,100),ma200=calcSMA(d,200);
+    if(ma20.length){const v=ma20[ma20.length-1].value; if(v<price)longZones.push({price:v,score:20,label:'MA20'}); else shortZones.push({price:v,score:20,label:'MA20'});}
+    if(ma100.length){const v=ma100[ma100.length-1].value; if(v<price)longZones.push({price:v,score:25,label:'MA100'}); else shortZones.push({price:v,score:25,label:'MA100'});}
+    if(ma200.length){const v=ma200[ma200.length-1].value; if(v<price)longZones.push({price:v,score:30,label:'MA200'}); else shortZones.push({price:v,score:30,label:'MA200'});}
+
+    // 3) 피보나치 되돌림
+    const fibs=calcFibonacci(d);
+    fibs.forEach(f=>{
+        if(f.level>=0.382&&f.level<=0.786){
+            if(f.price<price)longZones.push({price:f.price,score:15+f.level*20,label:`Fib ${f.label}`});
+            else shortZones.push({price:f.price,score:15+f.level*20,label:`Fib ${f.label}`});
+        }
+    });
+
+    // 4) VWAP
+    const vwap=calcVWAP(d.slice(-50));
+    if(vwap>0){
+        if(vwap<price)longZones.push({price:vwap,score:20,label:'VWAP'});
+        else shortZones.push({price:vwap,score:20,label:'VWAP'});
+    }
+
+    // 5) ATR 기반 타겟
+    const atr=calcATR(d,14);
+    if(atr){
+        longZones.push({price:price-atr*1.5,score:15,label:'ATR 지지'});
+        shortZones.push({price:price+atr*1.5,score:15,label:'ATR 저항'});
+    }
+
+    // 6) 지지/저항선 (피벗 클러스터)
+    const pvts=findPivots(d,5,5);
+    const tolerance=price*0.003;
+    const allLevels=[];
+    pvts.highs.forEach(h=>allLevels.push({price:h.price,type:'R'}));
+    pvts.lows.forEach(l=>allLevels.push({price:l.price,type:'S'}));
+    const clusters=[];
+    for(const lv of allLevels){
+        let found=false;
+        for(const c of clusters){if(Math.abs(c.price-lv.price)<tolerance){c.touches++;c.price=(c.price*(c.touches-1)+lv.price)/c.touches;found=true;break;}}
+        if(!found)clusters.push({price:lv.price,touches:1,type:lv.price>price?'R':'S'});
+    }
+    clusters.filter(c=>c.touches>=2).forEach(c=>{
+        const sc=c.touches*10;
+        if(c.type==='S')longZones.push({price:c.price,score:sc,label:`지지(${c.touches})`});
+        else shortZones.push({price:c.price,score:sc,label:`저항(${c.touches})`});
+    });
+
+    // 7) 청산 클러스터 (가장 큰 청산물량 가격대)
+    try{
+        const liqData=estimateLiquidationLevels(price,price*1000,[],[]);
+        const liqPrices=liqData.price_levels;
+        const longLiqs=liqData.long_liquidations;
+        const shortLiqs=liqData.short_liquidations;
+        // 가장 높은 롱 청산 가격 → 반등 예상 (풀롱 존)
+        let maxLongIdx=0;longLiqs.forEach((v,i)=>{if(v>longLiqs[maxLongIdx])maxLongIdx=i;});
+        if(longLiqs[maxLongIdx]>10)longZones.push({price:liqPrices[maxLongIdx],score:20,label:'청산클러스터'});
+        // 가장 높은 숏 청산 가격 → 하락 예상 (풀숏 존)
+        let maxShortIdx=0;shortLiqs.forEach((v,i)=>{if(v>shortLiqs[maxShortIdx])maxShortIdx=i;});
+        if(shortLiqs[maxShortIdx]>10)shortZones.push({price:liqPrices[maxShortIdx],score:20,label:'청산클러스터'});
+    }catch(e){}
+
+    // 8) 이치모쿠 클라우드
+    const ich=calcIchimoku(d);
+    if(ich.senkouA.length&&ich.senkouB.length){
+        const sa=ich.senkouA[ich.senkouA.length-1].value;
+        const sb=ich.senkouB[ich.senkouB.length-1].value;
+        const cloudTop=Math.max(sa,sb),cloudBot=Math.min(sa,sb);
+        if(cloudBot<price)longZones.push({price:cloudBot,score:20,label:'이치모쿠 구름하단'});
+        if(cloudTop>price)shortZones.push({price:cloudTop,score:20,label:'이치모쿠 구름상단'});
+    }
+
+    // 9) RSI 기반 예상 반전가 (과매도/과매수 도달 예상가)
+    const rsiData=calcRSI(d,14);
+    if(rsiData.length>=2){
+        const curRsi=rsiData[rsiData.length-1].value;
+        // RSI가 30까지 떨어지려면 대략 얼마나 더 하락해야 하는지 추정
+        if(curRsi>35&&curRsi<70){
+            const rsiDropNeeded=curRsi-30;
+            const recentDrop=d.slice(-14);
+            const avgMove=recentDrop.reduce((s,c)=>s+Math.abs(c.close-c.open),0)/14;
+            const estDropPrice=price-avgMove*rsiDropNeeded*0.3;
+            if(estDropPrice>price*0.9)longZones.push({price:estDropPrice,score:15,label:`RSI30 예상`});
+        }
+        if(curRsi>30&&curRsi<65){
+            const rsiRiseNeeded=70-curRsi;
+            const recentMove=d.slice(-14);
+            const avgMove=recentMove.reduce((s,c)=>s+Math.abs(c.close-c.open),0)/14;
+            const estRisePrice=price+avgMove*rsiRiseNeeded*0.3;
+            if(estRisePrice<price*1.1)shortZones.push({price:estRisePrice,score:15,label:`RSI70 예상`});
+        }
+    }
+
+    // ── 가격대 클러스터링: 가까운 가격대 합산 ──
+    const clusterZones=(zones,type)=>{
+        zones.sort((a,b)=>a.price-b.price);
+        const merged=[];
+        for(const z of zones){
+            let found=false;
+            for(const m of merged){
+                if(Math.abs(m.price-z.price)/price<0.005){ // 0.5% 이내 = 같은 존
+                    m.score+=z.score;
+                    m.labels.push(z.label);
+                    m.price=(m.price+z.price)/2; // 평균가
+                    found=true;break;
+                }
+            }
+            if(!found)merged.push({price:z.price,score:z.score,labels:[z.label],type});
+        }
+        return merged.sort((a,b)=>b.score-a.score);
+    };
+
+    const longMerged=clusterZones(longZones,'long').slice(0,5); // 상위 5개
+    const shortMerged=clusterZones(shortZones,'short').slice(0,5);
+    const maxScore=Math.max(...longMerged.map(z=>z.score),...shortMerged.map(z=>z.score),1);
+
+    // ── 차트에 가격대 존 그리기 ──
+    const recent=d.slice(-80);
+    const visHigh=Math.max(...recent.map(c=>c.high))*1.02;
+    const visLow=Math.min(...recent.map(c=>c.low))*0.98;
+
+    const drawZone=(zone,idx)=>{
+        if(zone.price<visLow||zone.price>visHigh)return;
+        const y=priceToY(zone.price);
+        if(y===null)return;
+        const isLong=zone.type==='long';
+        const intensity=Math.min(1,zone.score/maxScore);
+        const baseColor=isLong?[255,215,0]:[148,0,211]; // 금색/보라색
+
+        // 배경 존 (반투명 영역)
+        ctx.save();
+        ctx.fillStyle=`rgba(${baseColor.join(',')},${0.06+intensity*0.12})`;
+        const zoneH=Math.max(12,intensity*30);
+        ctx.fillRect(W*0.15,y-zoneH/2,W*0.7,zoneH);
+
+        // 점선 가격대
+        ctx.strokeStyle=`rgba(${baseColor.join(',')},${0.4+intensity*0.4})`;
+        ctx.lineWidth=1+intensity*2;
+        ctx.setLineDash([6,3]);
+        ctx.beginPath();
+        ctx.moveTo(W*0.12,y);
+        ctx.lineTo(W-rightPad,y);
+        ctx.stroke();
+
+        // 라벨 (우측)
+        ctx.font=`bold ${14+intensity*4}px sans-serif`;
+        ctx.textAlign='right';
+        ctx.fillStyle=`rgba(${baseColor.join(',')},${0.8+intensity*0.2})`;
+        const tag=isLong?'풀롱':'풀숏';
+        const labelsStr=zone.labels.slice(0,3).join('+');
+        ctx.fillText(`${tag} ${fp(zone.price)} [${labelsStr}]`,W-rightPad-8,y-6);
+
+        // 점수 바
+        ctx.font='bold 11px sans-serif';
+        ctx.fillStyle=`rgba(${baseColor.join(',')},0.7)`;
+        ctx.fillText(`강도: ${zone.score}점`,W-rightPad-8,y+14);
+
+        ctx.restore();
+    };
+
+    longMerged.forEach((z,i)=>drawZone(z,i));
+    shortMerged.forEach((z,i)=>drawZone(z,i));
 }
 
 /* ═══════════════════════════════════
