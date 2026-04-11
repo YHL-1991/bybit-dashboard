@@ -218,6 +218,70 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260411c"></script>
+    <!-- 전문가 컨센서스 -->
+    <div class="grid-3">
+        <div class="card mini">
+            <div class="card-title"><span class="dot" style="background:var(--yellow)"></span> 공포탐욕 지수 (7일 추이)</div>
+            <div id="fngHistory" class="ind-value">-</div>
+            <p class="hint">공포(0~25): 매수 기회 | 탐욕(75~100): 매도 고려 | 7일 추이로 심리 변화 파악</p>
+        </div>
+        <div class="card mini">
+            <div class="card-title"><span class="dot" style="background:#22d3ee"></span> CoinGecko 센티먼트</div>
+            <div id="cgSentiment" class="ind-value">-</div>
+            <div id="cgTrending" style="font-size:11px;color:var(--text-secondary);margin-top:4px;"></div>
+            <p class="hint">커뮤니티 투표 기반 센티먼트 + 실시간 트렌딩 코인 목록</p>
+        </div>
+        <div class="card mini">
+            <div class="card-title"><span class="dot" style="background:#a855f7"></span> 종합 컨센서스</div>
+            <div id="consensusResult" class="ind-value" style="font-size:24px;">-</div>
+            <div id="consensusDetail" style="font-size:11px;color:var(--text-secondary);margin-top:4px;"></div>
+            <p class="hint">공포탐욕 + 센티먼트 + 기술적 지표 가중 평균 → 시장 종합 판단</p>
+        </div>
+    </div>
+
+    <!-- 매크로 (블룸버그 스타일) 데이터 -->
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-title"><span class="dot" style="background:#58a6ff"></span> 매크로 지표 (실시간)</div>
+            <div id="macroTable" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;">매크로 데이터 로딩 중...</div>
+            </div>
+            <p class="hint">DXY·US10Y·Gold·S&P500 실시간 시세 | 60초 갱신</p>
+        </div>
+        <div class="card">
+            <div class="card-title"><span class="dot" style="background:#ff9f43"></span> BTC vs 매크로 상관관계</div>
+            <div id="macroCorrelation" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;">분석 중...</div>
+            </div>
+            <p class="hint">DXY↑=BTC↓ | 금↑=BTC↑ | S&P500↑=BTC↑ | 매크로 환경 자동 해석</p>
+        </div>
+    </div>
+
+    <!-- 온체인 (크립토퀀트 스타일) 데이터 -->
+    <div class="grid-3">
+        <div class="card mini">
+            <div class="card-title"><span class="dot" style="background:#00d26a"></span> 네트워크 건강</div>
+            <div id="onchainNetwork" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;">로딩 중...</div>
+            </div>
+            <p class="hint">해시레이트·채굴난이도·멤풀 수수료 | 네트워크 보안 강도 지표</p>
+        </div>
+        <div class="card mini">
+            <div class="card-title"><span class="dot" style="background:#f0b90b"></span> 거래 활동</div>
+            <div id="onchainTx" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;">로딩 중...</div>
+            </div>
+            <p class="hint">일일 거래수·거래량(USD)·평균 수수료 | 체인 활성도 측정</p>
+        </div>
+        <div class="card mini">
+            <div class="card-title"><span class="dot" style="background:#ec4899"></span> 시장 구조</div>
+            <div id="onchainMarket" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;">로딩 중...</div>
+            </div>
+            <p class="hint">마켓캡·BTC 도미넌스·DeFi TVL | 시장 전체 구조 파악</p>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=20260411d"></script>
 </body>
 </html>
