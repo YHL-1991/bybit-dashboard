@@ -1860,54 +1860,164 @@ function generateFullSignal(d){
         }
     }
 
-    // 풀롱: 14개+ 롱 && 숏 5개 미만
-    // 풀숏: 14개+ 숏 && 롱 5개 미만
+    // 풀롱: 10개+ 롱 && 숏 3개 미만
+    // 풀숏: 10개+ 숏 && 롱 3개 미만
     let signal=null;
-    if(longConds>=14&&shortConds<5){
+    if(longConds>=10&&shortConds<3){
         signal={type:'풀롱',color:'#FFD700',longConds,shortConds,reasons:longReasons};
-    }else if(shortConds>=14&&longConds<5){
+    }else if(shortConds>=10&&longConds<3){
         signal={type:'풀숏',color:'#9400D3',shortConds,longConds,reasons:shortReasons};
     }
 
     return{longConds,shortConds,signal,longReasons,shortReasons};
 }
 
-// 풀롱/풀숏 마커를 캔들차트에 추가 (미래 영역)
-function addFullSignalMarkers(d,existingMarkers){
-    const result=generateFullSignal(d);
-    if(!result)return existingMarkers;
+// 개별 캔들에 대한 풀롱/풀숏 기술적 조건 검사 (과거 캔들용, 15개 기술적 조건만)
+function checkFullSignalAtCandle(d,idx){
+    if(idx<5||idx>=d.length)return null;
+    const c=d[idx],prev=d[idx-1],prev2=d[idx-2];
+    const price=c.close;
+    // RSI
+    const rsiData=calcRSI(d.slice(0,idx+1),14);
+    if(rsiData.length<2)return null;
+    const rsi=rsiData[rsiData.length-1].value;
+    const rsiPrev=rsiData[rsiData.length-2].value;
+    // MACD
+    const macdD=calcMACD(d.slice(0,idx+1));
+    const macdH=macdD.hist.length?macdD.hist[macdD.hist.length-1].value:0;
+    const macdHP=macdD.hist.length>=2?macdD.hist[macdD.hist.length-2].value:0;
+    // MA
+    const sliceForMA=d.slice(0,idx+1);
+    const ma7=calcSMA(sliceForMA,7),ma20=calcSMA(sliceForMA,20),ma100=calcSMA(sliceForMA,100);
+    const m7=ma7.length?ma7[ma7.length-1].value:price;
+    const m20=ma20.length?ma20[ma20.length-1].value:price;
+    const m100=ma100.length?ma100[ma100.length-1].value:price;
+    const body=Math.abs(c.close-c.open);
+    const lWick=Math.min(c.open,c.close)-c.low;
+    const uWick=c.high-Math.max(c.open,c.close);
 
-    // 시그널 패널에 풀롱/풀숏 상태 표시
-    const sigEl=document.getElementById('signalContent');
-    if(sigEl&&result.signal){
-        const existing=sigEl.innerHTML;
-        const tag=result.signal.type==='풀롱'
-            ?`<span style="background:#FFD700;color:#000;padding:3px 10px;border-radius:4px;font-weight:900;font-size:16px;margin-left:8px;animation:pulse 1s infinite;">⚡ 풀롱 (${result.signal.longConds}/20)</span>`
-            :`<span style="background:#9400D3;color:#fff;padding:3px 10px;border-radius:4px;font-weight:900;font-size:16px;margin-left:8px;animation:pulse 1s infinite;">⚡ 풀숏 (${result.signal.shortConds}/20)</span>`;
-        if(!existing.includes('풀롱')&&!existing.includes('풀숏'))sigEl.innerHTML+=tag;
+    let lc=0,sc=0;
+    // 1) RSI
+    if(rsi<40&&rsi>rsiPrev)lc++;
+    if(rsi>60&&rsi<rsiPrev)sc++;
+    // 2) 양봉/음봉
+    if(c.close>c.open)lc++;
+    if(c.close<c.open)sc++;
+    // 3) 반전
+    if(prev.close<prev.open&&c.close>c.open)lc++;
+    if(prev.close>prev.open&&c.close<c.open)sc++;
+    // 4) 거래량
+    if(c.volume>prev.volume*1.2){
+        if(c.close>c.open)lc++;
+        if(c.close<c.open)sc++;
+    }
+    // 5) MACD
+    if(macdH>macdHP)lc++;
+    if(macdH<macdHP)sc++;
+    // 6) MA7
+    if(price>m7)lc++;
+    if(price<m7)sc++;
+    // 7) 해머/슈팅스타
+    if(lWick>body*1.5&&c.close>c.open)lc++;
+    if(uWick>body*1.5&&c.close<c.open)sc++;
+    // 8) MA20 지지/저항
+    if(c.low<m20&&c.close>m20)lc++;
+    if(c.high>m20&&c.close<m20)sc++;
+    // 9) BB
+    const bb=calcBollingerBands(d.slice(0,idx+1),20,2);
+    if(bb){
+        if(prev.low<=bb.lower&&c.close>bb.lower)lc++;
+        if(prev.high>=bb.upper&&c.close<bb.upper)sc++;
+    }
+    // 10) 추세정렬
+    if(m20>m100)lc++;
+    if(m20<m100)sc++;
+    // 11) 3연봉 반전
+    if(idx>=4){
+        const c3=d[idx-3],c2=d[idx-2],c1=d[idx-1];
+        if(c3.close<c3.open&&c2.close<c2.open&&c1.close<c1.open&&c.close>c.open)lc++;
+        if(c3.close>c3.open&&c2.close>c2.open&&c1.close>c1.open&&c.close<c.open)sc++;
+    }
+    // 12) ATR 돌파
+    const atr=calcATR(d.slice(0,idx+1),14);
+    if(atr&&body>atr*1.2){
+        if(c.close>c.open)lc++;
+        if(c.close<c.open)sc++;
+    }
+    // 13) VWAP
+    const vwap=calcVWAP(d.slice(Math.max(0,idx-49),idx+1));
+    if(price>vwap*1.002)lc++;
+    if(price<vwap*0.998)sc++;
+    // 14) 5봉 돌파
+    if(idx>=6){
+        const r5=d.slice(idx-5,idx);
+        const hi5=Math.max(...r5.map(x=>x.high));
+        const lo5=Math.min(...r5.map(x=>x.low));
+        if(c.close>hi5)lc++;
+        if(c.close<lo5)sc++;
+    }
+    // 15) 거래량 폭발
+    if(idx>=3){
+        const av2=(d[idx-1].volume+d[idx-2].volume)/2;
+        if(av2>0&&c.volume>av2*2){
+            if(c.close>c.open)lc++;
+            if(c.close<c.open)sc++;
+        }
+    }
+    // 기술적 조건만 15개: 롱 8개+, 숏 2개 미만 = 풀롱
+    if(lc>=8&&sc<2)return{type:'풀롱',lc,sc};
+    if(sc>=8&&lc<2)return{type:'풀숏',lc,sc};
+    return null;
+}
+
+// 풀롱/풀숏 마커를 캔들차트에 추가 (과거 + 미래)
+function addFullSignalMarkers(d,existingMarkers){
+    const markers=[...existingMarkers];
+
+    // 1) 과거 캔들 스캔 (최근 200봉, 매 5봉마다 검사 — 성능 최적화)
+    const startIdx=Math.max(30,d.length-200);
+    for(let i=startIdx;i<d.length;i+=3){
+        const sig=checkFullSignalAtCandle(d,i);
+        if(sig){
+            if(sig.type==='풀롱'){
+                markers.push({time:d[i].time,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`풀롱(${sig.lc})`});
+            }else{
+                markers.push({time:d[i].time,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`풀숏(${sig.sc})`});
+            }
+        }
     }
 
-    // 미래 캔들 시간 계산 (현재 마지막 캔들 + 인터벌)
-    const intervalSec={'1':60,'5':300,'15':900,'30':1800,'60':3600,'240':14400,'D':86400,'W':604800};
-    const intSec=intervalSec[currentInterval]||3600;
-    const futureTime=d[d.length-1].time+intSec;
+    // 2) 현재 시점: 20개 전체 조건 (외부 데이터 포함)
+    const result=generateFullSignal(d);
+    if(!result)return markers;
 
-    const markers=[...existingMarkers];
+    // 시그널 패널 업데이트
+    const sigEl=document.getElementById('signalContent');
+    if(sigEl){
+        // 기존 풀롱/풀숏 태그 제거
+        const spans=sigEl.querySelectorAll('span');
+        spans.forEach(s=>{if(s.textContent.includes('풀롱')||s.textContent.includes('풀숏'))s.remove();});
+        // 현재 상태 표시
+        const tag=result.signal
+            ?(result.signal.type==='풀롱'
+                ?`<span style="background:#FFD700;color:#000;padding:3px 10px;border-radius:4px;font-weight:900;font-size:16px;margin-left:8px;animation:pulse 1s infinite;">⚡ 풀롱 (${result.longConds}/20)</span>`
+                :`<span style="background:#9400D3;color:#fff;padding:3px 10px;border-radius:4px;font-weight:900;font-size:16px;margin-left:8px;animation:pulse 1s infinite;">⚡ 풀숏 (${result.shortConds}/20)</span>`)
+            :`<span style="color:var(--text-secondary);font-size:11px;margin-left:8px;">풀롱/풀숏: 롱${result.longConds} 숏${result.shortConds}/20</span>`;
+        sigEl.innerHTML+=tag;
+    }
+
+    // 미래 캔들 마커 (현재 풀롱/풀숏 발동 시)
     if(result.signal){
+        const intervalSec={'1':60,'5':300,'15':900,'30':1800,'60':3600,'240':14400,'D':86400,'W':604800};
+        const intSec=intervalSec[currentInterval]||3600;
+        const futureTime=d[d.length-1].time+intSec;
         if(result.signal.type==='풀롱'){
             markers.push({time:futureTime,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`⚡풀롱(${result.signal.longConds}/20)`});
         }else{
             markers.push({time:futureTime,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`⚡풀숏(${result.signal.shortConds}/20)`});
         }
-    }else{
-        // 풀롱/풀숏 미달이어도 상태 표시
-        const infoEl=document.getElementById('signalContent');
-        if(infoEl){
-            // 기존 풀롱/풀숏 태그 제거
-            const spans=infoEl.querySelectorAll('span');
-            spans.forEach(s=>{if(s.textContent.includes('풀롱')||s.textContent.includes('풀숏'))s.remove();});
-        }
     }
+
     return markers;
 }
 
