@@ -332,10 +332,10 @@ const dso={grid:{color:GR},ticks:{color:TX,maxTicksLimit:8}};
 async function initTVChart(){
     const c=document.getElementById('tvChart');c.innerHTML='';
     tvChartObj=LightweightCharts.createChart(c,{
-        layout:{background:{color:'#1c2333'},textColor:TX,fontSize:18},
+        layout:{background:{color:'#1c2333'},textColor:TX,fontSize:14},
         grid:{vertLines:{color:GR},horzLines:{color:GR}},
         crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
-        rightPriceScale:{borderColor:'#30363d',fontSize:18},
+        rightPriceScale:{borderColor:'#30363d',fontSize:14},
         timeScale:{borderColor:'#30363d',timeVisible:true,secondsVisible:false},
         localization:{timeFormatter:(t)=>{const d=new Date(t*1000);return d.toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}},
         width:c.clientWidth,height:450,
@@ -1116,7 +1116,7 @@ async function updateLiqLevels(){
                 const yKey=Math.round(y/30);
                 if(!drawnLabels.has(yKey)){
                     drawnLabels.add(yKey);
-                    ctx.font='bold 18px sans-serif';
+                    ctx.font='bold 22px sans-serif';
                     ctx.textAlign='left';
                     const color=b.type==='long'?'rgba(0,210,106,0.9)':'rgba(255,71,87,0.9)';
                     ctx.fillStyle=color;
