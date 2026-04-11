@@ -934,12 +934,17 @@ function generateTradeSignal(d){
     // 풀롱/풀숏 시그널 추가 (미래 캔들 영역)
     const fullMarkers=addFullSignalMarkers(d,markers);
 
-    // 중복 제거 + 정렬
-    const uniqueMarkers=[];
-    const seen=new Set();
-    fullMarkers.forEach(m=>{const k=m.time+'_'+m.position;if(!seen.has(k)){seen.add(k);uniqueMarkers.push(m);}});
+    // 중복 제거 + 정렬 (풀롱/풀숏은 기존 마커 덮어씌움)
+    const markerMap=new Map();
+    fullMarkers.forEach(m=>{
+        const k=m.time+'_'+m.position;
+        const isFull=m.text&&(m.text.includes('풀롱')||m.text.includes('풀숏'));
+        const existing=markerMap.get(k);
+        if(!existing||isFull)markerMap.set(k,m); // 풀롱/풀숏 우선
+    });
+    const uniqueMarkers=[...markerMap.values()];
     uniqueMarkers.sort((a,b)=>a.time-b.time);
-    candleSeries.setMarkers(uniqueMarkers.slice(-40));
+    candleSeries.setMarkers(uniqueMarkers.slice(-50));
 
     // 보조지표 hint를 실시간 롱/숏 해석으로 교체
     updateIndicatorHints(d,rsiData,macdD,cci,wr);
@@ -1365,12 +1370,26 @@ function connectWS(){
     ws.onmessage=(e)=>{try{
         const m=JSON.parse(e.data);
         if(m.data){
-            // 오더북
+            // 오더북 — 실시간 중간가 업데이트
             const b=m.data.b||[],a=m.data.a||[];
-            if(b.length&&a.length){const mid=(parseFloat(b[0][0])+parseFloat(a[0][0]))/2;const el=document.getElementById('obMidPrice');if(el)el.textContent=fp(mid);}
-            // 실시간 대량 체결 (고래 감지)
+            if(b.length&&a.length){const mid=(parseFloat(b[0][0])+parseFloat(a[0][0]))/2;const el=document.getElementById('obMidPrice');if(el){el.textContent=fp(mid);}}
+            // 실시간 체결가 → 호가창 현재가 즉시 반영
             if(m.topic&&m.topic.startsWith('publicTrade.')){
                 const trades=Array.isArray(m.data)?m.data:[m.data];
+                if(trades.length){
+                    const lastTrade=trades[trades.length-1];
+                    const tp=parseFloat(lastTrade.p||lastTrade.price||0);
+                    if(tp>0){
+                        const el=document.getElementById('obMidPrice');
+                        if(el){
+                            const prev=parseFloat(el.getAttribute('data-price')||0);
+                            const color=tp>prev?G:tp<prev?R:el.style.color;
+                            el.style.color=color;
+                            el.textContent=fp(tp);
+                            el.setAttribute('data-price',tp);
+                        }
+                    }
+                }
                 trades.forEach(t=>{
                     const sz=parseFloat(t.v||t.size||0);
                     const px=parseFloat(t.p||t.price||0);
