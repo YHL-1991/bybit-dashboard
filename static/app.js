@@ -1431,7 +1431,7 @@ function renderWhaleFeed(){
 /* ═══════════════════════════════════
    CORS 프록시 유틸
    ═══════════════════════════════════ */
-const CORS_PROXY='https://corsproxy.io/?url=';
+const CORS_PROXY='https://api.allorigins.win/raw?url=';
 async function fetchWithProxy(url){
     const r=await fetch(CORS_PROXY+encodeURIComponent(url));
     if(!r.ok)throw new Error(`Proxy HTTP ${r.status}`);
@@ -1464,10 +1464,10 @@ async function updateExpertConsensus(){
     }catch(e){console.error('FNG error:',e);}
 
     try{
-        // 2) CoinGecko 센티먼트 + 트렌딩
+        // 2) CoinGecko 센티먼트 + 트렌딩 (CORS 지원 — 직접 호출)
         const [btcData,trending]=await Promise.all([
-            fetchWithProxy('https://api.coingecko.com/api/v3/coins/bitcoin'),
-            fetchWithProxy('https://api.coingecko.com/api/v3/search/trending')
+            fetch('https://api.coingecko.com/api/v3/coins/bitcoin?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false').then(r=>r.json()),
+            fetch('https://api.coingecko.com/api/v3/search/trending').then(r=>r.json())
         ]);
         const sentEl=document.getElementById('cgSentiment');
         const trendEl=document.getElementById('cgTrending');
@@ -1666,7 +1666,7 @@ async function updateOnchainData(){
     // 3) 시장 구조 (CoinGecko + DeFiLlama)
     try{
         const [global,defi]=await Promise.all([
-            fetchWithProxy('https://api.coingecko.com/api/v3/global').catch(()=>null),
+            fetch('https://api.coingecko.com/api/v3/global').then(r=>r.json()).catch(()=>null),
             fetch('https://api.llama.fi/v2/historicalChainTvl').then(r=>r.json()).catch(()=>null)
         ]);
         let html='';
