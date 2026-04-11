@@ -332,10 +332,10 @@ const dso={grid:{color:GR},ticks:{color:TX,maxTicksLimit:8}};
 async function initTVChart(){
     const c=document.getElementById('tvChart');c.innerHTML='';
     tvChartObj=LightweightCharts.createChart(c,{
-        layout:{background:{color:'#1c2333'},textColor:TX},
+        layout:{background:{color:'#1c2333'},textColor:TX,fontSize:14},
         grid:{vertLines:{color:GR},horzLines:{color:GR}},
         crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
-        rightPriceScale:{borderColor:'#30363d'},
+        rightPriceScale:{borderColor:'#30363d',fontSize:14},
         timeScale:{borderColor:'#30363d',timeVisible:true,secondsVisible:false},
         localization:{timeFormatter:(t)=>{const d=new Date(t*1000);return d.toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}},
         width:c.clientWidth,height:450,
@@ -396,8 +396,6 @@ async function updateTVChart(){
         updateIndicatorPanels(d);
         // 저항선/지지선
         drawSupportResistance(d);
-        // 청산물량 Coinglass 스타일 차트 업데이트
-        updateLiqLevels();
         // CME 갭 표시
         updateCMEGaps();
         // 차트패턴 감지 + 롱/숏 신호 + 타점 화살표
@@ -1314,7 +1312,9 @@ async function updateTicker(){
    ═══════════════════════════════════ */
 async function updateOrderbook(){
     try{
-        const d=await bybitOrderbook(currentSymbol);
+        const [d,ticker]=await Promise.all([bybitOrderbook(currentSymbol),bybitTickers(currentSymbol)]);
+        const curPrice=parseFloat(ticker.lastPrice||0);
+        const priceChg=parseFloat(ticker.price24hPcnt||0)*100;
         const bids=d.b||[],asks=d.a||[];
         const tb=bids.slice(0,25).reverse(),ta=asks.slice(0,25);
         const prices=[...tb.map(b=>parseFloat(b[0])),...ta.map(a=>parseFloat(a[0]))];
@@ -1329,7 +1329,9 @@ async function updateOrderbook(){
         const da=[...ta].reverse().slice(0,12);
         let h='';
         for(const a of da){const p=(parseFloat(a[1])/mx*100).toFixed(0);h+=`<div class="ob-row"><div class="ob-bar-left"></div><div class="ob-price" style="color:${R}">${fp(a[0])}</div><div class="ob-bar-right"><div class="ob-fill-ask" style="width:${p}%"></div><span class="ob-qty">${fmt(parseFloat(a[1]),4)}</span></div></div>`;}
-        h+=`<div class="ob-row" style="background:rgba(88,166,255,0.1);border-radius:3px;padding:3px 0;margin:2px 0;"><div></div><div class="ob-price" style="color:${BL};font-weight:700;font-size:12px;" id="obMidPrice">-</div><div></div></div>`;
+        const chgColor=priceChg>=0?G:R;
+        const chgSign=priceChg>=0?'+':'';
+        h+=`<div class="ob-row" style="background:rgba(88,166,255,0.15);border-radius:4px;padding:5px 0;margin:3px 0;"><div></div><div class="ob-price" style="color:${chgColor};font-weight:700;font-size:14px;" id="obMidPrice">${fp(curPrice)} <span style="font-size:11px;opacity:0.8">(${chgSign}${priceChg.toFixed(2)}%)</span></div><div></div></div>`;
         for(const b of tb.slice().reverse().slice(0,12)){const p=(parseFloat(b[1])/mx*100).toFixed(0);h+=`<div class="ob-row"><div class="ob-bar-left"><span class="ob-qty">${fmt(parseFloat(b[1]),4)}</span><div class="ob-fill-bid" style="width:${p}%"></div></div><div class="ob-price" style="color:${G}">${fp(b[0])}</div><div class="ob-bar-right"></div></div>`;}
         c.innerHTML=h;
     }catch(e){}
