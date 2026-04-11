@@ -2031,16 +2031,30 @@ function addFullSignalMarkers(d,existingMarkers){
         sigEl.innerHTML+=tag;
     }
 
-    // 미래 캔들 마커 (현재 풀롱/풀숏 발동 시)
+    // 미래 캔들 영역에 항상 풀롱/풀숏 예측 표시
+    const intervalSec={'1':60,'5':300,'15':900,'30':1800,'60':3600,'240':14400,'D':86400,'W':604800};
+    const intSec=intervalSec[currentInterval]||3600;
+    const futureTime=d[d.length-1].time+intSec;
+    const futureTime2=d[d.length-1].time+intSec*2;
+
     if(result.signal){
-        const intervalSec={'1':60,'5':300,'15':900,'30':1800,'60':3600,'240':14400,'D':86400,'W':604800};
-        const intSec=intervalSec[currentInterval]||3600;
-        const futureTime=d[d.length-1].time+intSec;
+        // 강한 시그널 (10/20+): 큰 금색/보라색 화살표
         if(result.signal.type==='풀롱'){
-            markers.push({time:futureTime,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`⚡풀롱(${result.signal.longConds}/20)`});
+            markers.push({time:futureTime,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`⚡풀롱(${result.longConds}/20)`});
+            markers.push({time:futureTime2,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`풀롱 진입▲`});
         }else{
-            markers.push({time:futureTime,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`⚡풀숏(${result.signal.shortConds}/20)`});
+            markers.push({time:futureTime,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`⚡풀숏(${result.shortConds}/20)`});
+            markers.push({time:futureTime2,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`풀숏 진입▼`});
         }
+    }else{
+        // 미달이어도 방향 예측 항상 표시
+        const isLongBias=result.longConds>result.shortConds;
+        const dominant=isLongBias?result.longConds:result.shortConds;
+        const label=isLongBias?`롱 대기(${result.longConds}/20)`:`숏 대기(${result.shortConds}/20)`;
+        const color=isLongBias?'rgba(255,215,0,0.6)':'rgba(148,0,211,0.6)';
+        const pos=isLongBias?'belowBar':'aboveBar';
+        const shape=isLongBias?'arrowUp':'arrowDown';
+        markers.push({time:futureTime,position:pos,color:color,shape:shape,text:label});
     }
 
     return markers;
