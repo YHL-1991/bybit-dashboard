@@ -1308,11 +1308,17 @@ async function updateOrderbook(){
         const da=[...ta].reverse().slice(0,12);
         let h='';
         for(const a of da){const p=(parseFloat(a[1])/mx*100).toFixed(0);h+=`<div class="ob-row"><div class="ob-bar-left"></div><div class="ob-price" style="color:${R}">${fp(a[0])}</div><div class="ob-bar-right"><div class="ob-fill-ask" style="width:${p}%"></div><span class="ob-qty">${fmt(parseFloat(a[1]),4)}</span></div></div>`;}
-        const chgColor=priceChg>=0?G:R;
-        const chgSign=priceChg>=0?'+':'';
-        h+=`<div class="ob-row" style="background:rgba(88,166,255,0.15);border-radius:4px;padding:5px 0;margin:3px 0;"><div></div><div class="ob-price" style="color:${chgColor};font-weight:700;font-size:14px;" id="obMidPrice">${fp(curPrice)} <span style="font-size:11px;opacity:0.8">(${chgSign}${priceChg.toFixed(2)}%)</span></div><div></div></div>`;
+        h+=`<div class="ob-row" style="background:rgba(88,166,255,0.15);border-radius:4px;padding:5px 0;margin:3px 0;"><div></div><div class="ob-price" style="font-weight:700;font-size:14px;" id="obMidPrice" data-price="${curPrice}"></div><div></div></div>`;
         for(const b of tb.slice().reverse().slice(0,12)){const p=(parseFloat(b[1])/mx*100).toFixed(0);h+=`<div class="ob-row"><div class="ob-bar-left"><span class="ob-qty">${fmt(parseFloat(b[1]),4)}</span><div class="ob-fill-bid" style="width:${p}%"></div></div><div class="ob-price" style="color:${G}">${fp(b[0])}</div><div class="ob-bar-right"></div></div>`;}
         c.innerHTML=h;
+        // 초기 현재가 렌더 (이후 WebSocket이 실시간 업데이트)
+        const midEl=document.getElementById('obMidPrice');
+        if(midEl){
+            const chgColor=priceChg>=0?G:R;
+            const chgSign=priceChg>=0?'+':'';
+            midEl.style.color=chgColor;
+            midEl.innerHTML=`${fp(curPrice)} <span style="font-size:11px;opacity:0.8">(${chgSign}${priceChg.toFixed(2)}%)</span>`;
+        }
     }catch(e){}
 }
 
