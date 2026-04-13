@@ -31,6 +31,14 @@ SYMBOLS = [
     "RAVEUSDT", "ENJUSDT", "ARIAUSDT", "DRIFTUSDT",
 ]
 
+STOCKS = [
+    ("STK:174900.KQ", "앱클론 (KOSDAQ:174900)"),
+    ("STK:TSLA", "테슬라 (NASDAQ:TSLA)"),
+    ("STK:005930.KS", "삼성전자 (KRX:005930)"),
+    ("STK:006400.KS", "삼성SDI (KRX:006400)"),
+    ("STK:005380.KS", "현대차 (KRX:005380)"),
+]
+
 import time as _time
 
 
@@ -51,7 +59,7 @@ async def api_debug():
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "symbols": SYMBOLS})
+    return templates.TemplateResponse("index.html", {"request": request, "symbols": SYMBOLS, "stocks": STOCKS})
 
 
 @app.get("/api/orderbook/{symbol}")

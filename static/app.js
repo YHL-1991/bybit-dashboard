@@ -59,6 +59,53 @@ async function bybitAllTickers(){
     return res.list;
 }
 
+/* ───── 주식 모드 (Yahoo Finance 기반) ───── */
+function isStock(sym){return sym&&sym.startsWith('STK:');}
+function getYahooSym(sym){return sym.replace('STK:','');}
+let stockCurrency='';
+
+async function yahooKline(yahooSym,interval='60',limit=500){
+    const intMap={'1':'1m','5':'5m','15':'15m','30':'30m','60':'1h','240':'4h','D':'1d','W':'1wk'};
+    const rangeMap={'1':'7d','5':'60d','15':'60d','30':'60d','60':'2y','240':'2y','D':'10y','W':'10y'};
+    const yi=intMap[interval]||'1h';
+    const yr=rangeMap[interval]||'1mo';
+    const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=${yr}&interval=${yi}`;
+    const data=await fetchWithProxy(url);
+    const r=data.chart?.result?.[0];
+    if(!r||!r.timestamp)throw new Error('Yahoo no data');
+    const ts=r.timestamp,q=r.indicators.quote[0];
+    stockCurrency=r.meta?.currency||'';
+    const out=[];
+    for(let i=0;i<ts.length;i++){
+        if(q.open[i]!=null&&q.close[i]!=null&&q.high[i]!=null&&q.low[i]!=null)
+            out.push({time:ts[i],open:q.open[i],high:q.high[i],low:q.low[i],close:q.close[i],volume:q.volume[i]||0});
+    }
+    return out;
+}
+
+async function updateStockTicker(yahooSym){
+    try{
+        const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=2d&interval=1d`;
+        const data=await fetchWithProxy(url);
+        const r=data.chart?.result?.[0];
+        if(!r)return;
+        const m=r.meta;
+        const price=m.regularMarketPrice||0;
+        const prev=m.chartPreviousClose||m.previousClose||price;
+        const ch=prev>0?((price-prev)/prev*100):0;
+        const cur=m.currency||'';
+        const prefix=cur==='KRW'?'₩':'$';
+        document.getElementById('tickPrice').textContent=price>=1000?prefix+price.toLocaleString('en-US',{maximumFractionDigits:cur==='KRW'?0:2}):prefix+price.toFixed(2);
+        const ce=document.getElementById('tickChange');
+        ce.textContent=(ch>=0?'+':'')+ch.toFixed(2)+'%';
+        ce.className='ticker-value '+(ch>=0?'positive':'negative');
+        document.getElementById('tickVolume').textContent=fmt(m.regularMarketVolume||0,0);
+        document.getElementById('tickOI').textContent=m.exchangeName||'-';
+        const fe=document.getElementById('tickFunding');
+        fe.textContent=cur;fe.className='ticker-value';
+    }catch(e){}
+}
+
 /* ───── 청산 히트맵 추정 (liquidation.py → JS 포팅) ───── */
 const LEV_WEIGHTS={3:0.15,5:0.25,10:0.25,25:0.20,50:0.10,100:0.05};
 const LEV_LEVELS=[3,5,10,25,50,100];
@@ -356,7 +403,9 @@ async function initTVChart(){
 
 async function updateTVChart(){
     try{
-        const d=await bybitKline(currentSymbol,currentInterval,500);
+        const d=isStock(currentSymbol)
+            ?await yahooKline(getYahooSym(currentSymbol),currentInterval,500)
+            :await bybitKline(currentSymbol,currentInterval,500);
         if(!d.length)return;
         lastKlineData=d;
         candleSeries.setData(d);
@@ -1052,6 +1101,7 @@ function ensureLiqOverlay(){
 }
 
 async function updateLiqLevels(){
+    if(isStock(currentSymbol))return; // 주식 모드: 청산 히트맵 없음
     try{
         const d=await fetchLiquidationData(currentSymbol);
         const cv=ensureLiqOverlay();
@@ -1480,6 +1530,7 @@ async function updateMarketIndicators(){
    시세바
    ═══════════════════════════════════ */
 async function updateTicker(){
+    if(isStock(currentSymbol)){await updateStockTicker(getYahooSym(currentSymbol));return;}
     try{
         const t=await bybitTickers(currentSymbol);
         document.getElementById('tickPrice').textContent=fp(t.lastPrice);
@@ -1500,6 +1551,12 @@ async function updateTicker(){
    호가창
    ═══════════════════════════════════ */
 async function updateOrderbook(){
+    if(isStock(currentSymbol)){
+        // 주식 모드: 호가창 비활성
+        const c=document.getElementById('orderbookTable');
+        if(c&&!c.querySelector('.stock-placeholder'))c.innerHTML='<div class="stock-placeholder" style="text-align:center;padding:40px 10px;color:#8b949e;font-size:13px;">주식 모드에서는<br>호가창을 지원하지 않습니다</div>';
+        return;
+    }
     try{
         const [d,ticker]=await Promise.all([bybitOrderbook(currentSymbol),bybitTickers(currentSymbol)]);
         const curPrice=parseFloat(ticker.lastPrice||0);
@@ -1536,6 +1593,7 @@ async function updateOrderbook(){
    청산 히트맵 (실시간)
    ═══════════════════════════════════ */
 async function updateLiquidation(){
+    if(isStock(currentSymbol))return;
     try{
         const d=await fetchLiquidationData(currentSymbol);
         const labels=d.price_levels.map(p=>fp(p));
@@ -1577,6 +1635,7 @@ async function checkAlerts(){
 let liqFeedItems=[],whaleFeedItems=[];
 let tradeVolAccum={buy:0,sell:0,count:0}; // 1초간 체결량 누적
 function connectWS(){
+    if(isStock(currentSymbol)){if(ws){ws.close();ws=null;}return;} // 주식 모드: WS 불필요
     if(ws){ws.close();ws=null;}
     // Bybit WebSocket에 직접 연결 (서버 프록시 우회 — Railway IP 차단 대비)
     ws=new WebSocket('wss://stream.bybit.com/v5/public/linear');
@@ -2394,24 +2453,23 @@ function addFullSignalMarkers(d,existingMarkers){
 let refreshCount=0;
 async function refreshAll(){
     refreshCount++;
-    // 매 1초: 시세+호가창+차트+지표 (풀롱/풀숏 포함)
-    const tasks=[updateTicker(),updateOrderbook(),updateTVChart()];
-    // 매 3초: 청산+시장지표
-    if(refreshCount%3===0){
-        tasks.push(updateLiquidation(),updateMarketIndicators());
+    const stock=isStock(currentSymbol);
+    // 매 1초: 시세+차트 (주식도 동일)
+    const tasks=[updateTicker(),updateTVChart()];
+    if(!stock){
+        // 코인 전용: 호가창
+        tasks.push(updateOrderbook());
+        // 매 3초: 청산+시장지표
+        if(refreshCount%3===0) tasks.push(updateLiquidation(),updateMarketIndicators());
+        // 매 10초: 거래량알람 (무거운 API)
+        if(refreshCount%10===0) tasks.push(checkAlerts());
+        // 매 30초: 전문가 컨센서스
+        if(refreshCount%30===0) tasks.push(updateExpertConsensus());
+        // 매 60초: 온체인 데이터
+        if(refreshCount%60===0) tasks.push(updateOnchainData());
     }
-    // 매 10초: 거래량알람 (무거운 API - 50개 코인 조회)
-    if(refreshCount%10===0){
-        tasks.push(checkAlerts());
-    }
-    // 매 30초: 전문가 컨센서스 (CoinGecko 호출 제한 고려)
-    if(refreshCount%30===0){
-        tasks.push(updateExpertConsensus());
-    }
-    // 매 60초: 매크로 + 온체인 데이터
-    if(refreshCount%60===0){
-        tasks.push(updateMacroData(),updateOnchainData());
-    }
+    // 매크로 데이터는 주식에도 유용 → 항상 갱신
+    if(refreshCount%60===0) tasks.push(updateMacroData());
     await Promise.all(tasks);
 }
 
@@ -2428,6 +2486,10 @@ document.getElementById('symbolSelect').addEventListener('change',e=>{
     srLines=[];cmeGapLines=[];fibLines=[];
     initTVChart().then(()=>{updateTVChart();});
     initRSIChart();initMACDChart();
+    // 주식 모드: 호가창 placeholder 즉시 표시
+    if(isStock(currentSymbol)){
+        updateOrderbook(); // placeholder 렌더
+    }
     refreshAll();connectWS();
 });
 document.getElementById('intervalSelect').addEventListener('change',e=>{currentInterval=e.target.value;updateTVChart();});

@@ -13,9 +13,16 @@
         <h1>Bybit Futures Dashboard</h1>
         <div style="display:flex;gap:12px;align-items:center;">
             <select id="symbolSelect" class="symbol-select">
+                <optgroup label="코인 선물">
                 {% for s in symbols %}
                 <option value="{{ s }}" {% if s == "BTCUSDT" %}selected{% endif %}>{{ s }}</option>
                 {% endfor %}
+                </optgroup>
+                <optgroup label="주식">
+                {% for val, label in stocks %}
+                <option value="{{ val }}">{{ label }}</option>
+                {% endfor %}
+                </optgroup>
             </select>
             <select id="intervalSelect" class="symbol-select">
                 <option value="1">1m</option><option value="5">5m</option><option value="15">15m</option>
@@ -282,6 +289,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260411n"></script>
+    <script src="/static/app.js?v=20260413a"></script>
 </body>
 </html>
