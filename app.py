@@ -40,6 +40,21 @@ STOCKS = [
 ]
 
 import time as _time
+import httpx as _httpx
+
+YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+
+@app.get("/api/stock/chart/{symbol}")
+async def api_stock_chart(symbol: str, range: str = "2y", interval: str = "1h"):
+    """Yahoo Finance 차트 프록시"""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    try:
+        async with _httpx.AsyncClient(timeout=15.0, headers=YAHOO_HEADERS, follow_redirects=True) as c:
+            r = await c.get(url, params={"range": range, "interval": interval})
+            return r.json()
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/api/debug")

@@ -69,8 +69,7 @@ async function yahooKline(yahooSym,interval='60',limit=500){
     const rangeMap={'1':'7d','5':'60d','15':'60d','30':'60d','60':'2y','240':'2y','D':'10y','W':'10y'};
     const yi=intMap[interval]||'1h';
     const yr=rangeMap[interval]||'1mo';
-    const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=${yr}&interval=${yi}`;
-    const data=await fetchWithProxy(url);
+    const data=await fetchJSON(`/api/stock/chart/${encodeURIComponent(yahooSym)}?range=${yr}&interval=${yi}`);
     const r=data.chart?.result?.[0];
     if(!r||!r.timestamp)throw new Error('Yahoo no data');
     const ts=r.timestamp,q=r.indicators.quote[0];
@@ -85,8 +84,7 @@ async function yahooKline(yahooSym,interval='60',limit=500){
 
 async function updateStockTicker(yahooSym){
     try{
-        const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=2d&interval=1d`;
-        const data=await fetchWithProxy(url);
+        const data=await fetchJSON(`/api/stock/chart/${encodeURIComponent(yahooSym)}?range=2d&interval=1d`);
         const r=data.chart?.result?.[0];
         if(!r)return;
         const m=r.meta;
