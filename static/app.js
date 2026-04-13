@@ -1528,7 +1528,11 @@ async function updateMarketIndicators(){
    시세바
    ═══════════════════════════════════ */
 async function updateTicker(){
-    if(isStock(currentSymbol)){await updateStockTicker(getYahooSym(currentSymbol));return;}
+    if(isStock(currentSymbol)){
+        document.getElementById('tickKimchiWrap').style.display='none';
+        await updateStockTicker(getYahooSym(currentSymbol));return;
+    }
+    document.getElementById('tickKimchiWrap').style.display='';
     try{
         const t=await bybitTickers(currentSymbol);
         document.getElementById('tickPrice').textContent=fp(t.lastPrice);
@@ -1982,6 +1986,31 @@ async function updateOnchainData(){
 }
 
 /* ═══════════════════════════════════
+   김치프리미엄 (업비트 vs Bybit)
+   ═══════════════════════════════════ */
+async function updateKimchiPremium(){
+    if(isStock(currentSymbol))return;
+    try{
+        const [kp,ticker]=await Promise.all([
+            fetchJSON('/api/kimchi-premium'),
+            bybitTickers(currentSymbol)
+        ]);
+        const coin=currentSymbol.replace('USDT','');
+        const upbitData=kp.coins?.[coin];
+        const bybitPrice=parseFloat(ticker.lastPrice||0);
+        const el=document.getElementById('tickKimchi');
+        if(!upbitData||!bybitPrice||!kp.usd_krw){el.textContent='N/A';return;}
+        const upbitUSD=upbitData.usd_equiv;
+        const premium=((upbitUSD-bybitPrice)/bybitPrice*100);
+        lastKimchiPremium=premium;
+        const color=premium>2?R:premium>0.5?YL:premium<-1?BL:G;
+        el.textContent=(premium>=0?'+':'')+premium.toFixed(2)+'%';
+        el.style.color=color;
+        el.title=`업비트: ₩${upbitData.krw.toLocaleString()} | Bybit: $${bybitPrice.toLocaleString()} | 환율: ${kp.usd_krw.toFixed(0)}`;
+    }catch(e){document.getElementById('tickKimchi').textContent='-';}
+}
+
+/* ═══════════════════════════════════
    풀롱/풀숏 초정밀 시그널 (20개 조건 검증)
    미래 캔들 영역에 시그널 표시
    ═══════════════════════════════════ */
@@ -1989,6 +2018,7 @@ let lastFearGreedValue=50; // 공포탐욕지수 캐시
 let lastLongShortRatio={buy:0.5,sell:0.5}; // 롱숏비율 캐시
 let lastOIChange=0; // 미결제약정 변동률 캐시
 let lastConsensusScore=50; // 전문가 컨센서스 점수 캐시
+let lastKimchiPremium=0; // 김치프리미엄 % 캐시
 
 function calcStochasticRSI(d,rsiPeriod=14,stochPeriod=14,kSmooth=3,dSmooth=3){
     const rsiData=calcRSI(d,rsiPeriod);
@@ -2252,13 +2282,19 @@ function generateFullSignal(d){
         if(price<v7&&v7<v20&&v20<v100){shortConds++;shortReasons.push('MA역배열');}
     }
 
-    const TOTAL_CONDS=37;
-    // 풀롱: 18개+ 롱 && 숏 6개 미만 (37개 조건 중)
-    // 풀숏: 18개+ 숏 && 롱 6개 미만
+    // 38) 김치프리미엄 (높으면 과열→숏, 낮으면/역프→롱)
+    if(Math.abs(lastKimchiPremium)>0.01){
+        if(lastKimchiPremium>3){shortConds++;shortReasons.push(`김프과열 +${lastKimchiPremium.toFixed(1)}%`);}
+        else if(lastKimchiPremium<-1){longConds++;longReasons.push(`역프 ${lastKimchiPremium.toFixed(1)}%`);}
+    }
+
+    const TOTAL_CONDS=38;
+    // 풀롱: 19개+ 롱 && 숏 6개 미만 (38개 조건 중)
+    // 풀숏: 19개+ 숏 && 롱 6개 미만
     let signal=null;
-    if(longConds>=18&&shortConds<6){
+    if(longConds>=19&&shortConds<6){
         signal={type:'풀롱',color:'#FFD700',longConds,shortConds,reasons:longReasons};
-    }else if(shortConds>=18&&longConds<6){
+    }else if(shortConds>=19&&longConds<6){
         signal={type:'풀숏',color:'#9400D3',shortConds,longConds,reasons:shortReasons};
     }
 
@@ -2461,6 +2497,8 @@ async function refreshAll(){
         if(refreshCount%3===0) tasks.push(updateLiquidation(),updateMarketIndicators());
         // 매 10초: 거래량알람 (무거운 API)
         if(refreshCount%10===0) tasks.push(checkAlerts());
+        // 매 10초: 김치프리미엄
+        if(refreshCount%10===0) tasks.push(updateKimchiPremium());
         // 매 30초: 전문가 컨센서스
         if(refreshCount%30===0) tasks.push(updateExpertConsensus());
         // 매 60초: 온체인 데이터

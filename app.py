@@ -57,6 +57,46 @@ async def api_stock_chart(symbol: str, range: str = "2y", interval: str = "1h"):
         return {"error": str(e)}
 
 
+_kimchi_cache = {"data": None, "ts": 0}
+
+
+@app.get("/api/kimchi-premium")
+async def api_kimchi_premium():
+    """김치프리미엄: 업비트(KRW) vs Bybit(USD) 가격 차이"""
+    now = _time.time()
+    if _kimchi_cache["data"] and now - _kimchi_cache["ts"] < 10:
+        return _kimchi_cache["data"]
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as c:
+            # 업비트 시세 + 환율 동시 조회
+            upbit_r, fx_r = await asyncio.gather(
+                c.get("https://api.upbit.com/v1/ticker", params={
+                    "markets": ",".join(f"KRW-{s.replace('USDT','')}" for s in SYMBOLS
+                                        if s.replace('USDT','') not in ('BNB','WIF','RAVE','ENJ','ARIA'))
+                }),
+                c.get("https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json"),
+            )
+            upbit = upbit_r.json()
+            fx = fx_r.json()
+            usd_krw = fx.get("usd", {}).get("krw", 1400)
+
+            result = {"usd_krw": usd_krw, "coins": {}}
+            for t in upbit:
+                coin = t["market"].replace("KRW-", "")
+                krw_price = t["trade_price"]
+                usd_equiv = krw_price / usd_krw
+                result["coins"][coin] = {
+                    "krw": krw_price,
+                    "usd_equiv": round(usd_equiv, 4),
+                    "change_rate": round(t.get("signed_change_rate", 0) * 100, 2),
+                }
+            _kimchi_cache["data"] = result
+            _kimchi_cache["ts"] = now
+            return result
+    except Exception as e:
+        return {"error": str(e), "usd_krw": 0, "coins": {}}
+
+
 @app.get("/api/debug")
 async def api_debug():
     """API 연결 디버그 - 각 Bybit 도메인 테스트"""
