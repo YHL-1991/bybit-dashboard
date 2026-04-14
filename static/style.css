@@ -19,8 +19,13 @@
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg-primary); color:var(--text-primary); min-height:100vh; }
 
-.header { display:flex; align-items:center; justify-content:space-between; padding:10px 20px; background:var(--bg-secondary); border-bottom:1px solid var(--border); }
+.header { display:flex; align-items:center; justify-content:space-between; padding:10px 20px; background:#15191F; border-bottom:1px solid var(--border); }
 .header h1 { font-size:17px; font-weight:600; color:var(--yellow); }
+.header-logo { height:38px; object-fit:contain; }
+
+/* lightweight-charts 마커 텍스트 크기 증가 */
+[class*="chart"] td[style*="font-size"],[class*="chart"] div[style*="font-size"]{font-size:16px !important;}
+table[width] td{font-size:15px !important;font-weight:700 !important;}
 .symbol-select { padding:5px 8px; background:var(--bg-card); color:var(--text-primary); border:1px solid var(--border); border-radius:5px; font-size:12px; cursor:pointer; }
 
 .ticker-bar { display:flex; gap:20px; padding:8px 20px; background:var(--bg-secondary); border-bottom:1px solid var(--border); flex-wrap:wrap; }
