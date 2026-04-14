@@ -1443,7 +1443,7 @@ function drawFullSignalZones(){
         ctx.font='bold 24px sans-serif';
         ctx.textAlign='right';
         ctx.fillStyle=`rgba(${baseColor.join(',')},${0.8+intensity*0.2})`;
-        const tag=isLong?'풀롱':'풀숏';
+        const tag=intensity>=0.5?(isLong?'풀롱':'풀숏'):(isLong?'롱':'숏');
         const labelsStr=zone.labels.slice(0,3).join('+');
         ctx.fillText(`${tag} ${fp(zone.price)} [${labelsStr}]`,W-rightPad-8,y-8);
 
