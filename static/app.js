@@ -1440,17 +1440,17 @@ function drawFullSignalZones(){
         ctx.stroke();
 
         // 라벨 (우측)
-        ctx.font=`bold ${14+intensity*4}px sans-serif`;
+        ctx.font=`bold ${22+intensity*6}px sans-serif`;
         ctx.textAlign='right';
         ctx.fillStyle=`rgba(${baseColor.join(',')},${0.8+intensity*0.2})`;
         const tag=isLong?'풀롱':'풀숏';
         const labelsStr=zone.labels.slice(0,3).join('+');
-        ctx.fillText(`${tag} ${fp(zone.price)} [${labelsStr}]`,W-rightPad-8,y-6);
+        ctx.fillText(`${tag} ${fp(zone.price)} [${labelsStr}]`,W-rightPad-8,y-8);
 
         // 점수 바
-        ctx.font='bold 11px sans-serif';
+        ctx.font='bold 15px sans-serif';
         ctx.fillStyle=`rgba(${baseColor.join(',')},0.7)`;
-        ctx.fillText(`강도: ${zone.score}점`,W-rightPad-8,y+14);
+        ctx.fillText(`강도: ${zone.score}점`,W-rightPad-8,y+18);
 
         ctx.restore();
     };
@@ -2487,10 +2487,10 @@ function addFullSignalMarkers(d,existingMarkers){
         const sig=checkFullSignalAtCandle(d,i);
         if(sig){
             if(sig.type==='풀롱'&&i-lastLongIdx>8){
-                markers.push({time:d[i].time,position:'belowBar',color:'#FFD700',shape:'arrowUp',size:4,text:`풀롱(${sig.lc})`});
+                markers.push({time:d[i].time,position:'belowBar',color:'#FFD700',shape:'arrowUp',size:2,text:`풀롱(${sig.lc})`});
                 lastLongIdx=i;
             }else if(sig.type==='풀숏'&&i-lastShortIdx>8){
-                markers.push({time:d[i].time,position:'aboveBar',color:'#9400D3',shape:'arrowDown',size:4,text:`풀숏(${sig.sc})`});
+                markers.push({time:d[i].time,position:'aboveBar',color:'#9400D3',shape:'arrowDown',size:2,text:`풀숏(${sig.sc})`});
                 lastShortIdx=i;
             }
         }
@@ -2525,11 +2525,11 @@ function addFullSignalMarkers(d,existingMarkers){
     const tc=result.totalConds||67;
     if(result.signal){
         if(result.signal.type==='풀롱'){
-            markers.push({time:futureTime,position:'belowBar',color:'#FFD700',shape:'arrowUp',size:4,text:`⚡풀롱(${result.longConds}/${tc})`});
-            markers.push({time:futureTime2,position:'belowBar',color:'#FFD700',shape:'arrowUp',size:3,text:`풀롱 진입▲`});
+            markers.push({time:futureTime,position:'belowBar',color:'#FFD700',shape:'arrowUp',size:2,text:`⚡풀롱(${result.longConds}/${tc})`});
+            markers.push({time:futureTime2,position:'belowBar',color:'#FFD700',shape:'arrowUp',size:2,text:`풀롱 진입▲`});
         }else{
-            markers.push({time:futureTime,position:'aboveBar',color:'#9400D3',shape:'arrowDown',size:4,text:`⚡풀숏(${result.shortConds}/${tc})`});
-            markers.push({time:futureTime2,position:'aboveBar',color:'#9400D3',shape:'arrowDown',size:3,text:`풀숏 진입▼`});
+            markers.push({time:futureTime,position:'aboveBar',color:'#9400D3',shape:'arrowDown',size:2,text:`⚡풀숏(${result.shortConds}/${tc})`});
+            markers.push({time:futureTime2,position:'aboveBar',color:'#9400D3',shape:'arrowDown',size:2,text:`풀숏 진입▼`});
         }
     }else{
         const isLongBias=result.longConds>result.shortConds;
@@ -2537,7 +2537,7 @@ function addFullSignalMarkers(d,existingMarkers){
         const color=isLongBias?'rgba(255,215,0,0.6)':'rgba(148,0,211,0.6)';
         const pos=isLongBias?'belowBar':'aboveBar';
         const shape=isLongBias?'arrowUp':'arrowDown';
-        markers.push({time:futureTime,position:pos,color:color,shape:shape,size:3,text:label});
+        markers.push({time:futureTime,position:pos,color:color,shape:shape,size:2,text:label});
     }
 
     return markers;
