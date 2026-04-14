@@ -297,6 +297,37 @@ function calcATR(d,p=14){if(d.length<p+1)return null;const trs=[];for(let i=1;i<
 
 function calcWilliamsR(d,p=14){if(d.length<p)return null;const last=d.slice(-p);const hh=Math.max(...last.map(c=>c.high));const ll=Math.min(...last.map(c=>c.low));const close=d[d.length-1].close;return hh===ll?-50:((hh-close)/(hh-ll))*-100;}
 
+function calcADX(d,p=14){
+    if(d.length<p*2+1)return null;
+    const plusDM=[],minusDM=[],trs=[];
+    for(let i=1;i<d.length;i++){
+        const upMove=d[i].high-d[i-1].high;
+        const downMove=d[i-1].low-d[i].low;
+        plusDM.push(upMove>downMove&&upMove>0?upMove:0);
+        minusDM.push(downMove>upMove&&downMove>0?downMove:0);
+        trs.push(Math.max(d[i].high-d[i].low,Math.abs(d[i].high-d[i-1].close),Math.abs(d[i].low-d[i-1].close)));
+    }
+    // Wilder smoothing
+    let sPDM=plusDM.slice(0,p).reduce((a,b)=>a+b,0);
+    let sMDM=minusDM.slice(0,p).reduce((a,b)=>a+b,0);
+    let sTR=trs.slice(0,p).reduce((a,b)=>a+b,0);
+    const dxArr=[];
+    for(let i=p;i<trs.length;i++){
+        sPDM=sPDM-sPDM/p+plusDM[i];
+        sMDM=sMDM-sMDM/p+minusDM[i];
+        sTR=sTR-sTR/p+trs[i];
+        const pDI=sTR>0?(sPDM/sTR)*100:0;
+        const mDI=sTR>0?(sMDM/sTR)*100:0;
+        const sum=pDI+mDI;
+        dxArr.push({dx:sum>0?Math.abs(pDI-mDI)/sum*100:0,pDI,mDI});
+    }
+    if(dxArr.length<p)return null;
+    let adx=dxArr.slice(0,p).reduce((a,b)=>a+b.dx,0)/p;
+    for(let i=p;i<dxArr.length;i++)adx=(adx*(p-1)+dxArr[i].dx)/p;
+    const last=dxArr[dxArr.length-1];
+    return{adx:adx,plusDI:last.pDI,minusDI:last.mDI};
+}
+
 /* ───── 이치모쿠 클라우드 계산 ───── */
 function calcIchimoku(d,tenkanP=9,kijunP=26,senkouBP=52,displacement=26){
     const hl=(arr,p,i)=>{const s=arr.slice(Math.max(0,i-p+1),i+1);return{h:Math.max(...s.map(x=>x.high)),l:Math.min(...s.map(x=>x.low))};};
@@ -2066,11 +2097,11 @@ function calcOBVSeries(d){
 }
 
 function generateFullSignal(d){
-    if(d.length<110)return null; // 최소 데이터 필요
+    if(d.length<110)return null;
     const last=d[d.length-1],prev=d[d.length-2],prev2=d[d.length-3];
     const price=last.close;
 
-    // 기존 지표 계산
+    // 지표 계산
     const rsiData=calcRSI(d,14);
     if(!rsiData.length)return null;
     const rsi=rsiData[rsiData.length-1].value;
@@ -2086,332 +2117,293 @@ function generateFullSignal(d){
     const lowerWick=Math.min(last.open,last.close)-last.low;
     const upperWick=last.high-Math.max(last.open,last.close);
 
-    let longConds=0,shortConds=0;
-    const longReasons=[],shortReasons=[];
+    let lS=0,sS=0; // longScore, shortScore (가중합)
+    const lR=[],sR=[];
+    const TOTAL_MAX=67;
 
-    // === 기존 8개 조건 ===
-    // 1) RSI 과매도/과매수 반등
-    if(rsi<40&&rsi>rsiPrev){longConds++;longReasons.push('RSI 반등');}
-    if(rsi>60&&rsi<rsiPrev){shortConds++;shortReasons.push('RSI 하락');}
+    // ── 1점 조건 (17개, 총 17점) ──
+    // 1) RSI 반등/하락
+    if(rsi<40&&rsi>rsiPrev){lS+=1;lR.push('RSI반등');}
+    if(rsi>60&&rsi<rsiPrev){sS+=1;sR.push('RSI하락');}
     // 2) 양봉/음봉
-    if(last.close>last.open){longConds++;longReasons.push('양봉');}
-    if(last.close<last.open){shortConds++;shortReasons.push('음봉');}
+    if(last.close>last.open){lS+=1;lR.push('양봉');}
+    if(last.close<last.open){sS+=1;sR.push('음봉');}
     // 3) 이전 봉 반전
-    if(prev.close<prev.open&&last.close>last.open){longConds++;longReasons.push('반전 양봉');}
-    if(prev.close>prev.open&&last.close<last.open){shortConds++;shortReasons.push('반전 음봉');}
+    if(prev.close<prev.open&&last.close>last.open){lS+=1;lR.push('반전양봉');}
+    if(prev.close>prev.open&&last.close<last.open){sS+=1;sR.push('반전음봉');}
     // 4) 거래량 증가
     if(last.volume>prev.volume*1.2){
-        if(last.close>last.open){longConds++;longReasons.push('거래량↑양봉');}
-        if(last.close<last.open){shortConds++;shortReasons.push('거래량↑음봉');}
+        if(last.close>last.open){lS+=1;lR.push('거래량↑양봉');}
+        if(last.close<last.open){sS+=1;sR.push('거래량↑음봉');}
     }
-    // 5) MACD 히스토그램 방향
-    if(macdHist>macdHistPrev){longConds++;longReasons.push('MACD↑');}
-    if(macdHist<macdHistPrev){shortConds++;shortReasons.push('MACD↓');}
-    // 6) MA7 위/아래
-    if(price>m7){longConds++;longReasons.push('MA7↑');}
-    if(price<m7){shortConds++;shortReasons.push('MA7↓');}
+    // 6) MA7
+    if(price>m7){lS+=1;lR.push('MA7↑');}
+    if(price<m7){sS+=1;sR.push('MA7↓');}
     // 7) 해머/슈팅스타
-    if(lowerWick>body*1.5&&last.close>last.open){longConds++;longReasons.push('해머');}
-    if(upperWick>body*1.5&&last.close<last.open){shortConds++;shortReasons.push('슈팅스타');}
-    // 8) MA20 지지/저항
-    if(last.low<m20&&last.close>m20){longConds++;longReasons.push('MA20 지지');}
-    if(last.high>m20&&last.close<m20){shortConds++;shortReasons.push('MA20 저항');}
-
-    // === 신규 12개 조건 ===
-    // 9) Bollinger Band 터치 후 반등
-    const bb=calcBollingerBands(d,20,2);
-    if(bb){
-        if(prev.low<=bb.lower&&last.close>bb.lower){longConds++;longReasons.push('BB하단 반등');}
-        if(prev.high>=bb.upper&&last.close<bb.upper){shortConds++;shortReasons.push('BB상단 반락');}
-    }
-    // 10) MA20 > MA100 추세 정렬
-    if(m20>m100){longConds++;longReasons.push('추세정렬↑');}
-    if(m20<m100){shortConds++;shortReasons.push('추세정렬↓');}
-    // 11) 이전 3봉 연속 같은 방향 후 반전
-    if(d.length>=5){
-        const c3=d[d.length-4],c2=d[d.length-3],c1=d[d.length-2];
-        if(c3.close<c3.open&&c2.close<c2.open&&c1.close<c1.open&&last.close>last.open){longConds++;longReasons.push('3연음→양전환');}
-        if(c3.close>c3.open&&c2.close>c2.open&&c1.close>c1.open&&last.close<last.open){shortConds++;shortReasons.push('3연양→음전환');}
-    }
-    // 12) ATR 대비 봉 크기 (변동성 돌파)
-    const atr=calcATR(d,14);
-    if(atr&&body>atr*1.2){
-        if(last.close>last.open){longConds++;longReasons.push('ATR돌파↑');}
-        if(last.close<last.open){shortConds++;shortReasons.push('ATR돌파↓');}
-    }
-    // 13) OBV 방향 일치
+    if(lowerWick>body*1.5&&last.close>last.open){lS+=1;lR.push('해머');}
+    if(upperWick>body*1.5&&last.close<last.open){sS+=1;sR.push('슈팅스타');}
+    // 13) OBV
     const obvSeries=calcOBVSeries(d);
     if(obvSeries.length>=2){
-        const obvNow=obvSeries[obvSeries.length-1],obvPrev=obvSeries[obvSeries.length-2];
-        if(obvNow>obvPrev&&last.close>last.open){longConds++;longReasons.push('OBV↑');}
-        if(obvNow<obvPrev&&last.close<last.open){shortConds++;shortReasons.push('OBV↓');}
+        if(obvSeries[obvSeries.length-1]>obvSeries[obvSeries.length-2]&&last.close>last.open){lS+=1;lR.push('OBV↑');}
+        if(obvSeries[obvSeries.length-1]<obvSeries[obvSeries.length-2]&&last.close<last.open){sS+=1;sR.push('OBV↓');}
     }
-    // 14) 직전 5봉 최저가/최고가 돌파
-    if(d.length>=6){
-        const recent5=d.slice(-6,-1);
-        const hi5=Math.max(...recent5.map(c=>c.high));
-        const lo5=Math.min(...recent5.map(c=>c.low));
-        if(last.close>hi5){longConds++;longReasons.push('5봉고점돌파');}
-        if(last.close<lo5){shortConds++;shortReasons.push('5봉저점이탈');}
-    }
-    // 15) 공포탐욕지수 극단
-    if(lastFearGreedValue<=20){longConds++;longReasons.push('극도공포');}
-    if(lastFearGreedValue>=80){shortConds++;shortReasons.push('극도탐욕');}
-    // 16) 롱숏비율 극단
-    if(lastLongShortRatio.sell>=0.7){longConds++;longReasons.push('매도쏠림→롱');}
-    if(lastLongShortRatio.buy>=0.7){shortConds++;shortReasons.push('매수쏠림→숏');}
-    // 17) 미결제약정 급증
-    if(lastOIChange>=5){
-        if(last.close>last.open){longConds++;longReasons.push('OI급증+롱');}
-        if(last.close<last.open){shortConds++;shortReasons.push('OI급증+숏');}
-    }
-    // 18) Stochastic RSI 크로스
-    const stochRsi=calcStochasticRSI(d);
-    if(stochRsi){
-        if(stochRsi.kPrev<stochRsi.dPrev&&stochRsi.k>stochRsi.d){longConds++;longReasons.push('StochRSI↑');}
-        if(stochRsi.kPrev>stochRsi.dPrev&&stochRsi.k<stochRsi.d){shortConds++;shortReasons.push('StochRSI↓');}
-    }
-    // 19) VWAP 위/아래
+    // 19) VWAP
     const vwap=calcVWAP(d.slice(-50));
-    if(price>vwap*1.002){longConds++;longReasons.push('VWAP↑');}
-    if(price<vwap*0.998){shortConds++;shortReasons.push('VWAP↓');}
-    // 20) 이전 2봉 거래량 평균 대비 2배+ 폭발
+    if(price>vwap*1.002){lS+=1;lR.push('VWAP↑');}
+    if(price<vwap*0.998){sS+=1;sR.push('VWAP↓');}
+    // 20) 거래량 폭발
     if(d.length>=3){
-        const avgVol2=(d[d.length-2].volume+d[d.length-3].volume)/2;
-        if(avgVol2>0&&last.volume>avgVol2*2){
-            if(last.close>last.open){longConds++;longReasons.push('거래량폭발↑');}
-            if(last.close<last.open){shortConds++;shortReasons.push('거래량폭발↓');}
+        const av2=(d[d.length-2].volume+d[d.length-3].volume)/2;
+        if(av2>0&&last.volume>av2*2){
+            if(last.close>last.open){lS+=1;lR.push('거래량폭발↑');}
+            if(last.close<last.open){sS+=1;sR.push('거래량폭발↓');}
         }
     }
-
-    // === 추가 17개 조건 (총 37개) ===
     // 21) Williams %R
     const wrVal=calcWilliamsR(d,14);
-    if(wrVal!==null){
-        if(wrVal<-80){longConds++;longReasons.push('W%R과매도');}
-        if(wrVal>-20){shortConds++;shortReasons.push('W%R과매수');}
-    }
+    if(wrVal!==null){if(wrVal<-80){lS+=1;lR.push('W%R과매도');}if(wrVal>-20){sS+=1;sR.push('W%R과매수');}}
     // 22) CCI
     const cciVal=calcCCI(d,20);
-    if(cciVal!==null){
-        if(cciVal<-100){longConds++;longReasons.push('CCI과매도');}
-        if(cciVal>100){shortConds++;shortReasons.push('CCI과매수');}
+    if(cciVal!==null){if(cciVal<-100){lS+=1;lR.push('CCI과매도');}if(cciVal>100){sS+=1;sR.push('CCI과매수');}}
+    // 29~32) 매크로 (DXY, US10Y, S&P, Gold)
+    if(macroCache['DX-Y.NYB']){if(macroCache['DX-Y.NYB'].change<-0.1){lS+=1;lR.push('DXY↓');}if(macroCache['DX-Y.NYB'].change>0.1){sS+=1;sR.push('DXY↑');}}
+    if(macroCache['^TNX']){if(macroCache['^TNX'].change<-0.5){lS+=1;lR.push('금리↓');}if(macroCache['^TNX'].change>0.5){sS+=1;sR.push('금리↑');}}
+    if(macroCache['^GSPC']){if(macroCache['^GSPC'].change>0.3){lS+=1;lR.push('S&P↑');}if(macroCache['^GSPC'].change<-0.3){sS+=1;sR.push('S&P↓');}}
+    if(macroCache['GC=F']){if(macroCache['GC=F'].change>0.5&&last.close>prev.close){lS+=1;lR.push('골드+BTC↑');}if(macroCache['GC=F'].change<-0.5&&last.close<prev.close){sS+=1;sR.push('골드+BTC↓');}}
+    // 33) 센티먼트
+    if(lastSentimentData){if(lastSentimentData.up>65){lS+=1;lR.push('센티먼트강세');}if(lastSentimentData.up<35){sS+=1;sR.push('센티먼트약세');}}
+    // 34) 전문가 컨센서스
+    if(lastConsensusScore>65){lS+=1;lR.push('컨센서스강세');}
+    if(lastConsensusScore<35){sS+=1;sR.push('컨센서스약세');}
+
+    // ── 2점 조건 (16개, 총 32점) ──
+    // 5) MACD
+    if(macdHist>macdHistPrev){lS+=2;lR.push('MACD↑');}
+    if(macdHist<macdHistPrev){sS+=2;sR.push('MACD↓');}
+    // 8) MA20 지지/저항
+    if(last.low<m20&&last.close>m20){lS+=2;lR.push('MA20지지');}
+    if(last.high>m20&&last.close<m20){sS+=2;sR.push('MA20저항');}
+    // 10) 추세정렬 MA20>MA100
+    if(m20>m100){lS+=2;lR.push('추세정렬↑');}
+    if(m20<m100){sS+=2;sR.push('추세정렬↓');}
+    // 11) 3연봉 반전
+    if(d.length>=5){
+        const c3=d[d.length-4],c2=d[d.length-3],c1=d[d.length-2];
+        if(c3.close<c3.open&&c2.close<c2.open&&c1.close<c1.open&&last.close>last.open){lS+=2;lR.push('3연음→양');}
+        if(c3.close>c3.open&&c2.close>c2.open&&c1.close>c1.open&&last.close<last.open){sS+=2;sR.push('3연양→음');}
     }
-    // 23) 차트 패턴 (더블바텀/탑, 삼각형, 플래그 등)
+    // 12) ATR 돌파
+    const atr=calcATR(d,14);
+    if(atr&&body>atr*1.2){
+        if(last.close>last.open){lS+=2;lR.push('ATR돌파↑');}
+        if(last.close<last.open){sS+=2;sR.push('ATR돌파↓');}
+    }
+    // 14) 5봉 돌파
+    if(d.length>=6){
+        const hi5=Math.max(...d.slice(-6,-1).map(c=>c.high));
+        const lo5=Math.min(...d.slice(-6,-1).map(c=>c.low));
+        if(last.close>hi5){lS+=2;lR.push('5봉고점돌파');}
+        if(last.close<lo5){sS+=2;sR.push('5봉저점이탈');}
+    }
+    // 15) 공포탐욕 극단
+    if(lastFearGreedValue<=20){lS+=2;lR.push('극도공포');}
+    if(lastFearGreedValue>=80){sS+=2;sR.push('극도탐욕');}
+    // 16) 롱숏비율 극단
+    if(lastLongShortRatio.sell>=0.7){lS+=2;lR.push('매도쏠림→롱');}
+    if(lastLongShortRatio.buy>=0.7){sS+=2;sR.push('매수쏠림→숏');}
+    // 17) OI 급증
+    if(lastOIChange>=5){
+        if(last.close>last.open){lS+=2;lR.push('OI급증+롱');}
+        if(last.close<last.open){sS+=2;sR.push('OI급증+숏');}
+    }
+    // 23) 차트 패턴
     const cpats=detectChartPatterns(d);
     let cpL=0,cpS=0;cpats.forEach(p=>{if(p.type==='long')cpL+=p.strength;else cpS+=p.strength;});
-    if(cpL>60){longConds++;longReasons.push('차트패턴롱');}
-    if(cpS>60){shortConds++;shortReasons.push('차트패턴숏');}
-    // 24) RSI 다이버전스
-    const rsiDivSigs=detectRSIDivergence(d,rsiData);
-    rsiDivSigs.forEach(s=>{
-        if(s.type==='bullish_div'){longConds++;longReasons.push('RSI상승다이버');}
-        if(s.type==='bearish_div'){shortConds++;shortReasons.push('RSI하락다이버');}
-    });
+    if(cpL>60){lS+=2;lR.push('차트패턴롱');}
+    if(cpS>60){sS+=2;sR.push('차트패턴숏');}
     // 25) 유동성 스윕
     const sweepSigs=detectLiquiditySweep(d,20);
     if(sweepSigs.length){const ls=sweepSigs[sweepSigs.length-1];
-        if(ls.type==='bullish_sweep'&&last.time-ls.time<86400*2){longConds++;longReasons.push('유동성스윕↑');}
-        if(ls.type==='bearish_sweep'&&last.time-ls.time<86400*2){shortConds++;shortReasons.push('유동성스윕↓');}
+        if(ls.type==='bullish_sweep'&&last.time-ls.time<86400*2){lS+=2;lR.push('유동성스윕↑');}
+        if(ls.type==='bearish_sweep'&&last.time-ls.time<86400*2){sS+=2;sR.push('유동성스윕↓');}
     }
     // 26) 와이코프 VSA
     detectWyckoff(d).forEach(w=>{
-        if(w.type==='wyckoff_spring'){longConds++;longReasons.push('와이코프스프링');}
-        if(w.type==='wyckoff_upthrust'){shortConds++;shortReasons.push('와이코프업스러스트');}
+        if(w.type==='wyckoff_spring'){lS+=2;lR.push('와이코프스프링');}
+        if(w.type==='wyckoff_upthrust'){sS+=2;sR.push('와이코프업스러스트');}
     });
-    // 27) FVG (공정가치갭)
+    // 27) FVG
     const fvgSigs=detectFVG(d);
     if(fvgSigs.length){const lf=fvgSigs[fvgSigs.length-1];
-        if(lf.type==='bullish_fvg'&&price<=lf.top&&price>=lf.bottom){longConds++;longReasons.push('상승FVG');}
-        if(lf.type==='bearish_fvg'&&price>=lf.bottom&&price<=lf.top){shortConds++;shortReasons.push('하락FVG');}
+        if(lf.type==='bullish_fvg'&&price<=lf.top&&price>=lf.bottom){lS+=2;lR.push('상승FVG');}
+        if(lf.type==='bearish_fvg'&&price>=lf.bottom&&price<=lf.top){sS+=2;sR.push('하락FVG');}
     }
     // 28) 오더블록
     const obSigs=detectOrderBlocks(d);
     if(obSigs.length){const lo=obSigs[obSigs.length-1];
-        if(lo.type==='bullish_ob'&&price<=lo.high&&price>=lo.price){longConds++;longReasons.push('상승오더블록');}
-        if(lo.type==='bearish_ob'&&price>=lo.low&&price<=lo.price){shortConds++;shortReasons.push('하락오더블록');}
+        if(lo.type==='bullish_ob'&&price<=lo.high&&price>=lo.price){lS+=2;lR.push('상승오더블록');}
+        if(lo.type==='bearish_ob'&&price>=lo.low&&price<=lo.price){sS+=2;sR.push('하락오더블록');}
     }
-    // 29) 매크로: DXY 달러인덱스 (역상관 — DXY↓=BTC 강세)
-    if(macroCache['DX-Y.NYB']){
-        if(macroCache['DX-Y.NYB'].change<-0.1){longConds++;longReasons.push('DXY↓');}
-        if(macroCache['DX-Y.NYB'].change>0.1){shortConds++;shortReasons.push('DXY↑');}
+    // 38) 김프
+    if(Math.abs(lastKimchiPremium)>0.01){
+        if(lastKimchiPremium>3){sS+=2;sR.push(`김프과열+${lastKimchiPremium.toFixed(1)}%`);}
+        else if(lastKimchiPremium<-1){lS+=2;lR.push(`역프${lastKimchiPremium.toFixed(1)}%`);}
     }
-    // 30) 매크로: US10Y 미국금리 (역상관 — 금리↓=BTC 강세)
-    if(macroCache['^TNX']){
-        if(macroCache['^TNX'].change<-0.5){longConds++;longReasons.push('금리↓');}
-        if(macroCache['^TNX'].change>0.5){shortConds++;shortReasons.push('금리↑');}
+    // 39) ADX 추세강도 (신규)
+    const adxData=calcADX(d,14);
+    if(adxData&&adxData.adx>25){
+        if(adxData.plusDI>adxData.minusDI){lS+=2;lR.push(`ADX강세${adxData.adx.toFixed(0)}`);}
+        if(adxData.minusDI>adxData.plusDI){sS+=2;sR.push(`ADX약세${adxData.adx.toFixed(0)}`);}
     }
-    // 31) 매크로: S&P500 (정상관 — S&P↑=BTC 강세)
-    if(macroCache['^GSPC']){
-        if(macroCache['^GSPC'].change>0.3){longConds++;longReasons.push('S&P↑');}
-        if(macroCache['^GSPC'].change<-0.3){shortConds++;shortReasons.push('S&P↓');}
+
+    // ── 3점 조건 (6개, 총 18점) ──
+    // 9) BB 반등
+    const bb=calcBollingerBands(d,20,2);
+    if(bb){
+        if(prev.low<=bb.lower&&last.close>bb.lower){lS+=3;lR.push('BB하단반등');}
+        if(prev.high>=bb.upper&&last.close<bb.upper){sS+=3;sR.push('BB상단반락');}
     }
-    // 32) 매크로: Gold+BTC 방향 일치 (동반 상승/하락)
-    if(macroCache['GC=F']){
-        if(macroCache['GC=F'].change>0.5&&last.close>prev.close){longConds++;longReasons.push('골드+BTC↑');}
-        if(macroCache['GC=F'].change<-0.5&&last.close<prev.close){shortConds++;shortReasons.push('골드+BTC↓');}
+    // 18) 스토캐스틱RSI 크로스
+    const stochRsi=calcStochasticRSI(d);
+    if(stochRsi){
+        if(stochRsi.kPrev<stochRsi.dPrev&&stochRsi.k>stochRsi.d){lS+=3;lR.push('StochRSI골든');}
+        if(stochRsi.kPrev>stochRsi.dPrev&&stochRsi.k<stochRsi.d){sS+=3;sR.push('StochRSI데드');}
     }
-    // 33) CoinGecko 커뮤니티 센티먼트
-    if(lastSentimentData){
-        if(lastSentimentData.up>65){longConds++;longReasons.push('센티먼트강세');}
-        if(lastSentimentData.up<35){shortConds++;shortReasons.push('센티먼트약세');}
-    }
-    // 34) 전문가 종합 컨센서스
-    if(lastConsensusScore>65){longConds++;longReasons.push('컨센서스강세');}
-    if(lastConsensusScore<35){shortConds++;shortReasons.push('컨센서스약세');}
-    // 35) 이치모쿠 구름 포지션
+    // 24) RSI 다이버전스
+    const rsiDivSigs=detectRSIDivergence(d,rsiData);
+    rsiDivSigs.forEach(s=>{
+        if(s.type==='bullish_div'){lS+=3;lR.push('RSI상승다이버');}
+        if(s.type==='bearish_div'){sS+=3;sR.push('RSI하락다이버');}
+    });
+    // 35) 이치모쿠 구름
     const ichFS=calcIchimoku(d);
     if(ichFS.senkouA.length&&ichFS.senkouB.length){
         const sa=ichFS.senkouA[ichFS.senkouA.length-1].value;
         const sb=ichFS.senkouB[ichFS.senkouB.length-1].value;
-        if(price>Math.max(sa,sb)){longConds++;longReasons.push('구름위');}
-        if(price<Math.min(sa,sb)){shortConds++;shortReasons.push('구름아래');}
+        if(price>Math.max(sa,sb)){lS+=3;lR.push('구름위');}
+        if(price<Math.min(sa,sb)){sS+=3;sR.push('구름아래');}
     }
     // 36) 하모닉 패턴
     const harm=detectHarmonic(d);
     if(harm){
-        if(harm.bullish){longConds++;longReasons.push(harm.name+'강세');}
-        else{shortConds++;shortReasons.push(harm.name+'약세');}
+        if(harm.bullish){lS+=3;lR.push(harm.name+'강세');}
+        else{sS+=3;sR.push(harm.name+'약세');}
     }
-    // 37) MA 정배열/역배열 (MA7>MA20>MA100>MA200)
+    // 37) MA 정배열/역배열
     const ma200f=calcSMA(d,200);
     if(ma7.length&&ma20.length&&ma100.length&&ma200f.length){
         const v7=ma7[ma7.length-1].value,v20=ma20[ma20.length-1].value;
         const v100=ma100[ma100.length-1].value,v200=ma200f[ma200f.length-1].value;
-        if(price>v7&&v7>v20&&v20>v100){longConds++;longReasons.push('MA정배열');}
-        if(price<v7&&v7<v20&&v20<v100){shortConds++;shortReasons.push('MA역배열');}
+        if(price>v7&&v7>v20&&v20>v100){lS+=3;lR.push('MA정배열');}
+        if(price<v7&&v7<v20&&v20<v100){sS+=3;sR.push('MA역배열');}
     }
 
-    // 38) 김치프리미엄 (높으면 과열→숏, 낮으면/역프→롱)
-    if(Math.abs(lastKimchiPremium)>0.01){
-        if(lastKimchiPremium>3){shortConds++;shortReasons.push(`김프과열 +${lastKimchiPremium.toFixed(1)}%`);}
-        else if(lastKimchiPremium<-1){longConds++;longReasons.push(`역프 ${lastKimchiPremium.toFixed(1)}%`);}
+    // ── 확인봉 검증 (whipsaw 감소) ──
+    let confirmed=true;
+    if(lS>=34||sS>=34){
+        // prev 봉에서 간이 방향 체크
+        const prevRsi=rsiPrev;
+        const prevBody=prev.close-prev.open;
+        const prevM7=ma7.length>=2?ma7[ma7.length-2].value:m7;
+        let prevL=0,prevS=0;
+        if(prevRsi<45)prevL++;if(prevRsi>55)prevS++;
+        if(prevBody>0)prevL++;if(prevBody<0)prevS++;
+        if(prev.close>prevM7)prevL++;if(prev.close<prevM7)prevS++;
+        if(macdHistPrev>0)prevL++;if(macdHistPrev<0)prevS++;
+        // prev봉이 반대 방향 우세면 확인 실패
+        if(lS>=34&&prevS>prevL)confirmed=false;
+        if(sS>=34&&prevL>prevS)confirmed=false;
     }
 
-    const TOTAL_CONDS=38;
-    // 풀롱: 19개+ 롱 && 숏 6개 미만 (38개 조건 중)
-    // 풀숏: 19개+ 숏 && 롱 6개 미만
     let signal=null;
-    if(longConds>=19&&shortConds<6){
-        signal={type:'풀롱',color:'#FFD700',longConds,shortConds,reasons:longReasons};
-    }else if(shortConds>=19&&longConds<6){
-        signal={type:'풀숏',color:'#9400D3',shortConds,longConds,reasons:shortReasons};
+    if(confirmed&&lS>=34&&sS<9){
+        signal={type:'풀롱',color:'#FFD700',longConds:lS,shortConds:sS,reasons:lR};
+    }else if(confirmed&&sS>=34&&lS<9){
+        signal={type:'풀숏',color:'#9400D3',shortConds:sS,longConds:lS,reasons:sR};
     }
 
-    return{longConds,shortConds,signal,longReasons,shortReasons,totalConds:TOTAL_CONDS};
+    return{longConds:lS,shortConds:sS,signal,longReasons:lR,shortReasons:sR,totalConds:TOTAL_MAX};
 }
 
 // 개별 캔들에 대한 풀롱/풀숏 기술적 조건 검사 (과거 캔들용, 15개 기술적 조건만)
 function checkFullSignalAtCandle(d,idx){
-    if(idx<5||idx>=d.length)return null;
-    const c=d[idx],prev=d[idx-1],prev2=d[idx-2];
+    if(idx<30||idx>=d.length)return null;
+    const c=d[idx],prev=d[idx-1];
     const price=c.close;
-    // RSI
-    const rsiData=calcRSI(d.slice(0,idx+1),14);
+    const slc=d.slice(0,idx+1);
+    // 지표 계산
+    const rsiData=calcRSI(slc,14);
     if(rsiData.length<2)return null;
     const rsi=rsiData[rsiData.length-1].value;
     const rsiPrev=rsiData[rsiData.length-2].value;
-    // MACD
-    const macdD=calcMACD(d.slice(0,idx+1));
+    const macdD=calcMACD(slc);
     const macdH=macdD.hist.length?macdD.hist[macdD.hist.length-1].value:0;
     const macdHP=macdD.hist.length>=2?macdD.hist[macdD.hist.length-2].value:0;
-    // MA
-    const sliceForMA=d.slice(0,idx+1);
-    const ma7=calcSMA(sliceForMA,7),ma20=calcSMA(sliceForMA,20),ma100=calcSMA(sliceForMA,100);
+    const ma7=calcSMA(slc,7),ma20=calcSMA(slc,20),ma100=calcSMA(slc,100);
     const m7=ma7.length?ma7[ma7.length-1].value:price;
     const m20=ma20.length?ma20[ma20.length-1].value:price;
     const m100=ma100.length?ma100[ma100.length-1].value:price;
     const body=Math.abs(c.close-c.open);
-    const lWick=Math.min(c.open,c.close)-c.low;
-    const uWick=c.high-Math.max(c.open,c.close);
+    const lW=Math.min(c.open,c.close)-c.low;
+    const uW=c.high-Math.max(c.open,c.close);
 
-    let lc=0,sc=0;
-    // 1) RSI
-    if(rsi<40&&rsi>rsiPrev)lc++;
-    if(rsi>60&&rsi<rsiPrev)sc++;
-    // 2) 양봉/음봉
-    if(c.close>c.open)lc++;
-    if(c.close<c.open)sc++;
-    // 3) 반전
-    if(prev.close<prev.open&&c.close>c.open)lc++;
-    if(prev.close>prev.open&&c.close<c.open)sc++;
-    // 4) 거래량
-    if(c.volume>prev.volume*1.2){
-        if(c.close>c.open)lc++;
-        if(c.close<c.open)sc++;
-    }
-    // 5) MACD
-    if(macdH>macdHP)lc++;
-    if(macdH<macdHP)sc++;
-    // 6) MA7
-    if(price>m7)lc++;
-    if(price<m7)sc++;
-    // 7) 해머/슈팅스타
-    if(lWick>body*1.5&&c.close>c.open)lc++;
-    if(uWick>body*1.5&&c.close<c.open)sc++;
-    // 8) MA20 지지/저항
-    if(c.low<m20&&c.close>m20)lc++;
-    if(c.high>m20&&c.close<m20)sc++;
-    // 9) BB
-    const bb=calcBollingerBands(d.slice(0,idx+1),20,2);
-    if(bb){
-        if(prev.low<=bb.lower&&c.close>bb.lower)lc++;
-        if(prev.high>=bb.upper&&c.close<bb.upper)sc++;
-    }
-    // 10) 추세정렬
-    if(m20>m100)lc++;
-    if(m20<m100)sc++;
-    // 11) 3연봉 반전
-    if(idx>=4){
-        const c3=d[idx-3],c2=d[idx-2],c1=d[idx-1];
-        if(c3.close<c3.open&&c2.close<c2.open&&c1.close<c1.open&&c.close>c.open)lc++;
-        if(c3.close>c3.open&&c2.close>c2.open&&c1.close>c1.open&&c.close<c.open)sc++;
-    }
-    // 12) ATR 돌파
-    const atr=calcATR(d.slice(0,idx+1),14);
-    if(atr&&body>atr*1.2){
-        if(c.close>c.open)lc++;
-        if(c.close<c.open)sc++;
-    }
-    // 13) VWAP
+    let lc=0,sc=0; // 가중합
+    // ── 1점 조건 ──
+    if(rsi<40&&rsi>rsiPrev)lc+=1;if(rsi>60&&rsi<rsiPrev)sc+=1;
+    if(c.close>c.open)lc+=1;if(c.close<c.open)sc+=1;
+    if(prev.close<prev.open&&c.close>c.open)lc+=1;if(prev.close>prev.open&&c.close<c.open)sc+=1;
+    if(c.volume>prev.volume*1.2){if(c.close>c.open)lc+=1;if(c.close<c.open)sc+=1;}
+    if(price>m7)lc+=1;if(price<m7)sc+=1;
+    if(lW>body*1.5&&c.close>c.open)lc+=1;if(uW>body*1.5&&c.close<c.open)sc+=1;
+    const wrH=calcWilliamsR(slc,14);if(wrH!==null){if(wrH<-80)lc+=1;if(wrH>-20)sc+=1;}
+    const cciH=calcCCI(slc,20);if(cciH!==null){if(cciH<-100)lc+=1;if(cciH>100)sc+=1;}
     const vwap=calcVWAP(d.slice(Math.max(0,idx-49),idx+1));
-    if(price>vwap*1.002)lc++;
-    if(price<vwap*0.998)sc++;
-    // 14) 5봉 돌파
-    if(idx>=6){
-        const r5=d.slice(idx-5,idx);
-        const hi5=Math.max(...r5.map(x=>x.high));
-        const lo5=Math.min(...r5.map(x=>x.low));
-        if(c.close>hi5)lc++;
-        if(c.close<lo5)sc++;
-    }
-    // 15) 거래량 폭발
-    if(idx>=3){
-        const av2=(d[idx-1].volume+d[idx-2].volume)/2;
-        if(av2>0&&c.volume>av2*2){
-            if(c.close>c.open)lc++;
-            if(c.close<c.open)sc++;
-        }
-    }
-    // 16) Williams %R
-    const wrH=calcWilliamsR(sliceForMA,14);
-    if(wrH!==null){if(wrH<-80)lc++;if(wrH>-20)sc++;}
-    // 17) CCI
-    const cciH=calcCCI(sliceForMA,20);
-    if(cciH!==null){if(cciH<-100)lc++;if(cciH>100)sc++;}
-    // 18) 이치모쿠 구름 포지션
-    if(sliceForMA.length>=52){
-        const ichH=calcIchimoku(sliceForMA);
-        if(ichH.senkouA.length&&ichH.senkouB.length){
-            const saH=ichH.senkouA[ichH.senkouA.length-1].value;
-            const sbH=ichH.senkouB[ichH.senkouB.length-1].value;
-            if(price>Math.max(saH,sbH))lc++;
-            if(price<Math.min(saH,sbH))sc++;
-        }
-    }
-    // 기술적 조건 18개: 롱 10개+, 숏 3개 미만 = 풀롱
-    if(lc>=10&&sc<3)return{type:'풀롱',lc,sc};
-    if(sc>=10&&lc<3)return{type:'풀숏',lc,sc};
+    if(price>vwap*1.002)lc+=1;if(price<vwap*0.998)sc+=1;
+    if(idx>=3){const av2=(d[idx-1].volume+d[idx-2].volume)/2;if(av2>0&&c.volume>av2*2){if(c.close>c.open)lc+=1;if(c.close<c.open)sc+=1;}}
+
+    // ── 2점 조건 ──
+    if(macdH>macdHP)lc+=2;if(macdH<macdHP)sc+=2;
+    if(c.low<m20&&c.close>m20)lc+=2;if(c.high>m20&&c.close<m20)sc+=2;
+    if(m20>m100)lc+=2;if(m20<m100)sc+=2;
+    if(idx>=4){const c3=d[idx-3],c2=d[idx-2],c1=d[idx-1];
+        if(c3.close<c3.open&&c2.close<c2.open&&c1.close<c1.open&&c.close>c.open)lc+=2;
+        if(c3.close>c3.open&&c2.close>c2.open&&c1.close>c1.open&&c.close<c.open)sc+=2;}
+    const atr=calcATR(slc,14);if(atr&&body>atr*1.2){if(c.close>c.open)lc+=2;if(c.close<c.open)sc+=2;}
+    if(idx>=6){const hi5=Math.max(...d.slice(idx-5,idx).map(x=>x.high));const lo5=Math.min(...d.slice(idx-5,idx).map(x=>x.low));
+        if(c.close>hi5)lc+=2;if(c.close<lo5)sc+=2;}
+    // 차트패턴
+    const cpH=detectChartPatterns(slc);let cpL=0,cpS=0;cpH.forEach(p=>{if(p.type==='long')cpL+=p.strength;else cpS+=p.strength;});
+    if(cpL>60)lc+=2;if(cpS>60)sc+=2;
+    // FVG
+    const fvgH=detectFVG(slc);if(fvgH.length){const lf=fvgH[fvgH.length-1];
+        if(lf.type==='bullish_fvg'&&price<=lf.top&&price>=lf.bottom)lc+=2;
+        if(lf.type==='bearish_fvg'&&price>=lf.bottom&&price<=lf.top)sc+=2;}
+    // 오더블록
+    const obH=detectOrderBlocks(slc);if(obH.length){const lo=obH[obH.length-1];
+        if(lo.type==='bullish_ob'&&price<=lo.high&&price>=lo.price)lc+=2;
+        if(lo.type==='bearish_ob'&&price>=lo.low&&price<=lo.price)sc+=2;}
+
+    // ── 3점 조건 ──
+    const bb=calcBollingerBands(slc,20,2);
+    if(bb){if(prev.low<=bb.lower&&c.close>bb.lower)lc+=3;if(prev.high>=bb.upper&&c.close<bb.upper)sc+=3;}
+    const stochH=calcStochasticRSI(slc);
+    if(stochH){if(stochH.kPrev<stochH.dPrev&&stochH.k>stochH.d)lc+=3;if(stochH.kPrev>stochH.dPrev&&stochH.k<stochH.d)sc+=3;}
+    const divH=detectRSIDivergence(slc,rsiData);
+    divH.forEach(s=>{if(s.type==='bullish_div')lc+=3;if(s.type==='bearish_div')sc+=3;});
+    if(slc.length>=52){const ichH=calcIchimoku(slc);if(ichH.senkouA.length&&ichH.senkouB.length){
+        const saH=ichH.senkouA[ichH.senkouA.length-1].value,sbH=ichH.senkouB[ichH.senkouB.length-1].value;
+        if(price>Math.max(saH,sbH))lc+=3;if(price<Math.min(saH,sbH))sc+=3;}}
+    const harmH=detectHarmonic(slc);if(harmH){if(harmH.bullish)lc+=3;else sc+=3;}
+    // MA 정배열
+    const ma200H=calcSMA(slc,200);
+    if(ma7.length&&ma20.length&&ma100.length&&ma200H.length){
+        const v7=ma7[ma7.length-1].value,v20=ma20[ma20.length-1].value,v100=ma100[ma100.length-1].value;
+        if(price>v7&&v7>v20&&v20>v100)lc+=3;if(price<v7&&v7<v20&&v20<v100)sc+=3;}
+
+    // 가중합 기준: 20점+ && 반대 5점 미만 (최대 ~50점)
+    if(lc>=20&&sc<5)return{type:'풀롱',lc,sc};
+    if(sc>=20&&lc<5)return{type:'풀숏',lc,sc};
     return null;
 }
 
@@ -2419,15 +2411,18 @@ function checkFullSignalAtCandle(d,idx){
 function addFullSignalMarkers(d,existingMarkers){
     const markers=[...existingMarkers];
 
-    // 1) 과거 캔들 스캔 (최근 200봉, 매 5봉마다 검사 — 성능 최적화)
+    // 1) 과거 캔들 스캔 (최근 200봉, 매 봉 검사 + 5봉 중복 제거)
     const startIdx=Math.max(30,d.length-200);
-    for(let i=startIdx;i<d.length;i+=3){
+    let lastLongIdx=-999,lastShortIdx=-999;
+    for(let i=startIdx;i<d.length;i++){
         const sig=checkFullSignalAtCandle(d,i);
         if(sig){
-            if(sig.type==='풀롱'){
+            if(sig.type==='풀롱'&&i-lastLongIdx>5){
                 markers.push({time:d[i].time,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`풀롱(${sig.lc})`});
-            }else{
+                lastLongIdx=i;
+            }else if(sig.type==='풀숏'&&i-lastShortIdx>5){
                 markers.push({time:d[i].time,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`풀숏(${sig.sc})`});
+                lastShortIdx=i;
             }
         }
     }
@@ -2442,8 +2437,8 @@ function addFullSignalMarkers(d,existingMarkers){
         // 기존 풀롱/풀숏 태그 제거
         const spans=sigEl.querySelectorAll('span');
         spans.forEach(s=>{if(s.textContent.includes('풀롱')||s.textContent.includes('풀숏'))s.remove();});
-        // 현재 상태 표시
-        const tc=result.totalConds||37;
+        // 현재 상태 표시 (가중점수/최대점수)
+        const tc=result.totalConds||67;
         const tag=result.signal
             ?(result.signal.type==='풀롱'
                 ?`<span style="background:#FFD700;color:#000;padding:3px 10px;border-radius:4px;font-weight:900;font-size:16px;margin-left:8px;animation:pulse 1s infinite;">⚡ 풀롱 (${result.longConds}/${tc})</span>`
@@ -2458,9 +2453,8 @@ function addFullSignalMarkers(d,existingMarkers){
     const futureTime=d[d.length-1].time+intSec;
     const futureTime2=d[d.length-1].time+intSec*2;
 
-    const tc=result.totalConds||37;
+    const tc=result.totalConds||67;
     if(result.signal){
-        // 강한 시그널 (18/37+): 큰 금색/보라색 화살표
         if(result.signal.type==='풀롱'){
             markers.push({time:futureTime,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`⚡풀롱(${result.longConds}/${tc})`});
             markers.push({time:futureTime2,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`풀롱 진입▲`});
@@ -2469,7 +2463,6 @@ function addFullSignalMarkers(d,existingMarkers){
             markers.push({time:futureTime2,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`풀숏 진입▼`});
         }
     }else{
-        // 미달이어도 방향 예측 항상 표시
         const isLongBias=result.longConds>result.shortConds;
         const label=isLongBias?`롱 대기(${result.longConds}/${tc})`:`숏 대기(${result.shortConds}/${tc})`;
         const color=isLongBias?'rgba(255,215,0,0.6)':'rgba(148,0,211,0.6)';
