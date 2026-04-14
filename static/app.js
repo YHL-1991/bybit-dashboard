@@ -523,6 +523,23 @@ function detectAndShowHarmonics(d){
    저항선/지지선 감지 + 굵기 표시
    ═══════════════════════════════════ */
 let srLines=[];
+function findSRLevels(d){
+    if(d.length<30)return[];
+    const pvts=findPivots(d,5,5);
+    const price=d[d.length-1].close;
+    const tol=price*0.003;
+    const all=[];
+    pvts.highs.forEach(h=>all.push(h.price));
+    pvts.lows.forEach(l=>all.push(l.price));
+    all.sort((a,b)=>a-b);
+    const clusters=[];
+    for(const lv of all){
+        let found=false;
+        for(const c of clusters){if(Math.abs(c.p-lv)<tol){c.n++;c.p=(c.p*(c.n-1)+lv)/c.n;found=true;break;}}
+        if(!found)clusters.push({p:lv,n:1});
+    }
+    return clusters.filter(c=>c.n>=2).map(c=>c.p);
+}
 function drawSupportResistance(d){
     srLines.forEach(s=>{try{tvChartObj.removeSeries(s);}catch(e){}});
     srLines=[];
@@ -2299,22 +2316,54 @@ function generateFullSignal(d){
         if(price<v7&&v7<v20&&v20<v100){sS+=3;sR.push('MA역배열');}
     }
 
-    // ── 확인봉 검증 (whipsaw 감소) ──
+    // ── 추세 필터: ADX 추세 방향 역행 시 점수 감산 ──
+    if(adxData&&adxData.adx>25){
+        // 강한 하락추세인데 풀롱 시도 → 롱점수 20% 감산
+        if(adxData.minusDI>adxData.plusDI&&lS>sS)lS=Math.round(lS*0.8);
+        // 강한 상승추세인데 풀숏 시도 → 숏점수 20% 감산
+        if(adxData.plusDI>adxData.minusDI&&sS>lS)sS=Math.round(sS*0.8);
+    }
+
+    // ── 거래량 확인: 신호 캔들 거래량이 20봉 평균 미만이면 감산 ──
+    if(d.length>=20){
+        const avgVol20=d.slice(-20).reduce((a,c)=>a+c.volume,0)/20;
+        if(last.volume<avgVol20*0.8){
+            lS=Math.round(lS*0.85);sS=Math.round(sS*0.85);
+        }
+    }
+
+    // ── 확인봉 검증 (prev + prev2 봉 방향 체크) ──
     let confirmed=true;
     if(lS>=34||sS>=34){
-        // prev 봉에서 간이 방향 체크
-        const prevRsi=rsiPrev;
         const prevBody=prev.close-prev.open;
+        const prev2Body=prev2.close-prev2.open;
         const prevM7=ma7.length>=2?ma7[ma7.length-2].value:m7;
         let prevL=0,prevS=0;
-        if(prevRsi<45)prevL++;if(prevRsi>55)prevS++;
+        if(rsiPrev<45)prevL++;if(rsiPrev>55)prevS++;
         if(prevBody>0)prevL++;if(prevBody<0)prevS++;
         if(prev.close>prevM7)prevL++;if(prev.close<prevM7)prevS++;
         if(macdHistPrev>0)prevL++;if(macdHistPrev<0)prevS++;
-        // prev봉이 반대 방향 우세면 확인 실패
+        // prev2 봉도 체크 (2봉 연속 확인)
+        if(prev2Body>0)prevL++;if(prev2Body<0)prevS++;
+        // prev가 반대 방향 우세면 확인 실패
         if(lS>=34&&prevS>prevL)confirmed=false;
         if(sS>=34&&prevL>prevS)confirmed=false;
     }
+
+    // ── S/R 근접 보너스: 지지/저항 근처 신호에 +3점 ──
+    try{
+        const sr=findSRLevels(d);
+        if(sr&&sr.length){
+            for(const level of sr){
+                const dist=Math.abs(price-level)/price;
+                if(dist<0.005){ // 0.5% 이내
+                    if(price>level){lS+=3;lR.push('지지선근접');}
+                    if(price<level){sS+=3;sR.push('저항선근접');}
+                    break;
+                }
+            }
+        }
+    }catch(e){}
 
     let signal=null;
     if(confirmed&&lS>=34&&sS<9){
@@ -2401,9 +2450,29 @@ function checkFullSignalAtCandle(d,idx){
         const v7=ma7[ma7.length-1].value,v20=ma20[ma20.length-1].value,v100=ma100[ma100.length-1].value;
         if(price>v7&&v7>v20&&v20>v100)lc+=3;if(price<v7&&v7<v20&&v20<v100)sc+=3;}
 
-    // 가중합 기준: 20점+ && 반대 5점 미만 (최대 ~50점)
-    if(lc>=20&&sc<5)return{type:'풀롱',lc,sc};
-    if(sc>=20&&lc<5)return{type:'풀숏',lc,sc};
+    // ── ADX 추세 필터: 강한 추세 역행 시 감산 ──
+    const adxH=calcADX(slc,14);
+    if(adxH&&adxH.adx>25){
+        if(adxH.plusDI>adxH.minusDI){lc+=2;} // 상승추세 보너스
+        else{sc+=2;} // 하락추세 보너스
+        if(adxH.minusDI>adxH.plusDI&&lc>sc)lc=Math.round(lc*0.8); // 하락추세 역행 롱 감산
+        if(adxH.plusDI>adxH.minusDI&&sc>lc)sc=Math.round(sc*0.8); // 상승추세 역행 숏 감산
+    }
+    // ── 거래량 필터: 20봉 평균 미만이면 감산 ──
+    if(idx>=20){
+        const avgVol=d.slice(idx-20,idx).reduce((a,x)=>a+x.volume,0)/20;
+        if(c.volume<avgVol*0.8){lc=Math.round(lc*0.85);sc=Math.round(sc*0.85);}
+    }
+    // ── 연속 캔들 확인: 다음 봉(idx+1)이 같은 방향이어야 유효 ──
+    if(idx+1<d.length){
+        const next=d[idx+1];
+        if(lc>=22&&next.close<next.open)lc=Math.round(lc*0.7); // 풀롱인데 다음봉 음봉→대폭 감산
+        if(sc>=22&&next.close>next.open)sc=Math.round(sc*0.7); // 풀숏인데 다음봉 양봉→대폭 감산
+    }
+
+    // 가중합 기준: 22점+ && 반대 5점 미만
+    if(lc>=22&&sc<5)return{type:'풀롱',lc,sc};
+    if(sc>=22&&lc<5)return{type:'풀숏',lc,sc};
     return null;
 }
 
@@ -2411,16 +2480,16 @@ function checkFullSignalAtCandle(d,idx){
 function addFullSignalMarkers(d,existingMarkers){
     const markers=[...existingMarkers];
 
-    // 1) 과거 캔들 스캔 (최근 200봉, 매 봉 검사 + 5봉 중복 제거)
+    // 1) 과거 캔들 스캔 (최근 200봉, 매 봉 검사 + 8봉 중복 제거)
     const startIdx=Math.max(30,d.length-200);
     let lastLongIdx=-999,lastShortIdx=-999;
     for(let i=startIdx;i<d.length;i++){
         const sig=checkFullSignalAtCandle(d,i);
         if(sig){
-            if(sig.type==='풀롱'&&i-lastLongIdx>5){
+            if(sig.type==='풀롱'&&i-lastLongIdx>8){
                 markers.push({time:d[i].time,position:'belowBar',color:'#FFD700',shape:'arrowUp',text:`풀롱(${sig.lc})`});
                 lastLongIdx=i;
-            }else if(sig.type==='풀숏'&&i-lastShortIdx>5){
+            }else if(sig.type==='풀숏'&&i-lastShortIdx>8){
                 markers.push({time:d[i].time,position:'aboveBar',color:'#9400D3',shape:'arrowDown',text:`풀숏(${sig.sc})`});
                 lastShortIdx=i;
             }
