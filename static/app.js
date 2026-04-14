@@ -1440,7 +1440,7 @@ function drawFullSignalZones(){
         ctx.stroke();
 
         // 라벨 (우측)
-        ctx.font=`bold ${22+intensity*6}px sans-serif`;
+        ctx.font='bold 24px sans-serif';
         ctx.textAlign='right';
         ctx.fillStyle=`rgba(${baseColor.join(',')},${0.8+intensity*0.2})`;
         const tag=isLong?'풀롱':'풀숏';
