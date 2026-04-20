@@ -152,6 +152,15 @@ async def api_etherscan():
                     btc_usd = pj.get("bitcoin", {}).get("usd", 0) or 0
             except Exception:
                 pass
+            # price 실패시 coin 엔드포인트에서 가격 추출
+            if eth_usd == 0:
+                try:
+                    if not isinstance(coin_r, Exception):
+                        md = coin_r.json().get("market_data", {})
+                        eth_usd = md.get("current_price", {}).get("usd", 0) or 0
+                        eth_btc = md.get("current_price", {}).get("btc", 0) or 0
+                except Exception:
+                    pass
 
             # ── 공급량 / 마켓캡 ──
             total_supply = 0; market_cap = 0; ath = 0; atl = 0; change_24h = 0
