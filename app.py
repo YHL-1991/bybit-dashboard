@@ -76,47 +76,49 @@ async def api_etherscan():
         "https://rpc.ankr.com/eth",
     ]
 
+    async def _rpc_call(client, method, params=None):
+        """여러 RPC를 순회하며 첫 번째 성공 응답 반환"""
+        for rpc in rpc_endpoints:
+            try:
+                r = await client.post(rpc, json={
+                    "jsonrpc":"2.0","method":method,"params":params or [],"id":1
+                }, timeout=8.0)
+                j = r.json()
+                if j.get("result"):
+                    return j["result"]
+            except Exception:
+                continue
+        return None
+
     try:
-        async with _httpx.AsyncClient(timeout=10.0) as c:
-            # 병렬 호출: 가스 오라클, ETH 가격, 블록번호, 기본료
+        async with _httpx.AsyncClient(timeout=10.0, follow_redirects=True) as c:
+            # 병렬 호출: ETH 가격, 블록번호, 가스, 시장데이터
+            price_task = c.get("https://api.coingecko.com/api/v3/simple/price",
+                  params={"ids":"ethereum,bitcoin","vs_currencies":"usd,btc"})
+            coin_task = c.get("https://api.coingecko.com/api/v3/coins/ethereum",
+                  params={"localization":"false","tickers":"false","market_data":"true","community_data":"false","developer_data":"false"})
+            block_task = _rpc_call(c, "eth_blockNumber")
+            gas_task = _rpc_call(c, "eth_gasPrice")
+
             results = await asyncio.gather(
-                c.get("https://beaconcha.in/api/v1/execution/gasnow"),  # 가스 오라클
-                c.get("https://api.coingecko.com/api/v3/simple/price",
-                      params={"ids":"ethereum,bitcoin","vs_currencies":"usd,btc"}),
-                c.post(rpc_endpoints[0], json={
-                    "jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1
-                }),
-                c.get("https://api.coingecko.com/api/v3/coins/ethereum",
-                      params={"localization":"false","tickers":"false","market_data":"true","community_data":"false","developer_data":"false"}),
+                price_task, coin_task, block_task, gas_task,
                 return_exceptions=True,
             )
-            gas_r, price_r, block_r, coin_r = results
+            price_r, coin_r, block_result, gas_result = results
 
-            # ── 가스 ──
+            # ── 가스 (RPC eth_gasPrice → Safe/Avg/Fast 추정) ──
             gas = {"safe":0, "propose":0, "fast":0, "base_fee":0}
             try:
-                if not isinstance(gas_r, Exception):
-                    gj = gas_r.json().get("data", {})
-                    # gasnow returns Wei, convert to Gwei
+                if gas_result and not isinstance(gas_result, Exception):
+                    gwei = int(gas_result, 16) / 1e9
                     gas = {
-                        "safe": round((gj.get("slow", 0) or 0) / 1e9, 1),
-                        "propose": round((gj.get("standard", 0) or 0) / 1e9, 1),
-                        "fast": round((gj.get("rapid", 0) or 0) / 1e9, 1),
-                        "base_fee": 0,
+                        "safe": round(gwei * 0.85, 1),
+                        "propose": round(gwei, 1),
+                        "fast": round(gwei * 1.2, 1),
+                        "base_fee": round(gwei * 0.75, 1),
                     }
             except Exception:
                 pass
-
-            # Fallback: RPC eth_gasPrice
-            if gas["propose"] == 0:
-                try:
-                    gr = await c.post(rpc_endpoints[0], json={
-                        "jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":1
-                    })
-                    gwei = int(gr.json().get("result","0x0"),16) / 1e9
-                    gas = {"safe":round(gwei*0.9,1),"propose":round(gwei,1),"fast":round(gwei*1.15,1),"base_fee":round(gwei*0.8,1)}
-                except Exception:
-                    pass
 
             # ── ETH 가격 ──
             eth_usd = 0; eth_btc = 0; btc_usd = 0
@@ -132,8 +134,8 @@ async def api_etherscan():
             # ── 블록 번호 ──
             block_num = 0
             try:
-                if not isinstance(block_r, Exception):
-                    block_num = int(block_r.json().get("result","0x0"),16)
+                if block_result and not isinstance(block_result, Exception):
+                    block_num = int(block_result, 16)
             except Exception:
                 pass
 
