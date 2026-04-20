@@ -76,49 +76,71 @@ async def api_etherscan():
         "https://rpc.ankr.com/eth",
     ]
 
-    async def _rpc_call(client, method, params=None):
-        """여러 RPC를 순회하며 첫 번째 성공 응답 반환"""
-        for rpc in rpc_endpoints:
-            try:
-                r = await client.post(rpc, json={
-                    "jsonrpc":"2.0","method":method,"params":params or [],"id":1
-                }, timeout=8.0)
-                j = r.json()
-                if j.get("result"):
-                    return j["result"]
-            except Exception:
-                continue
-        return None
-
     try:
-        async with _httpx.AsyncClient(timeout=10.0, follow_redirects=True) as c:
-            # 병렬 호출: ETH 가격, 블록번호, 가스, 시장데이터
+        async with _httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}) as c:
             price_task = c.get("https://api.coingecko.com/api/v3/simple/price",
                   params={"ids":"ethereum,bitcoin","vs_currencies":"usd,btc"})
             coin_task = c.get("https://api.coingecko.com/api/v3/coins/ethereum",
                   params={"localization":"false","tickers":"false","market_data":"true","community_data":"false","developer_data":"false"})
-            block_task = _rpc_call(c, "eth_blockNumber")
-            gas_task = _rpc_call(c, "eth_gasPrice")
+            # Owlracle 무료 가스 API
+            gas_task = c.get("https://api.owlracle.info/v4/eth/gas")
 
             results = await asyncio.gather(
-                price_task, coin_task, block_task, gas_task,
+                price_task, coin_task, gas_task,
                 return_exceptions=True,
             )
-            price_r, coin_r, block_result, gas_result = results
+            price_r, coin_r, gas_r = results
 
-            # ── 가스 (RPC eth_gasPrice → Safe/Avg/Fast 추정) ──
+            # 블록 번호 - RPC 순차 시도
+            block_num = 0
+            for rpc in rpc_endpoints:
+                try:
+                    r = await c.post(rpc, json={
+                        "jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1
+                    })
+                    res = r.json().get("result")
+                    if res:
+                        block_num = int(res, 16)
+                        break
+                except Exception:
+                    continue
+
+            # ── 가스 (Owlracle) ──
             gas = {"safe":0, "propose":0, "fast":0, "base_fee":0}
             try:
-                if gas_result and not isinstance(gas_result, Exception):
-                    gwei = int(gas_result, 16) / 1e9
-                    gas = {
-                        "safe": round(gwei * 0.85, 1),
-                        "propose": round(gwei, 1),
-                        "fast": round(gwei * 1.2, 1),
-                        "base_fee": round(gwei * 0.75, 1),
-                    }
+                if not isinstance(gas_r, Exception):
+                    gj = gas_r.json()
+                    speeds = gj.get("speeds", [])
+                    base = gj.get("baseFee", 0) or 0
+                    if len(speeds) >= 4:
+                        gas = {
+                            "safe": round(speeds[0].get("gasPrice", 0), 1),
+                            "propose": round(speeds[1].get("gasPrice", 0), 1),
+                            "fast": round(speeds[3].get("gasPrice", 0), 1),
+                            "base_fee": round(base, 2),
+                        }
             except Exception:
                 pass
+
+            # Fallback: RPC eth_gasPrice
+            if gas["propose"] == 0:
+                for rpc in rpc_endpoints:
+                    try:
+                        r = await c.post(rpc, json={
+                            "jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":1
+                        })
+                        res = r.json().get("result")
+                        if res:
+                            gwei = int(res, 16) / 1e9
+                            gas = {
+                                "safe": round(gwei * 0.85, 1),
+                                "propose": round(gwei, 1),
+                                "fast": round(gwei * 1.2, 1),
+                                "base_fee": round(gwei * 0.75, 1),
+                            }
+                            break
+                    except Exception:
+                        continue
 
             # ── ETH 가격 ──
             eth_usd = 0; eth_btc = 0; btc_usd = 0
@@ -128,14 +150,6 @@ async def api_etherscan():
                     eth_usd = pj.get("ethereum", {}).get("usd", 0) or 0
                     eth_btc = pj.get("ethereum", {}).get("btc", 0) or 0
                     btc_usd = pj.get("bitcoin", {}).get("usd", 0) or 0
-            except Exception:
-                pass
-
-            # ── 블록 번호 ──
-            block_num = 0
-            try:
-                if block_result and not isinstance(block_result, Exception):
-                    block_num = int(block_result, 16)
             except Exception:
                 pass
 
