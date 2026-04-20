@@ -40,6 +40,10 @@
         <div class="ticker-item"><span class="ticker-label">펀딩비</span><span class="ticker-value" id="tickFunding">-</span></div>
         <div class="ticker-item"><span class="ticker-label">공포탐욕지수</span><span class="ticker-value" id="tickFearGreed">-</span></div>
         <div class="ticker-item" id="tickKimchiWrap"><span class="ticker-label">김프</span><span class="ticker-value" id="tickKimchi">-</span></div>
+        <div class="ticker-item"><span class="ticker-label">⛽ ETH Gas</span><span class="ticker-value" id="tickGas">-</span></div>
+        <div class="ticker-item"><span class="ticker-label">ETH 가격</span><span class="ticker-value" id="tickEthPrice">-</span></div>
+        <div class="ticker-item"><span class="ticker-label">블록 #</span><span class="ticker-value" id="tickBlock">-</span></div>
+        <div class="ticker-item"><span class="ticker-label">CEX 순흐름</span><span class="ticker-value" id="tickNetFlow">-</span></div>
     </div>
 
     <div id="alertBanner" class="alert-banner" style="display:none;"></div>
@@ -290,6 +294,27 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260414h"></script>
+    <!-- Etherscan 온체인 물량 흐름 -->
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-title"><span class="dot" style="background:#627eea"></span> ETH 온체인 물량 흐름 (Etherscan)</div>
+            <div id="ethFlowSummary" style="font-size:12px;margin-bottom:8px;">
+                <div style="color:var(--text-secondary);font-size:11px;">로딩 중...</div>
+            </div>
+            <div id="ethFlowTxs" style="max-height:260px;overflow-y:auto;font-size:11px;">
+                <div style="color:var(--text-secondary);font-size:11px;">트랜잭션 로딩 중...</div>
+            </div>
+            <p class="hint">CEX 입금(빨강)=매도압력 | 출금(초록)=매수의사 | 10ETH 이상 거래만 표시</p>
+        </div>
+        <div class="card">
+            <div class="card-title"><span class="dot" style="background:#ff9f43"></span> ETH 가스/네트워크 상태</div>
+            <div id="ethGasInfo" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;">로딩 중...</div>
+            </div>
+            <p class="hint">저가스(&lt;20 Gwei)=저활동/바닥 가능성 | 고가스(&gt;100)=과열/패닉 | BTC·ETH 시그널에 반영</p>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=20260414i"></script>
 </body>
 </html>

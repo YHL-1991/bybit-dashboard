@@ -2059,6 +2059,138 @@ async function updateKimchiPremium(){
 }
 
 /* ═══════════════════════════════════
+   Etherscan 온체인 데이터 (가스·블록·ETH 흐름)
+   ═══════════════════════════════════ */
+let lastEthGas=null;        // {safe, propose, fast, base_fee}
+let lastEthPrice=0;          // USD
+let lastEthFlow=null;        // {cex_inflow_eth, cex_outflow_eth, net_flow_eth}
+
+async function updateEtherscan(){
+    try{
+        const [es,flow]=await Promise.all([
+            fetchJSON('/api/etherscan').catch(()=>null),
+            fetchJSON('/api/eth-flow').catch(()=>null),
+        ]);
+
+        // ── 가스/가격/블록 ticker ──
+        if(es&&!es.error){
+            lastEthGas=es.gas||{};
+            lastEthPrice=es.eth_price_usd||0;
+            const gEl=document.getElementById('tickGas');
+            const pEl=document.getElementById('tickEthPrice');
+            const bEl=document.getElementById('tickBlock');
+            if(gEl&&lastEthGas.propose){
+                const g=lastEthGas.propose;
+                const c=g<20?G:g<50?YL:g<100?'#ff9f43':R;
+                gEl.textContent=`${g.toFixed(0)} Gwei`;
+                gEl.style.color=c;
+                gEl.title=`Safe: ${lastEthGas.safe} | Avg: ${lastEthGas.propose} | Fast: ${lastEthGas.fast}`;
+            }
+            if(pEl&&lastEthPrice)pEl.textContent=`$${lastEthPrice.toFixed(2)}`;
+            if(bEl&&es.block_number)bEl.textContent=`#${es.block_number.toLocaleString()}`;
+
+            // 가스 카드 내용
+            const gasEl=document.getElementById('ethGasInfo');
+            if(gasEl&&lastEthGas.propose){
+                const totalEth=(es.supply?.total||0);
+                const stakedEth=(es.supply?.staked||0);
+                const burntEth=(es.supply?.burnt||0);
+                const stakeRatio=totalEth>0?(stakedEth/totalEth*100):0;
+                gasEl.innerHTML=`
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
+                        <div style="background:rgba(0,210,106,0.1);padding:6px;border-radius:4px;text-align:center;border:1px solid ${G}">
+                            <div style="color:var(--text-secondary);font-size:10px;">저속</div>
+                            <div style="color:${G};font-size:18px;font-weight:700;">${lastEthGas.safe.toFixed(0)}</div>
+                            <div style="color:var(--text-secondary);font-size:9px;">Gwei</div>
+                        </div>
+                        <div style="background:rgba(240,185,11,0.1);padding:6px;border-radius:4px;text-align:center;border:1px solid ${YL}">
+                            <div style="color:var(--text-secondary);font-size:10px;">평균</div>
+                            <div style="color:${YL};font-size:18px;font-weight:700;">${lastEthGas.propose.toFixed(0)}</div>
+                            <div style="color:var(--text-secondary);font-size:9px;">Gwei</div>
+                        </div>
+                        <div style="background:rgba(255,71,87,0.1);padding:6px;border-radius:4px;text-align:center;border:1px solid ${R}">
+                            <div style="color:var(--text-secondary);font-size:10px;">빠름</div>
+                            <div style="color:${R};font-size:18px;font-weight:700;">${lastEthGas.fast.toFixed(0)}</div>
+                            <div style="color:var(--text-secondary);font-size:9px;">Gwei</div>
+                        </div>
+                    </div>
+                    <div style="font-size:11px;line-height:1.6;color:var(--text-secondary);">
+                        <div>🔗 <b style="color:var(--text-primary);">Base Fee:</b> ${(lastEthGas.base_fee||0).toFixed(2)} Gwei</div>
+                        ${totalEth>0?`<div>💎 <b style="color:var(--text-primary);">공급량:</b> ${(totalEth/1e6).toFixed(2)}M ETH</div>`:''}
+                        ${stakedEth>0?`<div>🔒 <b style="color:var(--text-primary);">스테이킹:</b> ${(stakedEth/1e6).toFixed(2)}M (${stakeRatio.toFixed(1)}%)</div>`:''}
+                        ${burntEth>0?`<div>🔥 <b style="color:var(--text-primary);">누적 소각:</b> ${(burntEth/1e6).toFixed(2)}M ETH</div>`:''}
+                        ${es.node_count?`<div>🖥️ <b style="color:var(--text-primary);">노드:</b> ${es.node_count.toLocaleString()}</div>`:''}
+                    </div>
+                `;
+            }
+        }
+
+        // ── 온체인 물량 흐름 ──
+        if(flow&&!flow.error&&flow.flow){
+            lastEthFlow=flow.flow;
+            const netFlow=flow.flow.net_flow_eth||0;
+            const netEl=document.getElementById('tickNetFlow');
+            if(netEl){
+                const netColor=netFlow>500?G:netFlow<-500?R:YL;
+                const netSign=netFlow>=0?'+':'';
+                netEl.textContent=`${netSign}${netFlow.toFixed(0)} ETH`;
+                netEl.style.color=netColor;
+                netEl.title=`입금: ${flow.flow.cex_inflow_eth} | 출금: ${flow.flow.cex_outflow_eth}`;
+            }
+
+            // 흐름 요약
+            const sumEl=document.getElementById('ethFlowSummary');
+            if(sumEl){
+                const inflow=flow.flow.cex_inflow_eth||0;
+                const outflow=flow.flow.cex_outflow_eth||0;
+                const biasText=netFlow>200?'📉 매도 압력 (CEX 순입금)':netFlow<-200?'📈 매수 의사 (CEX 순출금)':'⚖️ 중립';
+                const biasColor=netFlow>200?R:netFlow<-200?G:YL;
+                sumEl.innerHTML=`
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
+                        <div style="background:rgba(255,71,87,0.1);padding:6px 8px;border-radius:4px;border-left:3px solid ${R}">
+                            <div style="color:var(--text-secondary);font-size:10px;">CEX 입금</div>
+                            <div style="color:${R};font-size:15px;font-weight:700;">${inflow.toFixed(2)} ETH</div>
+                        </div>
+                        <div style="background:rgba(0,210,106,0.1);padding:6px 8px;border-radius:4px;border-left:3px solid ${G}">
+                            <div style="color:var(--text-secondary);font-size:10px;">CEX 출금</div>
+                            <div style="color:${G};font-size:15px;font-weight:700;">${outflow.toFixed(2)} ETH</div>
+                        </div>
+                    </div>
+                    <div style="text-align:center;padding:5px;background:rgba(0,0,0,0.2);border-radius:4px;color:${biasColor};font-weight:700;font-size:12px;">
+                        순흐름: ${netFlow>=0?'+':''}${netFlow.toFixed(2)} ETH · ${biasText}
+                    </div>
+                    <div style="font-size:10px;color:var(--text-secondary);margin-top:4px;text-align:center;">블록 #${flow.block_number?.toLocaleString()} · ${flow.shown_txs}/${flow.total_txs} 트랜잭션</div>
+                `;
+            }
+
+            // 트랜잭션 목록
+            const txEl=document.getElementById('ethFlowTxs');
+            if(txEl){
+                const txs=(flow.txs||[]).filter(t=>t.value_eth>=10); // 10 ETH 이상
+                if(!txs.length){
+                    txEl.innerHTML='<div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:20px;">10 ETH 이상 거래 없음</div>';
+                }else{
+                    txEl.innerHTML=txs.map(t=>{
+                        const typeColor=t.is_cex_inflow?R:t.is_cex_outflow?G:'var(--text-secondary)';
+                        const typeIcon=t.is_cex_inflow?'📥':t.is_cex_outflow?'📤':'🔁';
+                        const typeLabel=t.is_cex_inflow?'입금':t.is_cex_outflow?'출금':'이동';
+                        return `
+                            <div style="display:grid;grid-template-columns:1fr auto;gap:4px;padding:4px 6px;border-bottom:1px solid rgba(255,255,255,0.05);font-size:10px;">
+                                <div>
+                                    <div style="color:${typeColor};font-weight:700;">${typeIcon} ${typeLabel} · ${t.value_eth.toFixed(2)} ETH</div>
+                                    <div style="color:var(--text-secondary);font-size:9px;">${t.from_label} → ${t.to_label}</div>
+                                </div>
+                                <a href="https://etherscan.io/tx/${t.hash}" target="_blank" style="color:var(--blue);font-size:9px;align-self:center;">🔗</a>
+                            </div>
+                        `;
+                    }).join('');
+                }
+            }
+        }
+    }catch(e){console.warn('etherscan update failed',e);}
+}
+
+/* ═══════════════════════════════════
    풀롱/풀숏 초정밀 시그널 (20개 조건 검증)
    미래 캔들 영역에 시그널 표시
    ═══════════════════════════════════ */
@@ -2136,7 +2268,7 @@ function generateFullSignal(d){
 
     let lS=0,sS=0; // longScore, shortScore (가중합)
     const lR=[],sR=[];
-    const TOTAL_MAX=67;
+    const TOTAL_MAX=71; // 67 + 가스(2) + CEX순흐름(2)
 
     // ── 1점 조건 (17개, 총 17점) ──
     // 1) RSI 반등/하락
@@ -2272,6 +2404,19 @@ function generateFullSignal(d){
     if(adxData&&adxData.adx>25){
         if(adxData.plusDI>adxData.minusDI){lS+=2;lR.push(`ADX강세${adxData.adx.toFixed(0)}`);}
         if(adxData.minusDI>adxData.plusDI){sS+=2;sR.push(`ADX약세${adxData.adx.toFixed(0)}`);}
+    }
+    // 40) ETH 가스 (BTC·ETH 시그널 참고) - 2점
+    const _isBTCorETH=currentSymbol==='BTCUSDT'||currentSymbol==='ETHUSDT';
+    if(_isBTCorETH&&lastEthGas&&lastEthGas.propose){
+        const g=lastEthGas.propose;
+        if(g<20){lS+=2;lR.push(`저가스${g.toFixed(0)}G`);}          // 저활동=바닥 시그널
+        else if(g>100){sS+=2;sR.push(`고가스${g.toFixed(0)}G`);}    // 과열=조정 시그널
+    }
+    // 41) ETH CEX 순흐름 - 2점
+    if(_isBTCorETH&&lastEthFlow){
+        const nf=lastEthFlow.net_flow_eth||0;
+        if(nf>500){sS+=2;sR.push(`CEX입금+${nf.toFixed(0)}E`);}   // 입금 급증=매도 압력
+        else if(nf<-500){lS+=2;lR.push(`CEX출금${nf.toFixed(0)}E`);} // 출금 급증=매수 의사
     }
 
     // ── 3점 조건 (6개, 총 18점) ──
@@ -2565,6 +2710,8 @@ async function refreshAll(){
         if(refreshCount%30===0) tasks.push(updateExpertConsensus());
         // 매 60초: 온체인 데이터
         if(refreshCount%60===0) tasks.push(updateOnchainData());
+        // 매 15초: Etherscan (가스/블록/흐름)
+        if(refreshCount%15===0) tasks.push(updateEtherscan());
     }
     // 매크로 데이터는 주식에도 유용 → 항상 갱신
     if(refreshCount%60===0) tasks.push(updateMacroData());

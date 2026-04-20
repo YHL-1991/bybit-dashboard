@@ -60,6 +60,259 @@ async def api_stock_chart(symbol: str, range: str = "2y", interval: str = "1h"):
 
 
 _kimchi_cache = {"data": None, "ts": 0}
+_etherscan_cache = {"data": None, "ts": 0}
+
+
+@app.get("/api/etherscan")
+async def api_etherscan():
+    """Etherscan 주요 데이터: 가스 가격, 블록, ETH 가격, 공급량, 네트워크 상태"""
+    now = _time.time()
+    if _etherscan_cache["data"] and now - _etherscan_cache["ts"] < 30:
+        return _etherscan_cache["data"]
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as c:
+            gas_r, price_r, block_r, supply_r, node_r = await asyncio.gather(
+                c.get("https://api.etherscan.io/api", params={"module":"gastracker","action":"gasoracle"}),
+                c.get("https://api.etherscan.io/api", params={"module":"stats","action":"ethprice"}),
+                c.get("https://api.etherscan.io/api", params={"module":"proxy","action":"eth_blockNumber"}),
+                c.get("https://api.etherscan.io/api", params={"module":"stats","action":"ethsupply2"}),
+                c.get("https://api.etherscan.io/api", params={"module":"stats","action":"nodecount"}),
+                return_exceptions=True,
+            )
+
+            def _safe_json(r):
+                try:
+                    return r.json() if hasattr(r, "json") else {}
+                except Exception:
+                    return {}
+
+            gas = _safe_json(gas_r).get("result", {}) if not isinstance(gas_r, Exception) else {}
+            price = _safe_json(price_r).get("result", {}) if not isinstance(price_r, Exception) else {}
+            block_hex = _safe_json(block_r).get("result", "0x0") if not isinstance(block_r, Exception) else "0x0"
+            supply = _safe_json(supply_r).get("result", {}) if not isinstance(supply_r, Exception) else {}
+            nodes = _safe_json(node_r).get("result", {}) if not isinstance(node_r, Exception) else {}
+
+            try:
+                block_num = int(block_hex, 16)
+            except Exception:
+                block_num = 0
+
+            # ETH 공급량 (wei → ETH)
+            try:
+                eth_supply = int(supply.get("EthSupply", 0)) / 1e18
+                eth_staking = int(supply.get("Eth2Staking", 0)) / 1e18
+                burnt = int(supply.get("BurntFees", 0)) / 1e18
+            except Exception:
+                eth_supply = eth_staking = burnt = 0
+
+            result = {
+                "gas": {
+                    "safe": float(gas.get("SafeGasPrice", 0) or 0),
+                    "propose": float(gas.get("ProposeGasPrice", 0) or 0),
+                    "fast": float(gas.get("FastGasPrice", 0) or 0),
+                    "base_fee": float(gas.get("suggestBaseFee", 0) or 0),
+                },
+                "eth_price_usd": float(price.get("ethusd", 0) or 0),
+                "eth_btc": float(price.get("ethbtc", 0) or 0),
+                "block_number": block_num,
+                "supply": {
+                    "total": round(eth_supply, 2),
+                    "staked": round(eth_staking, 2),
+                    "burnt": round(burnt, 2),
+                },
+                "node_count": int(nodes.get("TotalNodeCount", 0) or 0),
+                "ts": int(now),
+            }
+            _etherscan_cache["data"] = result
+            _etherscan_cache["ts"] = now
+            return result
+    except Exception as e:
+        return {"error": str(e), "gas": {}, "eth_price_usd": 0}
+
+
+# 주요 CEX/DEX 지갑 주소 (Etherscan 라벨 기반)
+KNOWN_ADDRESSES = {
+    "0x28c6c06298d514db089934071355e5743bf21d60": "Binance 14",
+    "0x21a31ee1afc51d94c2efccaa2092ad1028285549": "Binance 15",
+    "0xdfd5293d8e347dfe59e90efd55b2956a1343963d": "Binance 16",
+    "0x56eddb7aa87536c09ccc2793473599fd21a8b17f": "Binance 17",
+    "0x9696f59e4d72e237be84ffd425dcad154bf96976": "Binance 18",
+    "0x4d9ff38c0e06c23bdb99e153bee3c0d57b96fa17": "Binance 19",
+    "0x564286362092d8e7936f0549571a803b203aaced": "Binance 2",
+    "0xf977814e90da44bfa03b6295a0616a897441acec": "Binance 8",
+    "0x5a52e96bacdabb82fd05763e25335261b270efcb": "Binance 20",
+    "0x73f5ebe90f27b46ea12e5795d16c4b408b19cc6f": "Binance 21",
+    "0x8894e0a0c962cb723c1976a4421c95949be2d4e3": "Binance 22",
+    "0x07e3a30cdbd3d90f5a3ddd1b3d7e6bdaa81e088b": "Binance 23",
+    "0x77696bb39917c91a0c3908d577d5e322095425ca": "Binance 25",
+    "0x46340b20830761efd32832a74d7169b29feb9758": "Crypto.com",
+    "0x71660c4005ba85c37ccec55d0c4493e66fe775d3": "Coinbase 1",
+    "0x503828976d22510aad0201ac7ec88293211d23da": "Coinbase 2",
+    "0xddfabcdc4d8ffc6d5beaf154f18b778f892a0740": "Coinbase 3",
+    "0x3cd751e6b0078be393132286c442345e5dc49699": "Coinbase 4",
+    "0xb5d85cbf7cb3ee0d56b3bb207d5fc4b82f43f511": "Coinbase 5",
+    "0xeb2629a2734e272bcc07bda959863f316f4bd4cf": "Coinbase 6",
+    "0x77134cbc06cb00b66f4c7e623d5fdbf6777635ec": "Bitget",
+    "0xe93381fb4c4f14bda253907b18fad305d799241a": "Bitget 2",
+    "0x0d0707963952f2fba59dd06f2b425ace40b492fe": "Gate.io",
+    "0x1c4b70a3968436b9a0a9cf5205c787eb81bb558c": "Gate.io 2",
+    "0x2910543af39aba0cd09dbb2d50200b3e800a63d2": "Kraken 1",
+    "0xe853c56864a2ebe4576a807d26fdc4a0ada51919": "Kraken 2",
+    "0x43984d578803891dfa9706bdeee6078d80cfc79e": "Kraken 3",
+    "0xa83b11093c858c86321fbc4c20fe82cdbd58e09e": "Kraken 4",
+    "0x267be1c1d684f78cb4f6a176c4911b741e4ffdc0": "Kraken 5",
+    "0xfa52274dd61e1643d2205169732f29114bc240b3": "Kraken 6",
+    "0x53d284357ec70ce289d6d64134dfac8e511c8a3d": "Kraken 7",
+    "0x267be1c1d684f78cb4f6a176c4911b741e4ffdc0": "Kraken",
+    "0xe92d1a43df510f82c66382592a047d288f85226f": "Bitfinex",
+    "0x742d35cc6634c0532925a3b844bc454e4438f44e": "Bitfinex 2",
+    "0x876eabf441b2ee5b5b0554fd502a8e0600950cfa": "Bitfinex 3",
+    "0xfbb1b73c4f0bda4f67dca266ce6ef42f520fbb98": "Bittrex",
+    "0x66f820a414680b5bcda5eeca5dea238543f42054": "OKEx",
+    "0x5041ed759dd4afc3a72b8192c143f72f4724081a": "OKEx 2",
+    "0x68424b7cf0ea26d9f4bbd8c18a61bb7ea42b74d9": "OKEx 3",
+    "0x236f9f97e0e62388479bf9e5ba4889e46b0273c3": "OKEx 4",
+    "0xbf94f0ac752c739f623c463b5210a7fb2cbb420b": "OKX Hot",
+    "0x2c8fbb630289363ac80705a1a61273f76fd5a161": "OKX",
+    "0x15f6de304023226c80ab6d79036d38b91c7cce81": "CoinEx",
+    "0x0211f3cedbef3143223d3acf0e589747933e8527": "CoinEx 2",
+    "0x2b5634c42055806a59e9107ed44d43c426e58258": "KuCoin 1",
+    "0x689c56aef474df92d44a1b70850f808488f9769c": "KuCoin 2",
+    "0xa1d8d972560c2f8144af871db508f0b0b10a3fbf": "KuCoin 3",
+    "0xd6216fc19db775df9774a6e33526131da7d19a2c": "KuCoin 4",
+    "0x88d34944cf554e9cccf4a24292d891f620e9c94f": "Upbit",
+    "0xc6cde7c39eb2f0f0095f41570af89efc2c1ea828": "Upbit 2",
+    "0x390de26d772d2e2005c6d1d24afc902bae37a4bb": "Upbit 3",
+    "0x2d2f460e7e1715971cf9c9616fd3d7c7c237b6bb": "Upbit 4",
+    "0x7ef35bb398e0416b81b019fea395219b65c52164": "Bybit",
+    "0xf89d7b9c864f589bbf53a82105107622b35eaa40": "Bybit 2",
+    "0xee5b5b923ffce93a870b3104b7ca09c3db80047a": "Bybit 3",
+    # DEX / DeFi
+    "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984": "Uniswap",
+    "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap V2 Router",
+    "0xe592427a0aece92de3edee1f18e0157c05861564": "Uniswap V3 Router",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT",
+}
+
+
+_eth_flow_cache = {"data": None, "ts": 0}
+
+
+def _short_addr(addr: str) -> str:
+    if not addr or len(addr) < 10:
+        return addr or "-"
+    return f"{addr[:6]}...{addr[-4:]}"
+
+
+def _tag_address(addr: str) -> str:
+    if not addr:
+        return "-"
+    lower = addr.lower()
+    return KNOWN_ADDRESSES.get(lower, _short_addr(addr))
+
+
+@app.get("/api/eth-flow")
+async def api_eth_flow():
+    """ETH 최신 블록 트랜잭션 흐름 + 거래소 입출금 태깅"""
+    now = _time.time()
+    if _eth_flow_cache["data"] and now - _eth_flow_cache["ts"] < 15:
+        return _eth_flow_cache["data"]
+
+    rpc_endpoints = [
+        "https://cloudflare-eth.com",
+        "https://eth.llamarpc.com",
+        "https://rpc.ankr.com/eth",
+    ]
+
+    try:
+        block_data = None
+        async with _httpx.AsyncClient(timeout=10.0) as c:
+            for rpc in rpc_endpoints:
+                try:
+                    r = await c.post(rpc, json={
+                        "jsonrpc": "2.0",
+                        "method": "eth_getBlockByNumber",
+                        "params": ["latest", True],
+                        "id": 1,
+                    })
+                    j = r.json()
+                    if j.get("result"):
+                        block_data = j["result"]
+                        break
+                except Exception:
+                    continue
+
+        if not block_data:
+            return {"error": "all RPC failed", "txs": [], "flow": {}}
+
+        block_num = int(block_data.get("number", "0x0"), 16)
+        txs_raw = block_data.get("transactions", [])
+
+        txs = []
+        cex_inflow_eth = 0.0
+        cex_outflow_eth = 0.0
+        total_eth = 0.0
+        whale_txs = []
+
+        for t in txs_raw[:50]:  # 최대 50개
+            try:
+                value_eth = int(t.get("value", "0x0"), 16) / 1e18
+            except Exception:
+                value_eth = 0
+            if value_eth < 0.01:  # 노이즈 제거
+                continue
+
+            from_addr = (t.get("from") or "").lower()
+            to_addr = (t.get("to") or "").lower()
+            from_label = _tag_address(from_addr)
+            to_label = _tag_address(to_addr)
+            from_is_cex = from_addr in KNOWN_ADDRESSES and "Uniswap" not in from_label and "USD" not in from_label
+            to_is_cex = to_addr in KNOWN_ADDRESSES and "Uniswap" not in to_label and "USD" not in to_label
+
+            if to_is_cex and not from_is_cex:
+                cex_inflow_eth += value_eth  # 거래소 입금 = 매도 압력
+            elif from_is_cex and not to_is_cex:
+                cex_outflow_eth += value_eth  # 거래소 출금 = 매수 의사
+            total_eth += value_eth
+
+            tx_info = {
+                "hash": t.get("hash", ""),
+                "block": block_num,
+                "from": from_addr,
+                "from_label": from_label,
+                "to": to_addr,
+                "to_label": to_label,
+                "value_eth": round(value_eth, 4),
+                "is_cex_inflow": to_is_cex and not from_is_cex,
+                "is_cex_outflow": from_is_cex and not to_is_cex,
+            }
+            txs.append(tx_info)
+            if value_eth >= 100:
+                whale_txs.append(tx_info)
+
+        # 최신순 + 큰 금액 우선
+        txs.sort(key=lambda x: x["value_eth"], reverse=True)
+        result = {
+            "block_number": block_num,
+            "timestamp": int(block_data.get("timestamp", "0x0"), 16),
+            "total_txs": len(txs_raw),
+            "shown_txs": len(txs),
+            "txs": txs[:15],  # 상위 15개만
+            "whales": whale_txs[:5],
+            "flow": {
+                "cex_inflow_eth": round(cex_inflow_eth, 2),
+                "cex_outflow_eth": round(cex_outflow_eth, 2),
+                "net_flow_eth": round(cex_outflow_eth - cex_inflow_eth, 2),
+                "total_eth": round(total_eth, 2),
+            },
+            "ts": int(now),
+        }
+        _eth_flow_cache["data"] = result
+        _eth_flow_cache["ts"] = now
+        return result
+    except Exception as e:
+        return {"error": str(e), "txs": [], "flow": {}}
 
 
 @app.get("/api/kimchi-premium")
