@@ -2093,9 +2093,12 @@ async function updateEtherscan(){
             const gasEl=document.getElementById('ethGasInfo');
             if(gasEl&&lastEthGas.propose){
                 const totalEth=(es.supply?.total||0);
-                const stakedEth=(es.supply?.staked||0);
-                const burntEth=(es.supply?.burnt||0);
-                const stakeRatio=totalEth>0?(stakedEth/totalEth*100):0;
+                const mcap=(es.supply?.market_cap||0);
+                const ath=(es.supply?.ath_usd||0);
+                const atl=(es.supply?.atl_usd||0);
+                const ch24=(es.supply?.change_24h||0);
+                const ch24Color=ch24>=0?G:R;
+                const athPct=ath>0&&lastEthPrice>0?((lastEthPrice-ath)/ath*100):0;
                 gasEl.innerHTML=`
                     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
                         <div style="background:rgba(0,210,106,0.1);padding:6px;border-radius:4px;text-align:center;border:1px solid ${G}">
@@ -2114,12 +2117,13 @@ async function updateEtherscan(){
                             <div style="color:var(--text-secondary);font-size:9px;">Gwei</div>
                         </div>
                     </div>
-                    <div style="font-size:11px;line-height:1.6;color:var(--text-secondary);">
-                        <div>🔗 <b style="color:var(--text-primary);">Base Fee:</b> ${(lastEthGas.base_fee||0).toFixed(2)} Gwei</div>
-                        ${totalEth>0?`<div>💎 <b style="color:var(--text-primary);">공급량:</b> ${(totalEth/1e6).toFixed(2)}M ETH</div>`:''}
-                        ${stakedEth>0?`<div>🔒 <b style="color:var(--text-primary);">스테이킹:</b> ${(stakedEth/1e6).toFixed(2)}M (${stakeRatio.toFixed(1)}%)</div>`:''}
-                        ${burntEth>0?`<div>🔥 <b style="color:var(--text-primary);">누적 소각:</b> ${(burntEth/1e6).toFixed(2)}M ETH</div>`:''}
-                        ${es.node_count?`<div>🖥️ <b style="color:var(--text-primary);">노드:</b> ${es.node_count.toLocaleString()}</div>`:''}
+                    <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);">
+                        ${ch24!==0?`<div>📊 <b style="color:var(--text-primary);">24시간 변동:</b> <span style="color:${ch24Color};font-weight:700;">${ch24>=0?'+':''}${ch24.toFixed(2)}%</span></div>`:''}
+                        ${mcap>0?`<div>💰 <b style="color:var(--text-primary);">마켓캡:</b> $${(mcap/1e9).toFixed(2)}B</div>`:''}
+                        ${totalEth>0?`<div>💎 <b style="color:var(--text-primary);">유통 공급량:</b> ${(totalEth/1e6).toFixed(2)}M ETH</div>`:''}
+                        ${ath>0?`<div>🏆 <b style="color:var(--text-primary);">ATH:</b> $${ath.toLocaleString()} <span style="color:${athPct<0?R:G};">(${athPct.toFixed(1)}%)</span></div>`:''}
+                        ${atl>0?`<div>📉 <b style="color:var(--text-primary);">ATL:</b> $${atl.toFixed(2)}</div>`:''}
+                        ${es.eth_btc?`<div>₿ <b style="color:var(--text-primary);">ETH/BTC:</b> ${es.eth_btc.toFixed(6)}</div>`:''}
                     </div>
                 `;
             }

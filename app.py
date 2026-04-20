@@ -65,62 +65,104 @@ _etherscan_cache = {"data": None, "ts": 0}
 
 @app.get("/api/etherscan")
 async def api_etherscan():
-    """Etherscan 주요 데이터: 가스 가격, 블록, ETH 가격, 공급량, 네트워크 상태"""
+    """ETH 온체인 데이터: 가스(Beaconcha.in/Blocknative), 가격(CoinGecko), 블록(RPC), 공급량"""
     now = _time.time()
     if _etherscan_cache["data"] and now - _etherscan_cache["ts"] < 30:
         return _etherscan_cache["data"]
+
+    rpc_endpoints = [
+        "https://cloudflare-eth.com",
+        "https://eth.llamarpc.com",
+        "https://rpc.ankr.com/eth",
+    ]
+
     try:
         async with _httpx.AsyncClient(timeout=10.0) as c:
-            gas_r, price_r, block_r, supply_r, node_r = await asyncio.gather(
-                c.get("https://api.etherscan.io/api", params={"module":"gastracker","action":"gasoracle"}),
-                c.get("https://api.etherscan.io/api", params={"module":"stats","action":"ethprice"}),
-                c.get("https://api.etherscan.io/api", params={"module":"proxy","action":"eth_blockNumber"}),
-                c.get("https://api.etherscan.io/api", params={"module":"stats","action":"ethsupply2"}),
-                c.get("https://api.etherscan.io/api", params={"module":"stats","action":"nodecount"}),
+            # 병렬 호출: 가스 오라클, ETH 가격, 블록번호, 기본료
+            results = await asyncio.gather(
+                c.get("https://beaconcha.in/api/v1/execution/gasnow"),  # 가스 오라클
+                c.get("https://api.coingecko.com/api/v3/simple/price",
+                      params={"ids":"ethereum,bitcoin","vs_currencies":"usd,btc"}),
+                c.post(rpc_endpoints[0], json={
+                    "jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1
+                }),
+                c.get("https://api.coingecko.com/api/v3/coins/ethereum",
+                      params={"localization":"false","tickers":"false","market_data":"true","community_data":"false","developer_data":"false"}),
                 return_exceptions=True,
             )
+            gas_r, price_r, block_r, coin_r = results
 
-            def _safe_json(r):
+            # ── 가스 ──
+            gas = {"safe":0, "propose":0, "fast":0, "base_fee":0}
+            try:
+                if not isinstance(gas_r, Exception):
+                    gj = gas_r.json().get("data", {})
+                    # gasnow returns Wei, convert to Gwei
+                    gas = {
+                        "safe": round((gj.get("slow", 0) or 0) / 1e9, 1),
+                        "propose": round((gj.get("standard", 0) or 0) / 1e9, 1),
+                        "fast": round((gj.get("rapid", 0) or 0) / 1e9, 1),
+                        "base_fee": 0,
+                    }
+            except Exception:
+                pass
+
+            # Fallback: RPC eth_gasPrice
+            if gas["propose"] == 0:
                 try:
-                    return r.json() if hasattr(r, "json") else {}
+                    gr = await c.post(rpc_endpoints[0], json={
+                        "jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":1
+                    })
+                    gwei = int(gr.json().get("result","0x0"),16) / 1e9
+                    gas = {"safe":round(gwei*0.9,1),"propose":round(gwei,1),"fast":round(gwei*1.15,1),"base_fee":round(gwei*0.8,1)}
                 except Exception:
-                    return {}
+                    pass
 
-            gas = _safe_json(gas_r).get("result", {}) if not isinstance(gas_r, Exception) else {}
-            price = _safe_json(price_r).get("result", {}) if not isinstance(price_r, Exception) else {}
-            block_hex = _safe_json(block_r).get("result", "0x0") if not isinstance(block_r, Exception) else "0x0"
-            supply = _safe_json(supply_r).get("result", {}) if not isinstance(supply_r, Exception) else {}
-            nodes = _safe_json(node_r).get("result", {}) if not isinstance(node_r, Exception) else {}
-
+            # ── ETH 가격 ──
+            eth_usd = 0; eth_btc = 0; btc_usd = 0
             try:
-                block_num = int(block_hex, 16)
+                if not isinstance(price_r, Exception):
+                    pj = price_r.json()
+                    eth_usd = pj.get("ethereum", {}).get("usd", 0) or 0
+                    eth_btc = pj.get("ethereum", {}).get("btc", 0) or 0
+                    btc_usd = pj.get("bitcoin", {}).get("usd", 0) or 0
             except Exception:
-                block_num = 0
+                pass
 
-            # ETH 공급량 (wei → ETH)
+            # ── 블록 번호 ──
+            block_num = 0
             try:
-                eth_supply = int(supply.get("EthSupply", 0)) / 1e18
-                eth_staking = int(supply.get("Eth2Staking", 0)) / 1e18
-                burnt = int(supply.get("BurntFees", 0)) / 1e18
+                if not isinstance(block_r, Exception):
+                    block_num = int(block_r.json().get("result","0x0"),16)
             except Exception:
-                eth_supply = eth_staking = burnt = 0
+                pass
+
+            # ── 공급량 / 마켓캡 ──
+            total_supply = 0; market_cap = 0; ath = 0; atl = 0; change_24h = 0
+            try:
+                if not isinstance(coin_r, Exception):
+                    md = coin_r.json().get("market_data", {})
+                    total_supply = md.get("circulating_supply", 0) or 0
+                    market_cap = md.get("market_cap", {}).get("usd", 0) or 0
+                    ath = md.get("ath", {}).get("usd", 0) or 0
+                    atl = md.get("atl", {}).get("usd", 0) or 0
+                    change_24h = md.get("price_change_percentage_24h", 0) or 0
+            except Exception:
+                pass
 
             result = {
-                "gas": {
-                    "safe": float(gas.get("SafeGasPrice", 0) or 0),
-                    "propose": float(gas.get("ProposeGasPrice", 0) or 0),
-                    "fast": float(gas.get("FastGasPrice", 0) or 0),
-                    "base_fee": float(gas.get("suggestBaseFee", 0) or 0),
-                },
-                "eth_price_usd": float(price.get("ethusd", 0) or 0),
-                "eth_btc": float(price.get("ethbtc", 0) or 0),
+                "gas": gas,
+                "eth_price_usd": float(eth_usd),
+                "eth_btc": float(eth_btc),
+                "btc_price_usd": float(btc_usd),
                 "block_number": block_num,
                 "supply": {
-                    "total": round(eth_supply, 2),
-                    "staked": round(eth_staking, 2),
-                    "burnt": round(burnt, 2),
+                    "total": round(total_supply, 2),
+                    "market_cap": market_cap,
+                    "ath_usd": ath,
+                    "atl_usd": atl,
+                    "change_24h": round(change_24h, 2),
                 },
-                "node_count": int(nodes.get("TotalNodeCount", 0) or 0),
                 "ts": int(now),
             }
             _etherscan_cache["data"] = result
