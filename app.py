@@ -39,6 +39,7 @@ STOCKS = [
     ("STK:005930.KS", "삼성전자 (KRX:005930)"),
     ("STK:006400.KS", "삼성SDI (KRX:006400)"),
     ("STK:005380.KS", "현대차 (KRX:005380)"),
+    ("STK:001450.KS", "현대해상 (KRX:001450)"),
 ]
 
 import time as _time
@@ -47,15 +48,41 @@ import httpx as _httpx
 YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 
+_stock_cache: dict = {}
+
+
 @app.get("/api/stock/chart/{symbol}")
 async def api_stock_chart(symbol: str, range: str = "2y", interval: str = "1h"):
-    """Yahoo Finance 차트 프록시"""
+    """Yahoo Finance 차트 프록시 (캐시 적용)"""
+    now = _time.time()
+    key = f"{symbol}|{range}|{interval}"
+    # TTL: ticker(2d/1d)=10s, 인트라데이(1m~4h)=30s, 일봉+=120s
+    if range == "2d":
+        ttl = 10
+    elif interval in ("1m", "5m", "15m", "30m", "1h", "4h"):
+        ttl = 30
+    else:
+        ttl = 120
+
+    cached = _stock_cache.get(key)
+    if cached and now - cached["ts"] < ttl:
+        return cached["data"]
+
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     try:
         async with _httpx.AsyncClient(timeout=15.0, headers=YAHOO_HEADERS, follow_redirects=True) as c:
             r = await c.get(url, params={"range": range, "interval": interval})
-            return r.json()
+            data = r.json()
+            # 간단한 LRU: 200개 초과 시 오래된 것 정리
+            if len(_stock_cache) > 200:
+                oldest = min(_stock_cache, key=lambda k: _stock_cache[k]["ts"])
+                _stock_cache.pop(oldest, None)
+            _stock_cache[key] = {"data": data, "ts": now}
+            return data
     except Exception as e:
+        # 실패 시 기존 캐시라도 반환
+        if cached:
+            return cached["data"]
         return {"error": str(e)}
 
 

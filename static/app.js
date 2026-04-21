@@ -2699,9 +2699,14 @@ let refreshCount=0;
 async function refreshAll(){
     refreshCount++;
     const stock=isStock(currentSymbol);
-    // 매 1초: 시세+차트 (주식도 동일)
-    const tasks=[updateTicker(),updateTVChart()];
-    if(!stock){
+    // 시세+차트
+    const tasks=[updateTicker()];
+    if(stock){
+        // 주식: 차트는 15초마다 (Yahoo는 인트라데이도 1분 지연, 1초 갱신 불필요)
+        if(refreshCount%15===0||refreshCount===1)tasks.push(updateTVChart());
+    }else{
+        // 코인: 매 1초 차트 갱신
+        tasks.push(updateTVChart());
         // 코인 전용: 호가창
         tasks.push(updateOrderbook());
         // 매 3초: 청산+시장지표
