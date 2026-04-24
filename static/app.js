@@ -540,6 +540,117 @@ function findSRLevels(d){
     }
     return clusters.filter(c=>c.n>=2).map(c=>c.p);
 }
+
+/* ═══════════════════════════════════
+   추세 맥락 / 고급 패턴 감지
+   ═══════════════════════════════════ */
+
+// 상위추세 판별 (MA200 기반)
+// bull = 상승추세, bear = 하락추세, neutral = 횡보
+function detectHigherTFTrend(d){
+    if(d.length<200)return'neutral';
+    const ma200=calcSMA(d,200);
+    if(!ma200.length)return'neutral';
+    const last=d[d.length-1].close;
+    const ma=ma200[ma200.length-1];
+    // 10봉 전 MA와 비교해서 기울기도 확인
+    const ma10ago=ma200.length>=10?ma200[ma200.length-10]:ma;
+    const slope=ma-ma10ago;
+    const dist=(last-ma)/ma;
+    if(dist>0.02&&slope>=0)return'bull';
+    if(dist<-0.02&&slope<=0)return'bear';
+    return'neutral';
+}
+
+// Wyckoff Spring: 지지 가짜이탈 후 V자 회복 (매집/매수 우위)
+// Upthrust: 저항 가짜돌파 후 급락 (분배/매도 우위)
+function detectWyckoffSpring(d,lookback=20){
+    if(d.length<lookback+3)return null;
+    const prev=d.slice(-lookback-3,-3);
+    const last3=d.slice(-3);
+    const support=Math.min(...prev.map(c=>c.low));
+    const resistance=Math.max(...prev.map(c=>c.high));
+    const lastC=last3[last3.length-1];
+
+    // Bullish Spring: 최근 3봉 중 하나라도 지지 이탈, 마지막 봉이 지지 위 회복 + 양봉
+    const dippedBelow=last3.some(c=>c.low<support);
+    const closedAbove=lastC.close>support;
+    const bullish=lastC.close>lastC.open;
+    if(dippedBelow&&closedAbove&&bullish){
+        // 강도 계산: 이탈 폭 대비 회복력
+        const maxDip=Math.min(...last3.map(c=>c.low));
+        const recovery=(lastC.close-maxDip)/lastC.close;
+        if(recovery>0.005)return{type:'bullish_spring',strength:3};
+    }
+
+    // Bearish Upthrust: 저항 가짜돌파 + 마지막 봉 하락 마감
+    const pokedAbove=last3.some(c=>c.high>resistance);
+    const closedBelow=lastC.close<resistance;
+    const bearish=lastC.close<lastC.open;
+    if(pokedAbove&&closedBelow&&bearish){
+        const maxPoke=Math.max(...last3.map(c=>c.high));
+        const decline=(maxPoke-lastC.close)/lastC.close;
+        if(decline>0.005)return{type:'bearish_upthrust',strength:3};
+    }
+    return null;
+}
+
+// Bull/Bear Flag: 강한 추세(깃대) + 역방향 완만한 조정(깃발) + 볼륨 감소
+function detectFlag(d){
+    if(d.length<15)return null;
+    const pole=d.slice(-15,-6); // 깃대 9봉
+    const flag=d.slice(-6);      // 깃발 6봉
+    if(pole.length<6)return null;
+
+    const poleRange=pole[pole.length-1].close-pole[0].close;
+    const polePct=Math.abs(poleRange)/pole[0].close;
+    if(polePct<0.02)return null; // 깃대 2% 미만은 약함
+
+    const flagRange=flag[flag.length-1].close-flag[0].close;
+    const flagPct=Math.abs(flagRange)/flag[0].close;
+
+    const poleVol=pole.reduce((s,c)=>s+(c.volume||0),0)/pole.length;
+    const flagVol=flag.reduce((s,c)=>s+(c.volume||0),0)/flag.length;
+    const volDecline=flagVol<poleVol*0.8;
+
+    // Bull Flag: 상승 깃대 + 약한 하락/횡보 깃발 + 볼륨 감소
+    if(poleRange>0&&flagRange<=0&&flagPct<polePct*0.5&&volDecline){
+        return{type:'bull_flag',strength:2};
+    }
+    // Bear Flag: 하락 깃대 + 약한 상승/횡보 깃발 + 볼륨 감소
+    if(poleRange<0&&flagRange>=0&&flagPct<polePct*0.5&&volDecline){
+        return{type:'bear_flag',strength:2};
+    }
+    return null;
+}
+
+// 저항 반복 터치 + 볼륨 감소 → 추세 맥락별 해석
+// 상승추세: 돌파 임박 (롱 우위)
+// 하락추세: 돌파 실패 후 매물대 쌓임 (숏 우위)
+function detectResistanceGrind(d,htTrend){
+    if(d.length<30)return null;
+    const recent=d.slice(-25);
+    const price=recent[recent.length-1].close;
+
+    // 최근 고점 영역 찾기 (상위 10%)
+    const highs=recent.map(c=>c.high).sort((a,b)=>b-a);
+    const resistZone=highs[Math.floor(highs.length*0.1)];
+    const tol=price*0.005;
+    // 저항 근처 터치 횟수 (wick이 저항 근처 닿음)
+    const touches=recent.filter(c=>c.high>=resistZone-tol&&c.close<resistZone).length;
+
+    // 볼륨 추세 (최근 10봉 vs 이전 10봉)
+    const volLate=recent.slice(-10).reduce((s,c)=>s+(c.volume||0),0)/10;
+    const volEarly=recent.slice(0,10).reduce((s,c)=>s+(c.volume||0),0)/10;
+    const volFalling=volLate<volEarly*0.85;
+
+    if(touches>=3&&volFalling){
+        if(htTrend==='bull')return{type:'bull_coil',strength:2}; // 돌파 임박
+        if(htTrend==='bear')return{type:'bear_distribution',strength:2}; // 매물 분배
+    }
+    return null;
+}
+
 function drawSupportResistance(d){
     srLines.forEach(s=>{try{tvChartObj.removeSeries(s);}catch(e){}});
     srLines=[];
@@ -2272,7 +2383,7 @@ function generateFullSignal(d){
 
     let lS=0,sS=0; // longScore, shortScore (가중합)
     const lR=[],sR=[];
-    const TOTAL_MAX=71; // 67 + 가스(2) + CEX순흐름(2)
+    const TOTAL_MAX=78; // 71 + 상위추세(2) + 압축돌파(2) + Spring(3)
 
     // ── 1점 조건 (17개, 총 17점) ──
     // 1) RSI 반등/하락
@@ -2423,6 +2534,18 @@ function generateFullSignal(d){
         else if(nf<-500){lS+=2;lR.push(`CEX출금${nf.toFixed(0)}E`);} // 출금 급증=매수 의사
     }
 
+    // ── 42) 상위추세 맥락 (MA200) - 2점 + 후처리 부스트 ──
+    const htTrend=detectHigherTFTrend(d);
+    if(htTrend==='bull'){lS+=2;lR.push('상위추세↑');}
+    else if(htTrend==='bear'){sS+=2;sR.push('상위추세↓');}
+
+    // ── 43) 저항/지지 반복 테스트 + 볼륨감소 (맥락별) - 2점 ──
+    const grind=detectResistanceGrind(d,htTrend);
+    if(grind){
+        if(grind.type==='bull_coil'){lS+=2;lR.push('상승압축돌파임박');}
+        if(grind.type==='bear_distribution'){sS+=2;sR.push('매물분배');}
+    }
+
     // ── 3점 조건 (6개, 총 18점) ──
     // 9) BB 반등
     const bb=calcBollingerBands(d,20,2);
@@ -2463,6 +2586,27 @@ function generateFullSignal(d){
         const v100=ma100[ma100.length-1].value,v200=ma200f[ma200f.length-1].value;
         if(price>v7&&v7>v20&&v20>v100){lS+=3;lR.push('MA정배열');}
         if(price<v7&&v7<v20&&v20<v100){sS+=3;sR.push('MA역배열');}
+    }
+    // 44) Wyckoff Spring / Upthrust - 3점
+    const spring=detectWyckoffSpring(d,20);
+    if(spring){
+        if(spring.type==='bullish_spring'){lS+=3;lR.push('Spring매집');}
+        if(spring.type==='bearish_upthrust'){sS+=3;sR.push('Upthrust분배');}
+    }
+    // 45) Bull Flag / Bear Flag - 2점
+    const flag=detectFlag(d);
+    if(flag){
+        if(flag.type==='bull_flag'){lS+=2;lR.push('상승깃발');}
+        if(flag.type==='bear_flag'){sS+=2;sR.push('하락깃발');}
+    }
+
+    // ── 후처리: 상위추세 맥락 부스트/억제 (추세추종) ──
+    if(htTrend==='bull'){
+        lS=Math.round(lS*1.15); // 상승추세에서 롱 +15%
+        sS=Math.round(sS*0.85); // 상승추세에서 숏 -15%
+    }else if(htTrend==='bear'){
+        sS=Math.round(sS*1.15); // 하락추세에서 숏 +15%
+        lS=Math.round(lS*0.85); // 하락추세에서 롱 -15%
     }
 
     // ── 추세 필터: ADX 추세 방향 역행 시 점수 감산 ──
@@ -2598,6 +2742,22 @@ function checkFullSignalAtCandle(d,idx){
     if(ma7.length&&ma20.length&&ma100.length&&ma200H.length){
         const v7=ma7[ma7.length-1].value,v20=ma20[ma20.length-1].value,v100=ma100[ma100.length-1].value;
         if(price>v7&&v7>v20&&v20>v100)lc+=3;if(price<v7&&v7<v20&&v20<v100)sc+=3;}
+    // ── 고급 패턴: Wyckoff Spring + Flag ──
+    const springH=detectWyckoffSpring(slc,20);
+    if(springH){
+        if(springH.type==='bullish_spring')lc+=3;
+        if(springH.type==='bearish_upthrust')sc+=3;
+    }
+    const flagH=detectFlag(slc);
+    if(flagH){
+        if(flagH.type==='bull_flag')lc+=2;
+        if(flagH.type==='bear_flag')sc+=2;
+    }
+
+    // ── 상위추세 맥락 부스트/억제 (MA200) ──
+    const htTrendH=detectHigherTFTrend(slc);
+    if(htTrendH==='bull'){lc=Math.round(lc*1.15);sc=Math.round(sc*0.85);}
+    else if(htTrendH==='bear'){sc=Math.round(sc*1.15);lc=Math.round(lc*0.85);}
 
     // ── ADX 추세 필터: 강한 추세 역행 시 감산 ──
     const adxH=calcADX(slc,14);
