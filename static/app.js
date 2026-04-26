@@ -651,6 +651,199 @@ function detectResistanceGrind(d,htTrend){
     return null;
 }
 
+/* ═══════════════════════════════════
+   🔮 가격/시점 예측 모듈 (확률 기반)
+   ═══════════════════════════════════ */
+
+// 1) 시간대별/요일별 통계 패턴 (UTC+9 한국시간 기준)
+//    return: {hours: [{hour, avgChange, upRate}], days: [{day, avgChange, upRate}]}
+function analyzeTimePatterns(d){
+    if(d.length<50)return null;
+    const hourMap={},dayMap={};
+    for(let i=1;i<d.length;i++){
+        const c=d[i],p=d[i-1];
+        const date=new Date(c.time*1000);
+        const hr=date.getHours(); // 로컬 시간 (브라우저 KST 가정)
+        const dw=date.getDay();
+        const ch=(c.close-p.close)/p.close*100;
+        if(!hourMap[hr])hourMap[hr]={sum:0,n:0,up:0};
+        hourMap[hr].sum+=ch;hourMap[hr].n++;if(ch>0)hourMap[hr].up++;
+        if(!dayMap[dw])dayMap[dw]={sum:0,n:0,up:0};
+        dayMap[dw].sum+=ch;dayMap[dw].n++;if(ch>0)dayMap[dw].up++;
+    }
+    const hours=[];
+    for(let h=0;h<24;h++){
+        const m=hourMap[h];
+        if(m&&m.n>=3)hours.push({hour:h,avgChange:m.sum/m.n,upRate:m.up/m.n*100,n:m.n});
+        else hours.push({hour:h,avgChange:0,upRate:50,n:0});
+    }
+    const days=[];
+    const dayNames=['일','월','화','수','목','금','토'];
+    for(let dy=0;dy<7;dy++){
+        const m=dayMap[dy];
+        if(m&&m.n>=2)days.push({day:dy,name:dayNames[dy],avgChange:m.sum/m.n,upRate:m.up/m.n*100,n:m.n});
+        else days.push({day:dy,name:dayNames[dy],avgChange:0,upRate:50,n:0});
+    }
+    return{hours,days};
+}
+
+// 2) ATR + 모멘텀 기반 향후 N봉 가격 범위 예측
+function predictPriceRange(d,horizon=6){
+    if(d.length<30)return null;
+    const last=d[d.length-1];
+    const price=last.close;
+    const atr=calcATR(d,14);
+    if(!atr)return null;
+
+    // 추세 모멘텀 (최근 10봉 평균 변동률)
+    const recentChg=[];
+    for(let i=d.length-10;i<d.length;i++){
+        if(i>0)recentChg.push((d[i].close-d[i-1].close)/d[i-1].close);
+    }
+    const avgMomentum=recentChg.reduce((a,b)=>a+b,0)/recentChg.length;
+
+    // EMA 기울기로 방향 가중
+    const ema20=calcEMA(d,20);
+    let dirBias=0;
+    if(ema20.length>=10){
+        const slope=(ema20[ema20.length-1].value-ema20[ema20.length-10].value)/ema20[ema20.length-10].value;
+        dirBias=slope; // 양수=상승, 음수=하락
+    }
+
+    // 향후 horizon 봉 예상 중심가 = 현재가 * (1 + (모멘텀+기울기)/2 * horizon * 0.6)
+    const projShift=(avgMomentum+dirBias)/2*horizon*0.6;
+    const centerPrice=price*(1+projShift);
+
+    // 변동성 채널 = ATR * sqrt(horizon)
+    const volBand=atr*Math.sqrt(horizon);
+    const upper=centerPrice+volBand;
+    const lower=centerPrice-volBand;
+
+    // 방향 확률 (모멘텀 강도 기반)
+    const totalMag=Math.abs(avgMomentum)+Math.abs(dirBias);
+    let upProb=50;
+    if(totalMag>0){
+        const bullStrength=(Math.max(0,avgMomentum)+Math.max(0,dirBias))/(totalMag+0.0001);
+        upProb=Math.round(50+(bullStrength-0.5)*60); // 20~80%로 캡
+    }
+    upProb=Math.max(20,Math.min(80,upProb));
+
+    return{
+        center:centerPrice,upper,lower,
+        upProb,downProb:100-upProb,
+        currentPrice:price,
+        expectedReturn:projShift*100,
+        volatility:volBand/price*100,
+        horizon,
+    };
+}
+
+// 3) 다음 풀롱/풀숏 트리거 카운트다운
+//    현재 점수 → 임계값(롱34/숏34) 도달까지 모멘텀 기반 추정
+function predictNextSignal(d,currentScore){
+    if(!currentScore||d.length<5)return null;
+    const{longConds,shortConds,totalConds}=currentScore;
+    const threshold=Math.round(totalConds*0.5); // 약 50% = 풀롱/풀숏 트리거
+
+    // 최근 5봉간 점수 변화율을 추정하기 위해 N봉씩 거슬러 시뮬레이션
+    const scores=[];
+    for(let back=4;back>=0;back--){
+        const idx=d.length-1-back;
+        if(idx<30)continue;
+        const sub=d.slice(0,idx+1);
+        // 간이 시그널 추정: 직접 호출하지 않고 RSI/MACD 트렌드만 보고 점수 추정
+        const rsi=calcRSI(sub,14);
+        const r=rsi.length?rsi[rsi.length-1].value:50;
+        const ma20=calcSMA(sub,20),ma100=calcSMA(sub,100);
+        const m20=ma20.length?ma20[ma20.length-1].value:sub[sub.length-1].close;
+        const m100=ma100.length?ma100[ma100.length-1].value:sub[sub.length-1].close;
+        const price=sub[sub.length-1].close;
+        // 단순 점수 (롱: RSI<50 + price>MA, 숏: RSI>50 + price<MA)
+        let lScore=0,sScore=0;
+        if(r<40)lScore+=10;else if(r<50)lScore+=5;
+        if(r>60)sScore+=10;else if(r>50)sScore+=5;
+        if(price>m20)lScore+=8;if(price<m20)sScore+=8;
+        if(m20>m100)lScore+=8;if(m20<m100)sScore+=8;
+        scores.push({l:lScore,s:sScore});
+    }
+    if(scores.length<3)return null;
+
+    // 모멘텀 = 최근 점수 - 이전 점수 (봉당 변화율)
+    const lDelta=(scores[scores.length-1].l-scores[0].l)/(scores.length-1);
+    const sDelta=(scores[scores.length-1].s-scores[0].s)/(scores.length-1);
+
+    const isLongBias=longConds>shortConds;
+    const score=isLongBias?longConds:shortConds;
+    const delta=isLongBias?lDelta:sDelta;
+    const remain=threshold-score;
+
+    if(delta<=0||remain<=0){
+        return{
+            type:isLongBias?'풀롱':'풀숏',
+            score,threshold,remaining:remain,
+            barsToTrigger:remain<=0?0:null,
+            estimate:remain<=0?'이미 트리거 임박':'모멘텀 약함 (추세 반전 필요)',
+        };
+    }
+    const bars=Math.ceil(remain/Math.max(1,delta));
+    return{
+        type:isLongBias?'풀롱':'풀숏',
+        score,threshold,remaining:remain,
+        barsToTrigger:bars,
+        deltaPerBar:delta.toFixed(1),
+    };
+}
+
+// 4) RSI 사이클 감지 - 다음 추세 전환 시점 추정
+function detectMarketCycle(d){
+    if(d.length<60)return null;
+    const rsi=calcRSI(d,14);
+    if(rsi.length<40)return null;
+
+    // 최근 50봉에서 RSI > 70 또는 < 30 지점 찾기
+    const peaks=[],troughs=[];
+    for(let i=2;i<rsi.length-2;i++){
+        const r=rsi[i].value;
+        const r1=rsi[i-1].value,r2=rsi[i-2].value;
+        const r3=rsi[i+1].value,r4=rsi[i+2].value;
+        if(r>r1&&r>r2&&r>r3&&r>r4&&r>60)peaks.push({idx:i,value:r,time:rsi[i].time});
+        if(r<r1&&r<r2&&r<r3&&r<r4&&r<40)troughs.push({idx:i,value:r,time:rsi[i].time});
+    }
+    if(peaks.length<2&&troughs.length<2)return null;
+
+    // 사이클 주기 (peak~peak 평균 봉수)
+    let avgPeakCycle=null,avgTroughCycle=null;
+    if(peaks.length>=2){
+        const diffs=[];for(let i=1;i<peaks.length;i++)diffs.push(peaks[i].idx-peaks[i-1].idx);
+        avgPeakCycle=Math.round(diffs.reduce((a,b)=>a+b,0)/diffs.length);
+    }
+    if(troughs.length>=2){
+        const diffs=[];for(let i=1;i<troughs.length;i++)diffs.push(troughs[i].idx-troughs[i-1].idx);
+        avgTroughCycle=Math.round(diffs.reduce((a,b)=>a+b,0)/diffs.length);
+    }
+    const lastIdx=rsi.length-1;
+    const lastPeak=peaks.length?peaks[peaks.length-1]:null;
+    const lastTrough=troughs.length?troughs[troughs.length-1]:null;
+
+    let nextEvent=null;
+    if(avgPeakCycle&&lastPeak){
+        const since=lastIdx-lastPeak.idx;
+        const remain=avgPeakCycle-since;
+        if(remain>0&&remain<avgPeakCycle*1.5){
+            nextEvent={type:'peak',barsRemain:remain,desc:'다음 RSI 고점(과매수) 예상'};
+        }
+    }
+    if(avgTroughCycle&&lastTrough){
+        const since=lastIdx-lastTrough.idx;
+        const remain=avgTroughCycle-since;
+        if(remain>0&&remain<avgTroughCycle*1.5){
+            if(!nextEvent||remain<nextEvent.barsRemain)
+                nextEvent={type:'trough',barsRemain:remain,desc:'다음 RSI 저점(과매도) 예상'};
+        }
+    }
+    return{avgPeakCycle,avgTroughCycle,lastPeak:lastPeak?lastIdx-lastPeak.idx:null,lastTrough:lastTrough?lastIdx-lastTrough.idx:null,nextEvent};
+}
+
 function drawSupportResistance(d){
     srLines.forEach(s=>{try{tvChartObj.removeSeries(s);}catch(e){}});
     srLines=[];
@@ -2176,6 +2369,98 @@ let lastEthGas=null;        // {safe, propose, fast, base_fee}
 let lastEthPrice=0;          // USD
 let lastEthFlow=null;        // {cex_inflow_eth, cex_outflow_eth, net_flow_eth}
 
+/* ═══════════════════════════════════
+   🔮 예측 UI 렌더링
+   ═══════════════════════════════════ */
+function renderPredictionPanel(d,signalResult){
+    const el=document.getElementById('predictionPanel');
+    if(!el)return;
+    if(!d||d.length<60){el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;">데이터 부족</div>';return;}
+
+    const pr1=predictPriceRange(d,1);
+    const pr6=predictPriceRange(d,6);
+    const pr24=predictPriceRange(d,24);
+    const cyc=detectMarketCycle(d);
+    const tp=analyzeTimePatterns(d);
+    const next=signalResult?predictNextSignal(d,{
+        longConds:signalResult.longConds,shortConds:signalResult.shortConds,
+        totalConds:signalResult.totalConds||83,
+    }):null;
+
+    const fmtPx=v=>v?(v>=1?v.toFixed(2):v.toFixed(6)):'-';
+    const probColor=p=>p>=65?G:p<=35?R:YL;
+
+    let html='';
+
+    // 1. 가격 범위 예측 (1봉 / 6봉 / 24봉)
+    html+='<div style="margin-bottom:10px;"><div style="color:var(--text-secondary);font-size:10px;margin-bottom:4px;">⏱️ 향후 가격 범위 예측 (현재 시간프레임 기준)</div>';
+    html+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">';
+    [['1봉',pr1],['6봉',pr6],['24봉',pr24]].forEach(([lbl,pr])=>{
+        if(!pr)return;
+        const c=probColor(pr.upProb);
+        html+=`<div style="background:rgba(255,255,255,0.03);padding:6px 8px;border-radius:4px;border-left:3px solid ${c}">
+            <div style="font-size:10px;color:var(--text-secondary);">${lbl} 후</div>
+            <div style="font-size:11px;color:var(--text-primary);font-weight:600;">${fmtPx(pr.lower)} ~ ${fmtPx(pr.upper)}</div>
+            <div style="font-size:10px;color:${c};margin-top:2px;">↑${pr.upProb}% / ↓${pr.downProb}% (예상 ${pr.expectedReturn>=0?'+':''}${pr.expectedReturn.toFixed(2)}%)</div>
+        </div>`;
+    });
+    html+='</div></div>';
+
+    // 2. 다음 풀롱/풀숏 트리거 카운트다운
+    if(next){
+        const trigColor=next.type==='풀롱'?'#FFD700':'#FF69B4';
+        const eta=next.barsToTrigger!==null?(next.barsToTrigger===0?'트리거 임박':`약 ${next.barsToTrigger}봉 후`):next.estimate;
+        html+=`<div style="margin-bottom:10px;background:rgba(${next.type==='풀롱'?'255,215,0':'255,105,180'},0.1);padding:8px 10px;border-radius:5px;border-left:4px solid ${trigColor}">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="color:${trigColor};font-weight:700;font-size:12px;">⏳ 다음 ${next.type} 트리거</span>
+                <span style="color:var(--text-primary);font-weight:700;font-size:13px;">${eta}</span>
+            </div>
+            <div style="font-size:10px;color:var(--text-secondary);margin-top:3px;">현재 ${next.score} / 임계값 ${next.threshold} (남은 ${Math.max(0,next.remaining)}점${next.deltaPerBar?`, 봉당 +${next.deltaPerBar}점`:''})</div>
+        </div>`;
+    }
+
+    // 3. RSI 사이클
+    if(cyc&&cyc.nextEvent){
+        const ev=cyc.nextEvent;
+        const evColor=ev.type==='trough'?G:R;
+        const evIcon=ev.type==='trough'?'📉➡️📈':'📈➡️📉';
+        html+=`<div style="margin-bottom:10px;background:rgba(${ev.type==='trough'?'0,210,106':'255,71,87'},0.1);padding:8px 10px;border-radius:5px;border-left:4px solid ${evColor}">
+            <div style="display:flex;justify-content:space-between;">
+                <span style="color:${evColor};font-weight:700;font-size:12px;">${evIcon} ${ev.desc}</span>
+                <span style="color:var(--text-primary);font-weight:700;font-size:13px;">${ev.barsRemain}봉 후</span>
+            </div>
+            <div style="font-size:10px;color:var(--text-secondary);margin-top:3px;">평균 사이클: 고점 ${cyc.avgPeakCycle||'-'}봉 / 저점 ${cyc.avgTroughCycle||'-'}봉</div>
+        </div>`;
+    }
+
+    // 4. 시간대 통계 (현재 시간 + 다음 6시간)
+    if(tp){
+        const nowHr=new Date().getHours();
+        html+='<div><div style="color:var(--text-secondary);font-size:10px;margin-bottom:4px;">📅 시간대별 상승확률 (현재→6시간)</div>';
+        html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;">';
+        for(let i=0;i<7;i++){
+            const hr=(nowHr+i)%24;
+            const stat=tp.hours[hr];
+            if(!stat||stat.n<3){
+                html+=`<div style="text-align:center;padding:5px 2px;font-size:9px;background:rgba(255,255,255,0.02);border-radius:3px;color:var(--text-secondary);">
+                    <div style="font-weight:700;">${hr}h</div><div>-</div>
+                </div>`;
+                continue;
+            }
+            const c=probColor(stat.upRate);
+            const isNow=i===0;
+            html+=`<div style="text-align:center;padding:5px 2px;font-size:9px;background:${isNow?'rgba(240,185,11,0.2)':'rgba(255,255,255,0.03)'};border-radius:3px;border:${isNow?'1px solid '+YL:'none'};">
+                <div style="font-weight:700;color:var(--text-primary);">${hr}h</div>
+                <div style="color:${c};font-weight:600;">${stat.upRate.toFixed(0)}%</div>
+                <div style="color:var(--text-secondary);font-size:8px;">${stat.avgChange>=0?'+':''}${stat.avgChange.toFixed(2)}</div>
+            </div>`;
+        }
+        html+='</div></div>';
+    }
+
+    el.innerHTML=html;
+}
+
 async function updateEtherscan(){
     try{
         const [es,flow]=await Promise.all([
@@ -2383,7 +2668,7 @@ function generateFullSignal(d){
 
     let lS=0,sS=0; // longScore, shortScore (가중합)
     const lR=[],sR=[];
-    const TOTAL_MAX=78; // 71 + 상위추세(2) + 압축돌파(2) + Spring(3)
+    const TOTAL_MAX=83; // 78 + 시간대(1) + 가격예측(2) + 사이클(2)
 
     // ── 1점 조건 (17개, 총 17점) ──
     // 1) RSI 반등/하락
@@ -2599,6 +2884,29 @@ function generateFullSignal(d){
         if(flag.type==='bull_flag'){lS+=2;lR.push('상승깃발');}
         if(flag.type==='bear_flag'){sS+=2;sR.push('하락깃발');}
     }
+    // 46) 시간대 통계 - 1점 (현재 시각 강세시간이면 롱, 약세시간이면 숏)
+    const tp=analyzeTimePatterns(d);
+    if(tp){
+        const nowHr=new Date().getHours();
+        const hStat=tp.hours[nowHr];
+        if(hStat&&hStat.n>=5){
+            if(hStat.upRate>=60){lS+=1;lR.push(`강세시간${nowHr}h`);}
+            else if(hStat.upRate<=40){sS+=1;sR.push(`약세시간${nowHr}h`);}
+        }
+    }
+    // 47) 가격 범위 예측 - 2점 (단기 모멘텀 방향 확률)
+    const pr6=predictPriceRange(d,6);
+    if(pr6){
+        if(pr6.upProb>=65){lS+=2;lR.push(`상방${pr6.upProb}%`);}
+        else if(pr6.upProb<=35){sS+=2;sR.push(`하방${100-pr6.upProb}%`);}
+    }
+    // 48) RSI 사이클 - 2점 (다음 저점 임박=롱, 다음 고점 임박=숏)
+    const cyc=detectMarketCycle(d);
+    if(cyc&&cyc.nextEvent){
+        const ev=cyc.nextEvent;
+        if(ev.type==='trough'&&ev.barsRemain<=3){lS+=2;lR.push(`사이클저점${ev.barsRemain}봉`);}
+        else if(ev.type==='peak'&&ev.barsRemain<=3){sS+=2;sR.push(`사이클고점${ev.barsRemain}봉`);}
+    }
 
     // ── 후처리: 상위추세 맥락 부스트/억제 (추세추종) ──
     if(htTrend==='bull'){
@@ -2753,6 +3061,28 @@ function checkFullSignalAtCandle(d,idx){
         if(flagH.type==='bull_flag')lc+=2;
         if(flagH.type==='bear_flag')sc+=2;
     }
+    // ── 가격 예측 + 사이클 (과거 마커용) ──
+    const prH=predictPriceRange(slc,6);
+    if(prH){
+        if(prH.upProb>=65)lc+=2;
+        else if(prH.upProb<=35)sc+=2;
+    }
+    const cycH=detectMarketCycle(slc);
+    if(cycH&&cycH.nextEvent){
+        const ev=cycH.nextEvent;
+        if(ev.type==='trough'&&ev.barsRemain<=3)lc+=2;
+        else if(ev.type==='peak'&&ev.barsRemain<=3)sc+=2;
+    }
+    // 시간대 통계 (해당 캔들의 시간 기준)
+    const tpH=analyzeTimePatterns(slc);
+    if(tpH){
+        const candleHr=new Date(c.time*1000).getHours();
+        const hStat=tpH.hours[candleHr];
+        if(hStat&&hStat.n>=5){
+            if(hStat.upRate>=60)lc+=1;
+            else if(hStat.upRate<=40)sc+=1;
+        }
+    }
 
     // ── 상위추세 맥락 부스트/억제 (MA200) ──
     const htTrendH=detectHigherTFTrend(slc);
@@ -2808,6 +3138,9 @@ function addFullSignalMarkers(d,existingMarkers){
     // 2) 현재 시점: 20개 전체 조건 (외부 데이터 포함)
     const result=generateFullSignal(d);
     if(!result)return markers;
+
+    // 🔮 예측 패널 렌더링
+    try{renderPredictionPanel(d,result);}catch(e){}
 
     // 시그널 패널 업데이트
     const sigEl=document.getElementById('signalContent');
