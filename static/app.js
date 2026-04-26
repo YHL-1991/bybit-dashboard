@@ -2973,11 +2973,175 @@ async function updateTradeLog(){
     }catch(e){}
 }
 
+/* ═══════════════════════════════════
+   백테스팅 시스템: 각 코인별로 풀롱/풀숏 시그널을 과거 캔들에 적용
+   TP +2% / SL -1% / 24봉 내 청산 / 1h 봉 500개 기준
+   ═══════════════════════════════════ */
+const BACKTEST_TP=0.02,BACKTEST_SL=0.01,BACKTEST_HOLD=24;
+
+async function runBacktestForSymbol(symbol){
+    const candles=await bybitKline(symbol,'60',500).catch(()=>null);
+    if(!candles||candles.length<150)return null;
+    const trades=[];
+    // 인디케이터 워밍업 50봉, 청산용 마지막 24봉 제외
+    for(let i=50;i<candles.length-BACKTEST_HOLD;i++){
+        const sig=checkFullSignalAtCandle(candles,i);
+        if(!sig)continue;
+        const isLong=sig.type==='풀롱';
+        const entry=candles[i].close;
+        const tpPrice=isLong?entry*(1+BACKTEST_TP):entry*(1-BACKTEST_TP);
+        const slPrice=isLong?entry*(1-BACKTEST_SL):entry*(1+BACKTEST_SL);
+        let result=null;
+        for(let j=i+1;j<=Math.min(i+BACKTEST_HOLD,candles.length-1);j++){
+            const c=candles[j];
+            if(isLong){
+                if(c.low<=slPrice){result={win:false,pnl:-BACKTEST_SL*100,bars:j-i};break;}
+                if(c.high>=tpPrice){result={win:true,pnl:BACKTEST_TP*100,bars:j-i};break;}
+            }else{
+                if(c.high>=slPrice){result={win:false,pnl:-BACKTEST_SL*100,bars:j-i};break;}
+                if(c.low<=tpPrice){result={win:true,pnl:BACKTEST_TP*100,bars:j-i};break;}
+            }
+        }
+        if(!result){
+            const exit=candles[Math.min(i+BACKTEST_HOLD,candles.length-1)].close;
+            const pnl=isLong?(exit-entry)/entry*100:(entry-exit)/entry*100;
+            result={win:pnl>0,pnl,bars:BACKTEST_HOLD};
+        }
+        trades.push({idx:i,type:sig.type,entry,...result});
+        // 같은 시그널 중복 방지: 다음 진입은 청산 후로 점프
+        i+=Math.max(1,result.bars-1);
+    }
+    if(!trades.length)return{symbol,trades:0,wins:0,losses:0,winRate:0,avgPnL:0,totalPnL:0,maxDD:0,longCount:0,shortCount:0};
+    const wins=trades.filter(t=>t.win).length;
+    const longCount=trades.filter(t=>t.type==='풀롱').length;
+    const shortCount=trades.length-longCount;
+    const totalPnL=trades.reduce((s,t)=>s+t.pnl,0);
+    let peak=0,equity=0,maxDD=0;
+    trades.forEach(t=>{equity+=t.pnl;peak=Math.max(peak,equity);maxDD=Math.min(maxDD,equity-peak);});
+    return{
+        symbol,
+        trades:trades.length,wins,losses:trades.length-wins,
+        winRate:Math.round(wins/trades.length*1000)/10,
+        avgPnL:Math.round(totalPnL/trades.length*100)/100,
+        totalPnL:Math.round(totalPnL*10)/10,
+        maxDD:Math.round(maxDD*10)/10,
+        longCount,shortCount,
+    };
+}
+
+let backtestRunning=false;
+async function runAllBacktests(){
+    if(backtestRunning)return;
+    backtestRunning=true;
+    const btn=document.getElementById('btnBacktestAll');
+    const prog=document.getElementById('backtestProgress');
+    let symbols=[];
+    try{
+        const sym=await fetchJSON('/api/symbols');
+        symbols=sym.symbols||[];
+    }catch(e){
+        symbols=Array.from(document.querySelectorAll('#symbolSelect optgroup[label="코인 선물"] option')).map(o=>o.value);
+    }
+    if(btn){btn.disabled=true;btn.textContent='실행 중...';}
+    let done=0;
+    for(const s of symbols){
+        try{
+            const r=await runBacktestForSymbol(s);
+            if(r){
+                await fetch('/api/backtest/save',{
+                    method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify(r),
+                });
+            }
+        }catch(e){console.warn('backtest fail',s,e);}
+        done++;
+        if(prog)prog.textContent=`${done}/${symbols.length} (${s})`;
+        // 매 5종목마다 UI 갱신
+        if(done%5===0)renderBacktestResults();
+        await new Promise(r=>setTimeout(r,150));
+    }
+    if(btn){btn.disabled=false;btn.textContent='전체 백테스팅 실행';}
+    if(prog)prog.textContent=`완료: ${done}개`;
+    renderBacktestResults();
+    backtestRunning=false;
+}
+
+async function clearBacktests(){
+    if(!confirm('백테스트 결과 모두 삭제?'))return;
+    await fetch('/api/backtest/clear',{method:'POST'});
+    renderBacktestResults();
+}
+
+async function renderBacktestResults(){
+    const el=document.getElementById('backtestResults');
+    if(!el)return;
+    let data={};
+    try{data=await fetchJSON('/api/backtest');}catch(e){}
+    const arr=Object.values(data).filter(r=>r&&r.symbol);
+    if(!arr.length){
+        el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:14px;text-align:center;">백테스트 데이터 없음. <b>"전체 백테스팅 실행"</b> 클릭하세요.<br>(1h 캔들 500봉 / TP +2% / SL -1% / 최대 24봉 보유)</div>';
+        return;
+    }
+    arr.sort((a,b)=>(b.totalPnL||0)-(a.totalPnL||0));
+    const totalTrades=arr.reduce((s,r)=>s+(r.trades||0),0);
+    const totalWins=arr.reduce((s,r)=>s+(r.wins||0),0);
+    const overallWR=totalTrades>0?(totalWins/totalTrades*100):0;
+    const totalPnL=arr.reduce((s,r)=>s+(r.totalPnL||0),0);
+    el.innerHTML=`
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;font-size:11px;">
+            <div style="background:rgba(0,210,106,0.1);padding:6px;border-radius:4px;text-align:center;border-left:3px solid ${G}">
+                <div style="color:var(--text-secondary);font-size:9px;">전체 거래</div>
+                <div style="color:${G};font-size:14px;font-weight:700;">${totalTrades}</div>
+            </div>
+            <div style="background:rgba(240,185,11,0.1);padding:6px;border-radius:4px;text-align:center;border-left:3px solid ${YL}">
+                <div style="color:var(--text-secondary);font-size:9px;">평균 승률</div>
+                <div style="color:${overallWR>=55?G:overallWR<45?R:YL};font-size:14px;font-weight:700;">${overallWR.toFixed(1)}%</div>
+            </div>
+            <div style="background:rgba(88,166,255,0.1);padding:6px;border-radius:4px;text-align:center;border-left:3px solid #58a6ff">
+                <div style="color:var(--text-secondary);font-size:9px;">종목수</div>
+                <div style="color:#58a6ff;font-size:14px;font-weight:700;">${arr.length}</div>
+            </div>
+            <div style="background:${totalPnL>=0?'rgba(0,210,106,0.1)':'rgba(255,71,87,0.1)'};padding:6px;border-radius:4px;text-align:center;border-left:3px solid ${totalPnL>=0?G:R}">
+                <div style="color:var(--text-secondary);font-size:9px;">총손익(누적)</div>
+                <div style="color:${totalPnL>=0?G:R};font-size:14px;font-weight:700;">${totalPnL>=0?'+':''}${totalPnL.toFixed(1)}%</div>
+            </div>
+        </div>
+        <table style="width:100%;font-size:11px;border-collapse:collapse;">
+            <thead><tr style="color:var(--text-secondary);border-bottom:1px solid var(--border);">
+                <th style="text-align:left;padding:4px;">종목</th>
+                <th style="text-align:right;padding:4px;">거래</th>
+                <th style="text-align:center;padding:4px;">L/S</th>
+                <th style="text-align:right;padding:4px;">승률</th>
+                <th style="text-align:right;padding:4px;">평균</th>
+                <th style="text-align:right;padding:4px;">총손익</th>
+                <th style="text-align:right;padding:4px;">MDD</th>
+            </tr></thead>
+            <tbody>
+            ${arr.map(r=>{
+                const wrColor=r.winRate>=60?G:r.winRate<40?R:YL;
+                const pnlColor=r.totalPnL>0?G:R;
+                return `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                    <td style="padding:4px 5px;font-weight:600;color:var(--text-primary);">${r.symbol}</td>
+                    <td style="text-align:right;padding:4px;">${r.trades}</td>
+                    <td style="text-align:center;padding:4px;font-size:10px;color:var(--text-secondary);">${r.longCount}/${r.shortCount}</td>
+                    <td style="text-align:right;padding:4px;color:${wrColor};font-weight:600;">${r.winRate}%</td>
+                    <td style="text-align:right;padding:4px;color:${pnlColor};">${r.avgPnL>=0?'+':''}${r.avgPnL}%</td>
+                    <td style="text-align:right;padding:4px;color:${pnlColor};font-weight:700;">${r.totalPnL>=0?'+':''}${r.totalPnL}%</td>
+                    <td style="text-align:right;padding:4px;color:${R};">${r.maxDD}%</td>
+                </tr>`;
+            }).join('')}
+            </tbody>
+        </table>
+    `;
+}
+
 /* ───── 초기화 ───── */
 (async function(){
     await initTVChart();initRSIChart();initMACDChart();
     await updateTVChart();refreshAll();connectWS();
     // 초기 로드: 컨센서스, 매크로, 온체인
     updateExpertConsensus();updateMacroData();updateOnchainData();
+    // 백테스트 결과 표시
+    renderBacktestResults();
     refreshInterval=setInterval(()=>{refreshAll();checkAutoTrade();},1000);
 })();

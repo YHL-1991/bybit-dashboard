@@ -415,6 +415,65 @@ async def api_eth_flow():
         return {"error": str(e), "txs": [], "flow": {}}
 
 
+# ── 백테스트 결과 영구 저장 ──
+import os as _os
+BACKTEST_FILE = _os.environ.get("BACKTEST_FILE", "/tmp/velox_backtest.json")
+
+
+def _load_backtest():
+    if _os.path.exists(BACKTEST_FILE):
+        try:
+            with open(BACKTEST_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_backtest(data):
+    try:
+        with open(BACKTEST_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+@app.get("/api/backtest")
+async def api_backtest_get():
+    """저장된 백테스트 결과 조회"""
+    return _load_backtest()
+
+
+@app.post("/api/backtest/save")
+async def api_backtest_save(req: Request):
+    """단일 종목 백테스트 결과 저장"""
+    try:
+        body = await req.json()
+        sym = body.get("symbol")
+        if not sym:
+            return {"ok": False, "error": "no symbol"}
+        data = _load_backtest()
+        body["ts"] = int(_time.time())
+        data[sym] = body
+        _save_backtest(data)
+        return {"ok": True, "symbol": sym}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/backtest/clear")
+async def api_backtest_clear():
+    """전체 백테스트 결과 삭제"""
+    _save_backtest({})
+    return {"ok": True}
+
+
+@app.get("/api/symbols")
+async def api_symbols():
+    """프론트엔드에서 SYMBOLS 리스트 조회용"""
+    return {"symbols": SYMBOLS, "stocks": [s for s, _ in STOCKS]}
+
+
 @app.get("/api/kimchi-premium")
 async def api_kimchi_premium():
     """김치프리미엄: 업비트(KRW) vs Bybit(USD) 가격 차이"""

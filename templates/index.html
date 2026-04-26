@@ -315,6 +315,25 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260423a"></script>
+    <!-- 백테스팅 결과 -->
+    <div class="section-full">
+        <div class="card">
+            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+                <span><span class="dot" style="background:#a855f7"></span> 풀롱/풀숏 시그널 백테스팅</span>
+                <span style="display:flex;gap:8px;align-items:center;">
+                    <span id="backtestProgress" style="font-size:10px;color:var(--text-secondary);"></span>
+                    <button id="btnBacktestAll" onclick="runAllBacktests()" style="padding:5px 12px;background:#a855f7;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;">전체 백테스팅 실행</button>
+                    <button onclick="clearBacktests()" style="padding:5px 12px;background:#444;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;">초기화</button>
+                    <button onclick="renderBacktestResults()" style="padding:5px 12px;background:#1f6feb;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;">새로고침</button>
+                </span>
+            </div>
+            <div id="backtestResults" style="max-height:600px;overflow-y:auto;">
+                <div style="color:var(--text-secondary);font-size:11px;padding:14px;text-align:center;">백테스트 데이터 로딩 중...</div>
+            </div>
+            <p class="hint">전 종목에 풀롱/풀숏 시그널을 1h 캔들 500봉에 적용 | TP +2% / SL -1% / 최대 24봉(=24시간) 보유 | 결과는 서버에 저장</p>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=20260424a"></script>
 </body>
 </html>
