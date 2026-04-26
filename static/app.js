@@ -652,7 +652,7 @@ function detectResistanceGrind(d,htTrend){
 }
 
 /* ═══════════════════════════════════
-   🔮 가격/시점 예측 모듈 (확률 기반)
+   가격/시점 예측 모듈 (확률 기반)
    ═══════════════════════════════════ */
 
 // 1) 시간대별/요일별 통계 패턴 (UTC+9 한국시간 기준)
@@ -911,7 +911,7 @@ async function updateCMEGaps(){
         let html='CME 갭: ';
         recent.forEach(g=>{
             const color=g.gap>0?G:R;
-            const status=g.filled?'✅필링':'⬜미필링';
+            const status=g.filled?'필링됨':'미필링';
             html+=`<span style="color:${color};margin-right:12px;">${g.gap>0?'▲':'▼'}$${Math.abs(g.gap).toLocaleString()} (${g.gap_pct>0?'+':''}${g.gap_pct}%) ${status}</span>`;
 
             // 차트에 갭 영역 표시 (두 개의 수평선)
@@ -1129,17 +1129,17 @@ function generateTradeSignal(d){
     patterns.forEach(p=>{
         if(p.type==='long')longScore+=p.strength;
         else shortScore+=p.strength;
-        reasons.push(`${p.type==='long'?'🟢':'🔴'} ${p.name}`);
+        reasons.push(`${p.type==='long'?'[L]':'[S]'} ${p.name}`);
     });
 
     // 2) RSI 신호
     const rsi=calcRSI(d,14);
     if(rsi.length){
         const rv=rsi[rsi.length-1].value;
-        if(rv<30){longScore+=40;reasons.push('🟢 RSI 과매도('+rv.toFixed(0)+')');}
-        else if(rv<40){longScore+=15;reasons.push('🟢 RSI 약세구간('+rv.toFixed(0)+')');}
-        else if(rv>70){shortScore+=40;reasons.push('🔴 RSI 과매수('+rv.toFixed(0)+')');}
-        else if(rv>60){shortScore+=15;reasons.push('🔴 RSI 강세과열('+rv.toFixed(0)+')');}
+        if(rv<30){longScore+=40;reasons.push('RSI 과매도('+rv.toFixed(0)+')');}
+        else if(rv<40){longScore+=15;reasons.push('RSI 약세구간('+rv.toFixed(0)+')');}
+        else if(rv>70){shortScore+=40;reasons.push('RSI 과매수('+rv.toFixed(0)+')');}
+        else if(rv>60){shortScore+=15;reasons.push('RSI 강세과열('+rv.toFixed(0)+')');}
     }
 
     // 3) MACD 신호
@@ -1147,18 +1147,18 @@ function generateTradeSignal(d){
     if(macd.hist.length>=2){
         const h1=macd.hist[macd.hist.length-2].value;
         const h2=macd.hist[macd.hist.length-1].value;
-        if(h1<0&&h2>0){longScore+=50;reasons.push('🟢 MACD 골든크로스');}
-        if(h1>0&&h2<0){shortScore+=50;reasons.push('🔴 MACD 데드크로스');}
-        if(h2>0&&h2>h1){longScore+=10;reasons.push('🟢 MACD 히스토그램↑');}
-        if(h2<0&&h2<h1){shortScore+=10;reasons.push('🔴 MACD 히스토그램↓');}
+        if(h1<0&&h2>0){longScore+=50;reasons.push('MACD 골든크로스');}
+        if(h1>0&&h2<0){shortScore+=50;reasons.push('MACD 데드크로스');}
+        if(h2>0&&h2>h1){longScore+=10;reasons.push('MACD 히스토그램↑');}
+        if(h2<0&&h2<h1){shortScore+=10;reasons.push('MACD 히스토그램↓');}
     }
 
     // 4) MA 배열 신호
     const ma7=calcSMA(d,7),ma20=calcSMA(d,20),ma100=calcSMA(d,100);
     if(ma7.length&&ma20.length&&ma100.length){
         const m7=ma7[ma7.length-1].value,m20=ma20[ma20.length-1].value,m100=ma100[ma100.length-1].value;
-        if(price>m7&&m7>m20&&m20>m100){longScore+=30;reasons.push('🟢 MA 정배열');}
-        if(price<m7&&m7<m20&&m20<m100){shortScore+=30;reasons.push('🔴 MA 역배열');}
+        if(price>m7&&m7>m20&&m20>m100){longScore+=30;reasons.push('MA 정배열');}
+        if(price<m7&&m7<m20&&m20<m100){shortScore+=30;reasons.push('MA 역배열');}
         if(price>m7&&price<m20){reasons.push('⚪ MA7 위, MA20 아래');}
     }
 
@@ -1167,30 +1167,30 @@ function generateTradeSignal(d){
         const avgVol=d.slice(-20,-1).reduce((s,c)=>s+c.volume,0)/19;
         const lastVol=d[d.length-1].volume;
         if(lastVol>avgVol*1.5){
-            if(d[d.length-1].close>d[d.length-1].open){longScore+=20;reasons.push('🟢 거래량 급증+양봉');}
-            else{shortScore+=20;reasons.push('🔴 거래량 급증+음봉');}
+            if(d[d.length-1].close>d[d.length-1].open){longScore+=20;reasons.push('거래량 급증+양봉');}
+            else{shortScore+=20;reasons.push('거래량 급증+음봉');}
         }
     }
 
     // 6) CCI
     const cci=calcCCI(d,20);
     if(cci!==null){
-        if(cci<-100){longScore+=15;reasons.push('🟢 CCI 과매도');}
-        if(cci>100){shortScore+=15;reasons.push('🔴 CCI 과매수');}
+        if(cci<-100){longScore+=15;reasons.push('CCI 과매도');}
+        if(cci>100){shortScore+=15;reasons.push('CCI 과매수');}
     }
 
     // 7) Williams %R
     const wr=calcWilliamsR(d,14);
     if(wr!==null){
-        if(wr<-80){longScore+=15;reasons.push('🟢 W%R 과매도');}
-        if(wr>-20){shortScore+=15;reasons.push('🔴 W%R 과매수');}
+        if(wr<-80){longScore+=15;reasons.push('W%R 과매도');}
+        if(wr>-20){shortScore+=15;reasons.push('W%R 과매수');}
     }
 
     // 8) RSI 다이버전스 (코인의 바이블 기법)
     const rsiDiv=detectRSIDivergence(d,rsi);
     rsiDiv.forEach(s=>{
-        if(s.type==='bullish_div'){longScore+=s.strength;reasons.push('🟢 RSI 상승다이버전스');}
-        if(s.type==='bearish_div'){shortScore+=s.strength;reasons.push('🔴 RSI 하락다이버전스');}
+        if(s.type==='bullish_div'){longScore+=s.strength;reasons.push('RSI 상승다이버전스');}
+        if(s.type==='bearish_div'){shortScore+=s.strength;reasons.push('RSI 하락다이버전스');}
     });
 
     // 9) 유동성 스윕 (비트코인 일루미나티 기법)
@@ -1198,16 +1198,16 @@ function generateTradeSignal(d){
     if(sweeps.length){
         const last=sweeps[sweeps.length-1];
         if(last.type==='bullish_sweep'&&d[d.length-1].time-last.time<86400*3){
-            longScore+=50;reasons.push('🟢 저점 유동성스윕(반전)');}
+            longScore+=50;reasons.push('저점 유동성스윕(반전)');}
         if(last.type==='bearish_sweep'&&d[d.length-1].time-last.time<86400*3){
-            shortScore+=50;reasons.push('🔴 고점 유동성스윕(반전)');}
+            shortScore+=50;reasons.push('고점 유동성스윕(반전)');}
     }
 
     // 10) 와이코프 VSA
     const wyckoff=detectWyckoff(d);
     wyckoff.forEach(w=>{
-        if(w.type==='wyckoff_spring'){longScore+=w.strength;reasons.push('🟢 와이코프 스프링(축적)');}
-        if(w.type==='wyckoff_upthrust'){shortScore+=w.strength;reasons.push('🔴 와이코프 업스러스트(분배)');}
+        if(w.type==='wyckoff_spring'){longScore+=w.strength;reasons.push('와이코프 스프링(축적)');}
+        if(w.type==='wyckoff_upthrust'){shortScore+=w.strength;reasons.push('와이코프 업스러스트(분배)');}
     });
 
     // 11) FVG (비트코인 일루미나티 기법)
@@ -1216,9 +1216,9 @@ function generateTradeSignal(d){
         const last=fvgs[fvgs.length-1];
         const p=d[d.length-1].close;
         if(last.type==='bullish_fvg'&&p<=last.top&&p>=last.bottom){
-            longScore+=40;reasons.push('🟢 상승 FVG 영역 진입');}
+            longScore+=40;reasons.push('상승 FVG 영역 진입');}
         if(last.type==='bearish_fvg'&&p>=last.bottom&&p<=last.top){
-            shortScore+=40;reasons.push('🔴 하락 FVG 영역 진입');}
+            shortScore+=40;reasons.push('하락 FVG 영역 진입');}
     }
 
     // UI 업데이트
@@ -1241,7 +1241,7 @@ function generateTradeSignal(d){
     }
     scoreEl.textContent=`롱: ${longScore}점 | 숏: ${shortScore}점 | 순: ${net>0?'+':''}${net}`;
     // reasons에서 이모지 제거
-    reasonEl.textContent=reasons.slice(0,8).map(r=>r.replace(/🟢|🔴|⚪/g,'')).join(' | ');
+    reasonEl.textContent=reasons.slice(0,8).map(r=>r.replace(/\[L\]|\[S\]|🟢|🔴|⚪/g,'').trim()).join(' | ');
     patternEl.innerHTML=patterns.length?
         '패턴: '+patterns.map(p=>`<span style="color:${p.type==='long'?G:R}">${p.name} [${p.type==='long'?'롱':'숏'}신호 ${p.strength}점]</span>`).join(' | '):
         '패턴: 감지된 패턴 없음';
@@ -1968,7 +1968,7 @@ async function checkAlerts(){
         if(alerts.length>0){
             banner.style.display='block';
             const top=alerts[0];
-            banner.innerHTML=`⚠️ <b>${top.symbol}</b> ${top.reasons.join(' | ')} (가격: ${top.price_change>=0?'+':''}${top.price_change}%) — 총 ${alerts.length}건 감지`;
+            banner.innerHTML=`<b>${top.symbol}</b> ${top.reasons.join(' | ')} (가격: ${top.price_change>=0?'+':''}${top.price_change}%) — 총 ${alerts.length}건 감지`;
             list.innerHTML=alerts.map(a=>{
                 const cls=a.price_change>=0?'positive':'negative';
                 return `<div class="alert-item">
@@ -2370,7 +2370,7 @@ let lastEthPrice=0;          // USD
 let lastEthFlow=null;        // {cex_inflow_eth, cex_outflow_eth, net_flow_eth}
 
 /* ═══════════════════════════════════
-   🔮 예측 UI 렌더링
+   예측 UI 렌더링
    ═══════════════════════════════════ */
 function renderPredictionPanel(d,signalResult){
     const el=document.getElementById('predictionPanel');
@@ -2393,7 +2393,7 @@ function renderPredictionPanel(d,signalResult){
     let html='';
 
     // 1. 가격 범위 예측 (1봉 / 6봉 / 24봉)
-    html+='<div style="margin-bottom:10px;"><div style="color:var(--text-secondary);font-size:10px;margin-bottom:4px;">⏱️ 향후 가격 범위 예측 (현재 시간프레임 기준)</div>';
+    html+='<div style="margin-bottom:10px;"><div style="color:var(--text-secondary);font-size:10px;margin-bottom:4px;">향후 가격 범위 예측 (현재 시간프레임 기준)</div>';
     html+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">';
     [['1봉',pr1],['6봉',pr6],['24봉',pr24]].forEach(([lbl,pr])=>{
         if(!pr)return;
@@ -2412,7 +2412,7 @@ function renderPredictionPanel(d,signalResult){
         const eta=next.barsToTrigger!==null?(next.barsToTrigger===0?'트리거 임박':`약 ${next.barsToTrigger}봉 후`):next.estimate;
         html+=`<div style="margin-bottom:10px;background:rgba(${next.type==='풀롱'?'255,215,0':'255,105,180'},0.1);padding:8px 10px;border-radius:5px;border-left:4px solid ${trigColor}">
             <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span style="color:${trigColor};font-weight:700;font-size:12px;">⏳ 다음 ${next.type} 트리거</span>
+                <span style="color:${trigColor};font-weight:700;font-size:12px;">다음 ${next.type} 트리거</span>
                 <span style="color:var(--text-primary);font-weight:700;font-size:13px;">${eta}</span>
             </div>
             <div style="font-size:10px;color:var(--text-secondary);margin-top:3px;">현재 ${next.score} / 임계값 ${next.threshold} (남은 ${Math.max(0,next.remaining)}점${next.deltaPerBar?`, 봉당 +${next.deltaPerBar}점`:''})</div>
@@ -2423,7 +2423,7 @@ function renderPredictionPanel(d,signalResult){
     if(cyc&&cyc.nextEvent){
         const ev=cyc.nextEvent;
         const evColor=ev.type==='trough'?G:R;
-        const evIcon=ev.type==='trough'?'📉➡️📈':'📈➡️📉';
+        const evIcon=ev.type==='trough'?'▲':'▼';
         html+=`<div style="margin-bottom:10px;background:rgba(${ev.type==='trough'?'0,210,106':'255,71,87'},0.1);padding:8px 10px;border-radius:5px;border-left:4px solid ${evColor}">
             <div style="display:flex;justify-content:space-between;">
                 <span style="color:${evColor};font-weight:700;font-size:12px;">${evIcon} ${ev.desc}</span>
@@ -2436,7 +2436,7 @@ function renderPredictionPanel(d,signalResult){
     // 4. 시간대 통계 (현재 시간 + 다음 6시간)
     if(tp){
         const nowHr=new Date().getHours();
-        html+='<div><div style="color:var(--text-secondary);font-size:10px;margin-bottom:4px;">📅 시간대별 상승확률 (현재→6시간)</div>';
+        html+='<div><div style="color:var(--text-secondary);font-size:10px;margin-bottom:4px;">시간대별 상승확률 (현재→6시간)</div>';
         html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;">';
         for(let i=0;i<7;i++){
             const hr=(nowHr+i)%24;
@@ -2514,12 +2514,12 @@ async function updateEtherscan(){
                         </div>
                     </div>
                     <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);">
-                        ${ch24!==0?`<div>📊 <b style="color:var(--text-primary);">24시간 변동:</b> <span style="color:${ch24Color};font-weight:700;">${ch24>=0?'+':''}${ch24.toFixed(2)}%</span></div>`:''}
-                        ${mcap>0?`<div>💰 <b style="color:var(--text-primary);">마켓캡:</b> $${(mcap/1e9).toFixed(2)}B</div>`:''}
-                        ${totalEth>0?`<div>💎 <b style="color:var(--text-primary);">유통 공급량:</b> ${(totalEth/1e6).toFixed(2)}M ETH</div>`:''}
-                        ${ath>0?`<div>🏆 <b style="color:var(--text-primary);">ATH:</b> $${ath.toLocaleString()} <span style="color:${athPct<0?R:G};">(${athPct.toFixed(1)}%)</span></div>`:''}
-                        ${atl>0?`<div>📉 <b style="color:var(--text-primary);">ATL:</b> $${atl.toFixed(2)}</div>`:''}
-                        ${es.eth_btc?`<div>₿ <b style="color:var(--text-primary);">ETH/BTC:</b> ${es.eth_btc.toFixed(6)}</div>`:''}
+                        ${ch24!==0?`<div><b style="color:var(--text-primary);">24시간 변동:</b> <span style="color:${ch24Color};font-weight:700;">${ch24>=0?'+':''}${ch24.toFixed(2)}%</span></div>`:''}
+                        ${mcap>0?`<div><b style="color:var(--text-primary);">마켓캡:</b> $${(mcap/1e9).toFixed(2)}B</div>`:''}
+                        ${totalEth>0?`<div><b style="color:var(--text-primary);">유통 공급량:</b> ${(totalEth/1e6).toFixed(2)}M ETH</div>`:''}
+                        ${ath>0?`<div><b style="color:var(--text-primary);">ATH:</b> $${ath.toLocaleString()} <span style="color:${athPct<0?R:G};">(${athPct.toFixed(1)}%)</span></div>`:''}
+                        ${atl>0?`<div><b style="color:var(--text-primary);">ATL:</b> $${atl.toFixed(2)}</div>`:''}
+                        ${es.eth_btc?`<div><b style="color:var(--text-primary);">ETH/BTC:</b> ${es.eth_btc.toFixed(6)}</div>`:''}
                     </div>
                 `;
             }
@@ -2543,7 +2543,7 @@ async function updateEtherscan(){
             if(sumEl){
                 const inflow=flow.flow.cex_inflow_eth||0;
                 const outflow=flow.flow.cex_outflow_eth||0;
-                const biasText=netFlow>200?'📉 매도 압력 (CEX 순입금)':netFlow<-200?'📈 매수 의사 (CEX 순출금)':'⚖️ 중립';
+                const biasText=netFlow>200?'매도 압력 (CEX 순입금)':netFlow<-200?'매수 의사 (CEX 순출금)':'중립';
                 const biasColor=netFlow>200?R:netFlow<-200?G:YL;
                 sumEl.innerHTML=`
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
@@ -2572,7 +2572,7 @@ async function updateEtherscan(){
                 }else{
                     txEl.innerHTML=txs.map(t=>{
                         const typeColor=t.is_cex_inflow?R:t.is_cex_outflow?G:'var(--text-secondary)';
-                        const typeIcon=t.is_cex_inflow?'📥':t.is_cex_outflow?'📤':'🔁';
+                        const typeIcon=t.is_cex_inflow?'IN':t.is_cex_outflow?'OUT':'·';
                         const typeLabel=t.is_cex_inflow?'입금':t.is_cex_outflow?'출금':'이동';
                         return `
                             <div style="display:grid;grid-template-columns:1fr auto;gap:4px;padding:4px 6px;border-bottom:1px solid rgba(255,255,255,0.05);font-size:10px;">
@@ -2580,7 +2580,7 @@ async function updateEtherscan(){
                                     <div style="color:${typeColor};font-weight:700;">${typeIcon} ${typeLabel} · ${t.value_eth.toFixed(2)} ETH</div>
                                     <div style="color:var(--text-secondary);font-size:9px;">${t.from_label} → ${t.to_label}</div>
                                 </div>
-                                <a href="https://etherscan.io/tx/${t.hash}" target="_blank" style="color:var(--blue);font-size:9px;align-self:center;">🔗</a>
+                                <a href="https://etherscan.io/tx/${t.hash}" target="_blank" style="color:var(--blue);font-size:9px;align-self:center;text-decoration:none;">[link]</a>
                             </div>
                         `;
                     }).join('');
@@ -3139,7 +3139,7 @@ function addFullSignalMarkers(d,existingMarkers){
     const result=generateFullSignal(d);
     if(!result)return markers;
 
-    // 🔮 예측 패널 렌더링
+    // 예측 패널 렌더링
     try{renderPredictionPanel(d,result);}catch(e){}
 
     // 시그널 패널 업데이트
