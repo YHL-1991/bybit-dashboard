@@ -12,7 +12,7 @@
     <div class="header">
         <img src="/static/logo.png" alt="Velox" class="header-logo">
         <div style="display:flex;gap:12px;align-items:center;">
-            <select id="symbolSelect" class="symbol-select">
+            <select id="symbolSelect" class="symbol-select" style="display:none;">
                 <optgroup label="코인 선물">
                 {% for s in symbols %}
                 <option value="{{ s }}" {% if s == "BTCUSDT" %}selected{% endif %}>{{ s }}</option>
@@ -24,6 +24,16 @@
                 {% endfor %}
                 </optgroup>
             </select>
+            <div class="symbol-search-wrap" style="position:relative;">
+                <button id="symbolSearchBtn" class="symbol-select" type="button" style="min-width:220px;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <span id="symbolSearchLabel">BTCUSDT</span>
+                    <span style="color:var(--text-secondary);font-size:9px;">▼</span>
+                </button>
+                <div id="symbolSearchDropdown" style="display:none;position:absolute;top:calc(100% + 4px);right:0;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;width:320px;max-height:440px;z-index:1000;box-shadow:0 6px 20px rgba(0,0,0,0.5);overflow:hidden;">
+                    <input id="symbolSearchInput" type="text" placeholder="종목 검색 (예: BTC, 삼성, 현대)" autocomplete="off" style="width:100%;padding:10px 12px;background:var(--bg-secondary);border:none;border-bottom:1px solid var(--border);color:var(--text-primary);font-size:13px;outline:none;box-sizing:border-box;">
+                    <div id="symbolSearchList" style="max-height:380px;overflow-y:auto;"></div>
+                </div>
+            </div>
             <select id="intervalSelect" class="symbol-select">
                 <option value="1">1m</option><option value="5">5m</option><option value="15">15m</option>
                 <option value="30">30m</option><option value="60" selected>1h</option><option value="240">4h</option>
@@ -347,6 +357,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260426b"></script>
+    <script src="/static/app.js?v=20260426c"></script>
 </body>
 </html>

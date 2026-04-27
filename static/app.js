@@ -3242,6 +3242,99 @@ document.getElementById('symbolSelect').addEventListener('change',e=>{
 document.getElementById('intervalSelect').addEventListener('change',e=>{currentInterval=e.target.value;updateTVChart();});
 
 /* ═══════════════════════════════════
+   종목 검색 드롭다운 (코인 + 주식)
+   ═══════════════════════════════════ */
+function initSymbolSearch(){
+    const sel=document.getElementById('symbolSelect');
+    const btn=document.getElementById('symbolSearchBtn');
+    const dd=document.getElementById('symbolSearchDropdown');
+    const inp=document.getElementById('symbolSearchInput');
+    const list=document.getElementById('symbolSearchList');
+    const lbl=document.getElementById('symbolSearchLabel');
+    if(!sel||!btn)return;
+
+    // 종목 데이터 추출 (optgroup 그룹별)
+    const items=[];
+    sel.querySelectorAll('optgroup').forEach(og=>{
+        const group=og.label;
+        og.querySelectorAll('option').forEach(o=>{
+            items.push({value:o.value,label:o.textContent.trim(),group});
+        });
+    });
+
+    function updateLabel(){
+        const cur=items.find(i=>i.value===sel.value);
+        if(cur)lbl.textContent=cur.label;
+    }
+    updateLabel();
+
+    function render(query=''){
+        const q=query.toLowerCase().trim();
+        const filtered=q?items.filter(i=>
+            i.value.toLowerCase().includes(q)||
+            i.label.toLowerCase().includes(q)
+        ):items;
+        if(!filtered.length){
+            list.innerHTML='<div style="padding:14px;color:var(--text-secondary);font-size:11px;text-align:center;">검색 결과 없음</div>';
+            return;
+        }
+        let html='';
+        let lastGroup='';
+        filtered.forEach((it,idx)=>{
+            if(it.group!==lastGroup){
+                html+=`<div style="padding:6px 12px;font-size:9px;color:var(--text-secondary);background:rgba(255,255,255,0.03);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">${it.group}</div>`;
+                lastGroup=it.group;
+            }
+            const isSel=it.value===sel.value;
+            const isFirstMatch=q&&idx===0;
+            const bg=isSel?'rgba(255,215,0,0.12)':isFirstMatch?'rgba(255,255,255,0.05)':'';
+            const color=isSel?'var(--yellow)':'var(--text-primary)';
+            const fw=isSel?'600':'400';
+            html+=`<div class="sym-item" data-val="${it.value}" data-bg="${bg}" style="padding:8px 14px;cursor:pointer;font-size:12px;background:${bg};color:${color};font-weight:${fw};border-left:3px solid ${isSel?'var(--yellow)':'transparent'};">${it.label}</div>`;
+        });
+        list.innerHTML=html;
+        list.querySelectorAll('.sym-item').forEach(el=>{
+            el.addEventListener('click',()=>{
+                sel.value=el.dataset.val;
+                sel.dispatchEvent(new Event('change',{bubbles:true}));
+                updateLabel();
+                close();
+            });
+            el.addEventListener('mouseenter',()=>{el.style.background='rgba(255,255,255,0.08)';});
+            el.addEventListener('mouseleave',()=>{el.style.background=el.dataset.bg||'';});
+        });
+    }
+
+    function open(){
+        dd.style.display='block';
+        inp.value='';
+        render('');
+        setTimeout(()=>inp.focus(),0);
+    }
+    function close(){dd.style.display='none';}
+
+    btn.addEventListener('click',e=>{
+        e.stopPropagation();
+        if(dd.style.display==='block')close();else open();
+    });
+    inp.addEventListener('input',()=>render(inp.value));
+    inp.addEventListener('keydown',e=>{
+        if(e.key==='Escape'){close();btn.focus();}
+        if(e.key==='Enter'){
+            e.preventDefault();
+            const first=list.querySelector('.sym-item');
+            if(first)first.click();
+        }
+    });
+    document.addEventListener('click',e=>{
+        if(!btn.contains(e.target)&&!dd.contains(e.target))close();
+    });
+    // 외부에서 select가 변경될 때 라벨 동기화
+    sel.addEventListener('change',updateLabel);
+}
+initSymbolSearch();
+
+/* ═══════════════════════════════════
    자동매매 제어
    ═══════════════════════════════════ */
 let traderConnected=false,autoTradeOn=false,lastAutoTradeTime=0;
