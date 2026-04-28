@@ -149,6 +149,17 @@ async def _refresh_symbols_startup():
     except Exception as e:
         print(f"[symbols] startup refresh failed: {e}")
 
+
+@app.get("/api/symbols/refresh")
+async def api_symbols_refresh():
+    """수동으로 Bybit 종목 리스트 갱신 (디버그용)"""
+    global SYMBOLS
+    result = await _async_fetch_all_usdt_perps()
+    if result:
+        SYMBOLS = result
+        return {"ok": True, "count": len(SYMBOLS), "sample": SYMBOLS[:10]}
+    return {"ok": False, "error": "fetch failed - check server logs", "current_count": len(SYMBOLS)}
+
 STOCKS = [
     ("STK:174900.KQ", "앱클론 (KOSDAQ:174900)"),
     ("STK:TSLA", "테슬라 (NASDAQ:TSLA)"),
