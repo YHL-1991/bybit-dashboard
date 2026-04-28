@@ -3244,6 +3244,67 @@ document.getElementById('intervalSelect').addEventListener('change',e=>{currentI
 /* ═══════════════════════════════════
    종목 검색 드롭다운 (코인 + 주식)
    ═══════════════════════════════════ */
+
+// 클라이언트(브라우저)에서 직접 Bybit API → 모든 USDT 영구선물 가져오기
+// Railway 서버는 Bybit CloudFront에 차단되므로 사용자 브라우저에서 처리
+async function loadAllBybitSymbols(){
+    const PRIORITY=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','BNBUSDT','ADAUSDT','AVAXUSDT','DOTUSDT','LINKUSDT','SUIUSDT','PEPEUSDT','WIFUSDT','ARBUSDT','OPUSDT'];
+    const BASES=['https://api.bybit.com','https://api.bytick.com'];
+    for(const base of BASES){
+        try{
+            const all=[];
+            let cursor='';
+            for(let i=0;i<10;i++){
+                const u=new URL(base+'/v5/market/instruments-info');
+                u.searchParams.set('category','linear');
+                u.searchParams.set('limit','1000');
+                if(cursor)u.searchParams.set('cursor',cursor);
+                const r=await fetch(u.toString());
+                if(!r.ok)break;
+                const j=await r.json();
+                if(j.retCode!==0)break;
+                const list=(j.result?.list)||[];
+                list.forEach(it=>{
+                    if(it.quoteCoin==='USDT'&&it.contractType==='LinearPerpetual'&&it.status==='Trading'){
+                        all.push(it.symbol);
+                    }
+                });
+                cursor=j.result?.nextPageCursor||'';
+                if(!cursor||!list.length)break;
+            }
+            if(all.length){
+                const set=new Set(all);
+                const prio=PRIORITY.filter(s=>set.has(s));
+                const rest=[...set].filter(s=>!prio.includes(s)).sort();
+                console.log(`[symbols] fetched ${all.length} from ${base}`);
+                return prio.concat(rest);
+            }
+        }catch(e){console.warn('[symbols] '+base+' failed',e);}
+    }
+    return null;
+}
+
+async function refreshSymbolDropdown(){
+    const sel=document.getElementById('symbolSelect');
+    if(!sel)return;
+    const fetched=await loadAllBybitSymbols();
+    if(!fetched||!fetched.length)return;
+    const og=sel.querySelector('optgroup[label="코인 선물"]');
+    if(!og)return;
+    const existing=new Set(Array.from(og.querySelectorAll('option')).map(o=>o.value));
+    let added=0;
+    fetched.forEach(s=>{
+        if(!existing.has(s)){
+            const opt=document.createElement('option');
+            opt.value=s;opt.textContent=s;
+            og.appendChild(opt);
+            added++;
+        }
+    });
+    console.log(`[symbols] added ${added} new symbols (total ${fetched.length})`);
+    initSymbolSearch(); // 드롭다운 재구성
+}
+
 function initSymbolSearch(){
     const sel=document.getElementById('symbolSelect');
     const btn=document.getElementById('symbolSearchBtn');
@@ -3333,6 +3394,8 @@ function initSymbolSearch(){
     sel.addEventListener('change',updateLabel);
 }
 initSymbolSearch();
+// 모든 Bybit USDT 영구선물을 사용자 브라우저에서 비동기 로드
+refreshSymbolDropdown();
 
 /* ═══════════════════════════════════
    자동매매 제어
