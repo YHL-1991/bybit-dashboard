@@ -3284,6 +3284,22 @@ async function loadAllBybitSymbols(){
     return null;
 }
 
+// items 배열은 외부 closure에서 관리 (리프레시 가능)
+let _symbolItems=[];
+let _symbolSearchInited=false;
+
+function _rebuildSymbolItems(){
+    const sel=document.getElementById('symbolSelect');
+    if(!sel)return;
+    _symbolItems.length=0;
+    sel.querySelectorAll('optgroup').forEach(og=>{
+        const group=og.label;
+        og.querySelectorAll('option').forEach(o=>{
+            _symbolItems.push({value:o.value,label:o.textContent.trim(),group});
+        });
+    });
+}
+
 async function refreshSymbolDropdown(){
     const sel=document.getElementById('symbolSelect');
     if(!sel)return;
@@ -3302,10 +3318,12 @@ async function refreshSymbolDropdown(){
         }
     });
     console.log(`[symbols] added ${added} new symbols (total ${fetched.length})`);
-    initSymbolSearch(); // 드롭다운 재구성
+    // 이벤트 리스너 재등록 X — items만 갱신
+    _rebuildSymbolItems();
 }
 
 function initSymbolSearch(){
+    if(_symbolSearchInited)return;
     const sel=document.getElementById('symbolSelect');
     const btn=document.getElementById('symbolSearchBtn');
     const dd=document.getElementById('symbolSearchDropdown');
@@ -3313,28 +3331,22 @@ function initSymbolSearch(){
     const list=document.getElementById('symbolSearchList');
     const lbl=document.getElementById('symbolSearchLabel');
     if(!sel||!btn)return;
+    _symbolSearchInited=true;
 
-    // 종목 데이터 추출 (optgroup 그룹별)
-    const items=[];
-    sel.querySelectorAll('optgroup').forEach(og=>{
-        const group=og.label;
-        og.querySelectorAll('option').forEach(o=>{
-            items.push({value:o.value,label:o.textContent.trim(),group});
-        });
-    });
+    _rebuildSymbolItems();
 
     function updateLabel(){
-        const cur=items.find(i=>i.value===sel.value);
+        const cur=_symbolItems.find(i=>i.value===sel.value);
         if(cur)lbl.textContent=cur.label;
     }
     updateLabel();
 
     function render(query=''){
         const q=query.toLowerCase().trim();
-        const filtered=q?items.filter(i=>
+        const filtered=q?_symbolItems.filter(i=>
             i.value.toLowerCase().includes(q)||
             i.label.toLowerCase().includes(q)
-        ):items;
+        ):_symbolItems;
         if(!filtered.length){
             list.innerHTML='<div style="padding:14px;color:var(--text-secondary);font-size:11px;text-align:center;">검색 결과 없음</div>';
             return;
@@ -3354,16 +3366,7 @@ function initSymbolSearch(){
             html+=`<div class="sym-item" data-val="${it.value}" data-bg="${bg}" style="padding:8px 14px;cursor:pointer;font-size:12px;background:${bg};color:${color};font-weight:${fw};border-left:3px solid ${isSel?'var(--yellow)':'transparent'};">${it.label}</div>`;
         });
         list.innerHTML=html;
-        list.querySelectorAll('.sym-item').forEach(el=>{
-            el.addEventListener('click',()=>{
-                sel.value=el.dataset.val;
-                sel.dispatchEvent(new Event('change',{bubbles:true}));
-                updateLabel();
-                close();
-            });
-            el.addEventListener('mouseenter',()=>{el.style.background='rgba(255,255,255,0.08)';});
-            el.addEventListener('mouseleave',()=>{el.style.background=el.dataset.bg||'';});
-        });
+        // 이벤트 위임으로 단일 리스너 (이미 list에 한 번만 등록됨)
     }
 
     function open(){
@@ -3374,10 +3377,12 @@ function initSymbolSearch(){
     }
     function close(){dd.style.display='none';}
 
+    // 버튼 클릭
     btn.addEventListener('click',e=>{
         e.stopPropagation();
         if(dd.style.display==='block')close();else open();
     });
+    // 검색 입력
     inp.addEventListener('input',()=>render(inp.value));
     inp.addEventListener('keydown',e=>{
         if(e.key==='Escape'){close();btn.focus();}
@@ -3387,14 +3392,32 @@ function initSymbolSearch(){
             if(first)first.click();
         }
     });
+    // 리스트 항목 이벤트 위임 (단일 리스너)
+    list.addEventListener('click',e=>{
+        const item=e.target.closest('.sym-item');
+        if(!item)return;
+        sel.value=item.dataset.val;
+        sel.dispatchEvent(new Event('change',{bubbles:true}));
+        updateLabel();
+        close();
+    });
+    list.addEventListener('mouseover',e=>{
+        const item=e.target.closest('.sym-item');
+        if(item)item.style.background='rgba(255,255,255,0.08)';
+    });
+    list.addEventListener('mouseout',e=>{
+        const item=e.target.closest('.sym-item');
+        if(item)item.style.background=item.dataset.bg||'';
+    });
+    // 외부 클릭 시 닫기 (단일 등록)
     document.addEventListener('click',e=>{
         if(!btn.contains(e.target)&&!dd.contains(e.target))close();
     });
-    // 외부에서 select가 변경될 때 라벨 동기화
+    // select 외부 변경 시 라벨 동기화
     sel.addEventListener('change',updateLabel);
 }
 initSymbolSearch();
-// 모든 Bybit USDT 영구선물을 사용자 브라우저에서 비동기 로드
+// 모든 Bybit USDT 영구선물을 사용자 브라우저에서 비동기 로드 (items만 갱신)
 refreshSymbolDropdown();
 
 /* ═══════════════════════════════════
