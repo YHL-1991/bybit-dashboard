@@ -24,16 +24,60 @@ BASE_DIR = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
-SYMBOLS = [
+# 인기 종목 우선순위 (검색 드롭다운 상단 노출용)
+PRIORITY_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
     "BNBUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
     "SUIUSDT", "PEPEUSDT", "WIFUSDT", "ARBUSDT", "OPUSDT",
+]
+
+# Fallback list (API 실패 시 사용) - 사용자가 추가했던 종목들
+FALLBACK_SYMBOLS = PRIORITY_SYMBOLS + [
     "RAVEUSDT", "ENJUSDT", "ARIAUSDT", "DRIFTUSDT", "BLESSUSDT", "MYXUSDT",
     "INUSDT", "BIOUSDT", "CHZUSDT", "ORDIUSDT", "BASEDUSDT",
     "SIRENUSDT", "SOONUSDT", "SIGNUSDT", "HIGHUSDT", "PORTALUSDT", "ALICEUSDT",
     "CHIPUSDT", "METUSDT", "SEIUSDT", "HUSDT",
     "BSBUSDT", "KATUSDT", "MOVRUSDT", "SPKUSDT", "ORCAUSDT",
 ]
+
+
+def _fetch_all_usdt_perps():
+    """Bybit에서 모든 USDT 영구선물 종목 조회 (startup 시 1회)"""
+    try:
+        import httpx as __h
+        syms = []
+        cursor = ""
+        with __h.Client(timeout=15.0) as c:
+            for _ in range(10):  # 최대 10페이지 (10000개)
+                params = {"category": "linear", "limit": 1000}
+                if cursor:
+                    params["cursor"] = cursor
+                r = c.get("https://api.bybit.com/v5/market/instruments-info", params=params)
+                j = r.json()
+                result = j.get("result", {})
+                instruments = result.get("list", []) or []
+                for i in instruments:
+                    if (i.get("quoteCoin") == "USDT"
+                        and i.get("contractType") == "LinearPerpetual"
+                        and i.get("status") == "Trading"):
+                        syms.append(i["symbol"])
+                cursor = result.get("nextPageCursor", "") or ""
+                if not cursor or not instruments:
+                    break
+        if not syms:
+            return None
+        # 우선순위 종목 먼저, 그 외 알파벳순
+        prio = [s for s in PRIORITY_SYMBOLS if s in syms]
+        rest = sorted(set(syms) - set(prio))
+        return prio + rest
+    except Exception as e:
+        print(f"[symbols] fetch failed: {e}")
+        return None
+
+
+_dynamic_symbols = _fetch_all_usdt_perps()
+SYMBOLS = _dynamic_symbols if _dynamic_symbols else FALLBACK_SYMBOLS
+print(f"[symbols] loaded {len(SYMBOLS)} USDT perpetuals")
 
 STOCKS = [
     ("STK:174900.KQ", "앱클론 (KOSDAQ:174900)"),
