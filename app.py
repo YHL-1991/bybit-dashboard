@@ -87,9 +87,67 @@ def _fetch_all_usdt_perps():
     return None
 
 
-_dynamic_symbols = _fetch_all_usdt_perps()
-SYMBOLS = _dynamic_symbols if _dynamic_symbols else FALLBACK_SYMBOLS
-print(f"[symbols] loaded {len(SYMBOLS)} USDT perpetuals")
+# 시작 시점엔 fallback 사용. startup 이벤트에서 비동기로 갱신
+SYMBOLS = list(FALLBACK_SYMBOLS)
+print(f"[symbols] initial {len(SYMBOLS)} (fallback)")
+
+
+async def _async_fetch_all_usdt_perps():
+    """비동기 버전 - 여러 도메인 폴백 + 페이지네이션"""
+    import httpx as __h
+    BASES = ["https://api.bybit.com", "https://api.bytick.com"]
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    for base in BASES:
+        try:
+            syms = []
+            cursor = ""
+            async with __h.AsyncClient(timeout=20.0, headers=HEADERS, follow_redirects=True) as c:
+                for _ in range(10):
+                    params = {"category": "linear", "limit": 1000}
+                    if cursor:
+                        params["cursor"] = cursor
+                    r = await c.get(f"{base}/v5/market/instruments-info", params=params)
+                    if r.status_code != 200:
+                        print(f"[symbols] {base} HTTP {r.status_code}")
+                        break
+                    j = r.json()
+                    if j.get("retCode") != 0:
+                        break
+                    result = j.get("result", {})
+                    instruments = result.get("list", []) or []
+                    for i in instruments:
+                        if (i.get("quoteCoin") == "USDT"
+                            and i.get("contractType") == "LinearPerpetual"
+                            and i.get("status") == "Trading"):
+                            syms.append(i["symbol"])
+                    cursor = result.get("nextPageCursor", "") or ""
+                    if not cursor or not instruments:
+                        break
+            if syms:
+                prio = [s for s in PRIORITY_SYMBOLS if s in syms]
+                rest = sorted(set(syms) - set(prio))
+                print(f"[symbols] fetched {len(syms)} from {base}")
+                return prio + rest
+        except Exception as e:
+            print(f"[symbols] {base} failed: {e}")
+            continue
+    return None
+
+
+@app.on_event("startup")
+async def _refresh_symbols_startup():
+    """앱 시작 후 1회 USDT 영구선물 동적 갱신"""
+    global SYMBOLS
+    try:
+        result = await _async_fetch_all_usdt_perps()
+        if result:
+            SYMBOLS = result
+            print(f"[symbols] dynamic load OK: {len(SYMBOLS)}")
+    except Exception as e:
+        print(f"[symbols] startup refresh failed: {e}")
 
 STOCKS = [
     ("STK:174900.KQ", "앱클론 (KOSDAQ:174900)"),
