@@ -43,36 +43,48 @@ FALLBACK_SYMBOLS = PRIORITY_SYMBOLS + [
 
 def _fetch_all_usdt_perps():
     """Bybit에서 모든 USDT 영구선물 종목 조회 (startup 시 1회)"""
-    try:
-        import httpx as __h
-        syms = []
-        cursor = ""
-        with __h.Client(timeout=15.0) as c:
-            for _ in range(10):  # 최대 10페이지 (10000개)
-                params = {"category": "linear", "limit": 1000}
-                if cursor:
-                    params["cursor"] = cursor
-                r = c.get("https://api.bybit.com/v5/market/instruments-info", params=params)
-                j = r.json()
-                result = j.get("result", {})
-                instruments = result.get("list", []) or []
-                for i in instruments:
-                    if (i.get("quoteCoin") == "USDT"
-                        and i.get("contractType") == "LinearPerpetual"
-                        and i.get("status") == "Trading"):
-                        syms.append(i["symbol"])
-                cursor = result.get("nextPageCursor", "") or ""
-                if not cursor or not instruments:
-                    break
-        if not syms:
-            return None
-        # 우선순위 종목 먼저, 그 외 알파벳순
-        prio = [s for s in PRIORITY_SYMBOLS if s in syms]
-        rest = sorted(set(syms) - set(prio))
-        return prio + rest
-    except Exception as e:
-        print(f"[symbols] fetch failed: {e}")
-        return None
+    import httpx as __h
+    BASES = ["https://api.bybit.com", "https://api.bytick.com"]
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    for base in BASES:
+        try:
+            syms = []
+            cursor = ""
+            with __h.Client(timeout=20.0, headers=HEADERS, follow_redirects=True) as c:
+                for _ in range(10):
+                    params = {"category": "linear", "limit": 1000}
+                    if cursor:
+                        params["cursor"] = cursor
+                    r = c.get(f"{base}/v5/market/instruments-info", params=params)
+                    if r.status_code != 200:
+                        print(f"[symbols] {base} HTTP {r.status_code}")
+                        break
+                    j = r.json()
+                    if j.get("retCode") != 0:
+                        print(f"[symbols] {base} retCode={j.get('retCode')}")
+                        break
+                    result = j.get("result", {})
+                    instruments = result.get("list", []) or []
+                    for i in instruments:
+                        if (i.get("quoteCoin") == "USDT"
+                            and i.get("contractType") == "LinearPerpetual"
+                            and i.get("status") == "Trading"):
+                            syms.append(i["symbol"])
+                    cursor = result.get("nextPageCursor", "") or ""
+                    if not cursor or not instruments:
+                        break
+            if syms:
+                prio = [s for s in PRIORITY_SYMBOLS if s in syms]
+                rest = sorted(set(syms) - set(prio))
+                print(f"[symbols] fetched {len(syms)} from {base}")
+                return prio + rest
+        except Exception as e:
+            print(f"[symbols] {base} failed: {e}")
+            continue
+    return None
 
 
 _dynamic_symbols = _fetch_all_usdt_perps()
