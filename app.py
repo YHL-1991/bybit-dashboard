@@ -154,11 +154,34 @@ async def _refresh_symbols_startup():
 async def api_symbols_refresh():
     """수동으로 Bybit 종목 리스트 갱신 (디버그용)"""
     global SYMBOLS
-    result = await _async_fetch_all_usdt_perps()
-    if result:
-        SYMBOLS = result
-        return {"ok": True, "count": len(SYMBOLS), "sample": SYMBOLS[:10]}
-    return {"ok": False, "error": "fetch failed - check server logs", "current_count": len(SYMBOLS)}
+    import httpx as __h
+    BASES = ["https://api.bybit.com", "https://api.bytick.com"]
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    debug_log = []
+    for base in BASES:
+        try:
+            async with __h.AsyncClient(timeout=20.0, headers=HEADERS, follow_redirects=True) as c:
+                r = await c.get(f"{base}/v5/market/instruments-info",
+                                params={"category": "linear", "limit": 1000})
+                debug_log.append({"base": base, "status": r.status_code, "len": len(r.text)})
+                if r.status_code == 200:
+                    j = r.json()
+                    debug_log.append({"retCode": j.get("retCode"), "retMsg": j.get("retMsg"),
+                                       "list_len": len(j.get("result", {}).get("list", []) or [])})
+                    if j.get("retCode") == 0:
+                        # 성공 → 페이지네이션 + 갱신
+                        result = await _async_fetch_all_usdt_perps()
+                        if result:
+                            SYMBOLS = result
+                            return {"ok": True, "count": len(SYMBOLS), "sample": SYMBOLS[:10]}
+                else:
+                    debug_log.append({"body_sample": r.text[:300]})
+        except Exception as e:
+            debug_log.append({"base": base, "exception": str(e)[:200]})
+    return {"ok": False, "error": "fetch failed", "current_count": len(SYMBOLS), "debug": debug_log}
 
 STOCKS = [
     ("STK:174900.KQ", "앱클론 (KOSDAQ:174900)"),
