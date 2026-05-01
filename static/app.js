@@ -438,12 +438,13 @@ async function updateTVChart(){
         if(!d.length)return;
         lastKlineData=d;
         candleSeries.setData(d);
-        volumeSeries.setData(d.map(x=>({time:x.time,value:x.volume,color:x.close>=x.open?'rgba(0,210,106,0.25)':'rgba(255,71,87,0.25)'})));
+        // 거래량: turnover(USDT 거래대금) 우선, 없으면 volume*close 추정 (Bybit 공식 차트와 일치)
+        volumeSeries.setData(d.map(x=>({time:x.time,value:(x.turnover||x.volume*x.close||x.volume),color:x.close>=x.open?'rgba(0,210,106,0.25)':'rgba(255,71,87,0.25)'})));
 
-        // MA
+        // MA (현재 시간프레임 기준 N봉 단순평균)
         const leg=[];
         for(const p of MA_P){const ma=calcSMA(d,p);maSeries[p].setData(ma);if(ma.length)leg.push(`<span style="color:${MA_C[p]}">MA${p}:${fp(ma[ma.length-1].value)}</span>`);}
-        document.getElementById('maLegend').innerHTML=leg.join(' | ');
+        document.getElementById('maLegend').innerHTML=leg.join(' | ')+'<span style="color:var(--text-secondary);margin-left:8px;font-size:9px;">(N=현재 시간프레임 봉 수)</span>';
 
         // 이치모쿠
         const ich=calcIchimoku(d);
