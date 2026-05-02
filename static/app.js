@@ -2370,6 +2370,30 @@ let lastEthGas=null;        // {safe, propose, fast, base_fee}
 let lastEthPrice=0;          // USD
 let lastEthFlow=null;        // {cex_inflow_eth, cex_outflow_eth, net_flow_eth}
 
+// ─── BTC 추세 캐시 (알트 정확도 향상용) ───
+let lastBTCTrend={trend:'neutral',strength:0,slopePct:0,price:0,ts:0};
+
+async function updateBTCTrend(){
+    // BTC 자기 자신은 스킵
+    if(currentSymbol==='BTCUSDT')return;
+    try{
+        const candles=await bybitKline('BTCUSDT','60',150);
+        if(!candles||candles.length<60)return;
+        const ma20=calcSMA(candles,20);
+        const ma50=calcSMA(candles,50);
+        if(ma20.length<10||!ma50.length)return;
+        const last=candles[candles.length-1].close;
+        const m20=ma20[ma20.length-1].value;
+        const m50=ma50[ma50.length-1].value;
+        const m20_10ago=ma20[ma20.length-10].value;
+        const slope=(m20-m20_10ago)/m20_10ago*100;
+        let trend='neutral',strength=0;
+        if(last>m20&&m20>m50&&slope>0.3){trend='bull';strength=Math.min(2,Math.abs(slope)/0.5);}
+        else if(last<m20&&m20<m50&&slope<-0.3){trend='bear';strength=Math.min(2,Math.abs(slope)/0.5);}
+        lastBTCTrend={trend,strength,slopePct:slope,price:last,ts:Date.now()};
+    }catch(e){console.warn('BTC trend update failed',e);}
+}
+
 /* ═══════════════════════════════════
    예측 UI 렌더링
    ═══════════════════════════════════ */
@@ -2934,9 +2958,42 @@ function generateFullSignal(d){
         }
     }
 
-    // ── 확인봉 검증 (prev + prev2 봉 방향 체크) ──
+    // ── 49) BTC 추세 필터 (알트 전용 - 가장 중요한 정확도 개선) ──
+    const isBTC=currentSymbol==='BTCUSDT';
+    const isAlt=currentSymbol.endsWith('USDT')&&!isBTC&&!currentSymbol.startsWith('STK:');
+    if(isAlt&&lastBTCTrend.trend!=='neutral'){
+        const sl=Math.abs(lastBTCTrend.slopePct);
+        if(lastBTCTrend.trend==='bull'){
+            lS+=2;lR.push(`BTC강세+${lastBTCTrend.slopePct.toFixed(2)}%`);
+            // BTC 강한 상승 → 알트 풀숏 큰폭 감산
+            sS=Math.round(sS*(sl>1?0.65:0.8));
+        }else if(lastBTCTrend.trend==='bear'){
+            sS+=2;sR.push(`BTC약세${lastBTCTrend.slopePct.toFixed(2)}%`);
+            lS=Math.round(lS*(sl>1?0.65:0.8));
+        }
+    }
+
+    // ── 50) USDT 거래대금 필터 (얇은 시장 신호 약화) ──
+    if(d.length>=20){
+        const turnovers=d.slice(-20).map(c=>c.turnover||c.volume*c.close).filter(v=>v>0);
+        if(turnovers.length>=10){
+            const avgTurnover=turnovers.reduce((a,b)=>a+b,0)/turnovers.length;
+            const lastTurnover=last.turnover||last.volume*last.close;
+            if(lastTurnover<avgTurnover*0.5){
+                // 거래대금이 평균의 50% 미만 = 매우 얇은 시장 → 30% 감산
+                lS=Math.round(lS*0.7);sS=Math.round(sS*0.7);
+                lR.push('얇은시장');sR.push('얇은시장');
+            }
+        }
+    }
+
+    // ── 알트는 더 엄격한 임계값 적용 ──
+    const TRIGGER_MIN=isAlt?42:34; // 알트 50% / BTC·ETH 41% 이상
+    const OPPOSITE_MAX=isAlt?12:9;  // 알트 반대 점수 더 엄격
+
+    // ── 확인봉 검증 (prev + prev2 봉 방향 체크 강화) ──
     let confirmed=true;
-    if(lS>=34||sS>=34){
+    if(lS>=TRIGGER_MIN||sS>=TRIGGER_MIN){
         const prevBody=prev.close-prev.open;
         const prev2Body=prev2.close-prev2.open;
         const prevM7=ma7.length>=2?ma7[ma7.length-2].value:m7;
@@ -2945,11 +3002,15 @@ function generateFullSignal(d){
         if(prevBody>0)prevL++;if(prevBody<0)prevS++;
         if(prev.close>prevM7)prevL++;if(prev.close<prevM7)prevS++;
         if(macdHistPrev>0)prevL++;if(macdHistPrev<0)prevS++;
-        // prev2 봉도 체크 (2봉 연속 확인)
         if(prev2Body>0)prevL++;if(prev2Body<0)prevS++;
-        // prev가 반대 방향 우세면 확인 실패
-        if(lS>=34&&prevS>prevL)confirmed=false;
-        if(sS>=34&&prevL>prevS)confirmed=false;
+        // 알트는 더 엄격: prev 반대방향이면 즉시 확인 실패
+        if(isAlt){
+            if(lS>=TRIGGER_MIN&&(prevS>=prevL||prevBody<0))confirmed=false;
+            if(sS>=TRIGGER_MIN&&(prevL>=prevS||prevBody>0))confirmed=false;
+        }else{
+            if(lS>=TRIGGER_MIN&&prevS>prevL)confirmed=false;
+            if(sS>=TRIGGER_MIN&&prevL>prevS)confirmed=false;
+        }
     }
 
     // ── S/R 근접 보너스: 지지/저항 근처 신호에 +3점 ──
@@ -2958,7 +3019,7 @@ function generateFullSignal(d){
         if(sr&&sr.length){
             for(const level of sr){
                 const dist=Math.abs(price-level)/price;
-                if(dist<0.005){ // 0.5% 이내
+                if(dist<0.005){
                     if(price>level){lS+=3;lR.push('지지선근접');}
                     if(price<level){sS+=3;sR.push('저항선근접');}
                     break;
@@ -2968,9 +3029,9 @@ function generateFullSignal(d){
     }catch(e){}
 
     let signal=null;
-    if(confirmed&&lS>=34&&sS<9){
+    if(confirmed&&lS>=TRIGGER_MIN&&sS<OPPOSITE_MAX){
         signal={type:'풀롱',color:'#FFD700',longConds:lS,shortConds:sS,reasons:lR};
-    }else if(confirmed&&sS>=34&&lS<9){
+    }else if(confirmed&&sS>=TRIGGER_MIN&&lS<OPPOSITE_MAX){
         signal={type:'풀숏',color:'#FF69B4',shortConds:sS,longConds:lS,reasons:sR};
     }
 
@@ -3103,16 +3164,34 @@ function checkFullSignalAtCandle(d,idx){
         const avgVol=d.slice(idx-20,idx).reduce((a,x)=>a+x.volume,0)/20;
         if(c.volume<avgVol*0.8){lc=Math.round(lc*0.85);sc=Math.round(sc*0.85);}
     }
+    // ── USDT 거래대금 필터 (얇은 시장 신호 약화) ──
+    if(idx>=20){
+        const turnovers=d.slice(idx-20,idx).map(x=>x.turnover||x.volume*x.close).filter(v=>v>0);
+        if(turnovers.length>=10){
+            const avgT=turnovers.reduce((a,b)=>a+b,0)/turnovers.length;
+            const lastT=c.turnover||c.volume*c.close;
+            if(lastT<avgT*0.5){lc=Math.round(lc*0.7);sc=Math.round(sc*0.7);}
+        }
+    }
     // ── 연속 캔들 확인: 다음 봉(idx+1)이 같은 방향이어야 유효 ──
     if(idx+1<d.length){
         const next=d[idx+1];
-        if(lc>=22&&next.close<next.open)lc=Math.round(lc*0.7); // 풀롱인데 다음봉 음봉→대폭 감산
-        if(sc>=22&&next.close>next.open)sc=Math.round(sc*0.7); // 풀숏인데 다음봉 양봉→대폭 감산
+        if(lc>=22&&next.close<next.open)lc=Math.round(lc*0.6); // 더 큰 감산
+        if(sc>=22&&next.close>next.open)sc=Math.round(sc*0.6);
+    }
+    // ── BTC 추세 일치도 (현재 라이브 캐시 사용) ──
+    const _isBTC=currentSymbol==='BTCUSDT';
+    const _isAlt=currentSymbol.endsWith('USDT')&&!_isBTC&&!currentSymbol.startsWith('STK:');
+    if(_isAlt&&lastBTCTrend&&lastBTCTrend.trend!=='neutral'){
+        if(lastBTCTrend.trend==='bull')sc=Math.round(sc*0.8);
+        else if(lastBTCTrend.trend==='bear')lc=Math.round(lc*0.8);
     }
 
-    // 가중합 기준: 22점+ && 반대 5점 미만
-    if(lc>=22&&sc<5)return{type:'풀롱',lc,sc};
-    if(sc>=22&&lc<5)return{type:'풀숏',lc,sc};
+    // 가중합 기준: 알트는 27+ / BTC는 22+ (반대 점수 더 엄격)
+    const TR=_isAlt?27:22;
+    const OPP=_isAlt?7:5;
+    if(lc>=TR&&sc<OPP)return{type:'풀롱',lc,sc};
+    if(sc>=TR&&lc<OPP)return{type:'풀숏',lc,sc};
     return null;
 }
 
@@ -3215,6 +3294,8 @@ async function refreshAll(){
         if(refreshCount%60===0) tasks.push(updateOnchainData());
         // 매 15초: Etherscan (가스/블록/흐름)
         if(refreshCount%15===0) tasks.push(updateEtherscan());
+        // 매 30초: BTC 추세 (알트 정확도 향상용)
+        if(refreshCount%30===0||refreshCount===1) tasks.push(updateBTCTrend());
     }
     // 매크로 데이터는 주식에도 유용 → 항상 갱신
     if(refreshCount%60===0) tasks.push(updateMacroData());
