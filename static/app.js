@@ -3453,6 +3453,13 @@ function initSymbolSearch(){
 
     function open(){
         dd.style.display='block';
+        // 모바일(<=768px): 버튼 바로 아래에 fixed 배치
+        if(window.innerWidth<=768){
+            const rect=btn.getBoundingClientRect();
+            dd.style.top=(rect.bottom+4)+'px';
+        }else{
+            dd.style.top=''; // 데스크탑은 CSS 기본값
+        }
         inp.value='';
         render('');
         setTimeout(()=>inp.focus(),0);

@@ -79,7 +79,13 @@ table[width] td{font-size:15px !important;font-weight:700 !important;}
     .alert-item .sym { min-width:60px; font-size:10px; }
     .lev-table { font-size:9px; }
     .lev-table td,.lev-table th { padding:2px 4px; }
+    /* 종목 검색 드롭다운 모바일 대응 (화면 가득) */
+    #symbolSearchBtn { min-width:140px !important; }
+    #symbolSearchDropdown { position:fixed !important; top:auto !important; right:10px !important; left:10px !important; width:auto !important; max-width:none !important; }
+    #symbolSearchInput { font-size:14px !important; padding:11px 12px !important; }
 }
+/* 데스크탑 + 작은 화면 안전장치: 뷰포트 초과 방지 */
+#symbolSearchDropdown { max-width:calc(100vw - 24px) !important; }
 @media(max-width:480px) {
     .header h1 { font-size:12px; }
     .symbol-select { font-size:11px; padding:4px 6px; }
