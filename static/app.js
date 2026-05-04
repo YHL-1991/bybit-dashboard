@@ -3437,8 +3437,8 @@ function addFullSignalMarkers(d,existingMarkers){
     const sigEl=document.getElementById('signalContent');
     if(sigEl){
         // 기존 풀롱/풀숏 태그 제거
-        const spans=sigEl.querySelectorAll('span');
-        spans.forEach(s=>{if(s.textContent.includes('풀롱')||s.textContent.includes('풀숏'))s.remove();});
+        const spans=sigEl.querySelectorAll('span,button');
+        spans.forEach(s=>{if(s.textContent.includes('풀롱')||s.textContent.includes('풀숏')||s.classList.contains('full-sig-toggle'))s.remove();});
         // 현재 상태 표시 (가중점수/최대점수)
         const tc=result.totalConds||67;
         const tag=result.signal
@@ -3446,7 +3446,18 @@ function addFullSignalMarkers(d,existingMarkers){
                 ?`<span style="background:#FFD700;color:#000;padding:6px 16px;border-radius:6px;font-weight:900;font-size:24px;margin-left:10px;animation:pulse 1s infinite;">⚡ 풀롱 (${result.longConds}/${tc})</span>`
                 :`<span style="background:#FF69B4;color:#fff;padding:6px 16px;border-radius:6px;font-weight:900;font-size:24px;margin-left:10px;animation:pulse 1s infinite;">⚡ 풀숏 (${result.shortConds}/${tc})</span>`)
             :`<span style="color:var(--text-secondary);font-size:16px;margin-left:10px;">풀롱/풀숏: 롱${result.longConds} 숏${result.shortConds}/${tc}</span>`;
-        sigEl.innerHTML+=tag;
+        // 사유 보기 토글 버튼
+        const toggleBtn=`<button class="full-sig-toggle" onclick="toggleFullSignalReasons()" style="margin-left:10px;padding:4px 10px;background:rgba(255,255,255,0.08);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;font-size:11px;cursor:pointer;">사유 보기 ▼</button>`;
+        sigEl.innerHTML+=tag+toggleBtn;
+        // 사유 패널 데이터 저장 (전역)
+        _lastFullSignalReasons={
+            longReasons:result.longReasons||[],
+            shortReasons:result.shortReasons||[],
+            longConds:result.longConds,shortConds:result.shortConds,
+            totalConds:tc,
+            signalType:result.signal?result.signal.type:null,
+        };
+        renderFullSignalReasonsPanel();
     }
 
     // 미래 캔들 영역에 항상 풀롱/풀숏 예측 표시
@@ -3719,6 +3730,172 @@ function initSymbolSearch(){
 initSymbolSearch();
 // 모든 Bybit USDT 영구선물을 사용자 브라우저에서 비동기 로드 (items만 갱신)
 refreshSymbolDropdown();
+
+/* ═══════════════════════════════════
+   풀롱/풀숏 사유 펼치기 패널
+   ═══════════════════════════════════ */
+let _lastFullSignalReasons=null;
+let _fullSigReasonsExpanded=false;
+
+function toggleFullSignalReasons(){
+    _fullSigReasonsExpanded=!_fullSigReasonsExpanded;
+    renderFullSignalReasonsPanel();
+    // 토글 버튼 텍스트 갱신
+    const btn=document.querySelector('.full-sig-toggle');
+    if(btn)btn.textContent=_fullSigReasonsExpanded?'사유 닫기 ▲':'사유 보기 ▼';
+}
+
+function renderFullSignalReasonsPanel(){
+    const panel=document.getElementById('fullSignalReasonsPanel');
+    if(!panel)return;
+    if(!_fullSigReasonsExpanded||!_lastFullSignalReasons){
+        panel.style.display='none';
+        return;
+    }
+    const r=_lastFullSignalReasons;
+    const lr=r.longReasons.length?r.longReasons:['(만족 조건 없음)'];
+    const sr=r.shortReasons.length?r.shortReasons:['(만족 조건 없음)'];
+    panel.style.display='block';
+    panel.innerHTML=`
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div>
+                <div style="color:#FFD700;font-weight:700;font-size:13px;margin-bottom:6px;">롱 사유 (${r.longConds}/${r.totalConds}점)</div>
+                <div style="font-size:11px;color:var(--text-primary);line-height:1.7;">
+                    ${lr.map(x=>`<span style="display:inline-block;background:rgba(255,215,0,0.12);color:#FFD700;padding:2px 8px;border-radius:3px;margin:2px 3px 2px 0;border:1px solid rgba(255,215,0,0.3);">${x}</span>`).join('')}
+                </div>
+            </div>
+            <div>
+                <div style="color:#FF69B4;font-weight:700;font-size:13px;margin-bottom:6px;">숏 사유 (${r.shortConds}/${r.totalConds}점)</div>
+                <div style="font-size:11px;color:var(--text-primary);line-height:1.7;">
+                    ${sr.map(x=>`<span style="display:inline-block;background:rgba(255,105,180,0.12);color:#FF69B4;padding:2px 8px;border-radius:3px;margin:2px 3px 2px 0;border:1px solid rgba(255,105,180,0.3);">${x}</span>`).join('')}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+/* ═══════════════════════════════════
+   빨간펜 그리기 오버레이 (OBS 방송용)
+   - 우클릭 드래그: 빨간 선 그리기 (15pt)
+   - Backspace: 모두 지우기
+   - Ctrl/Cmd+P: 펜 ON/OFF 토글
+   ═══════════════════════════════════ */
+(function initRedPenOverlay(){
+    const cv=document.createElement('canvas');
+    cv.id='redPenCanvas';
+    cv.style.cssText='position:fixed;top:0;left:0;pointer-events:none;z-index:99999;';
+    document.body.appendChild(cv);
+
+    // ON/OFF 토글 버튼 (우상단 고정)
+    const toggle=document.createElement('div');
+    toggle.id='redPenToggle';
+    toggle.style.cssText='position:fixed;bottom:14px;right:14px;background:rgba(0,0,0,0.75);color:#fff;padding:8px 12px;border-radius:50px;font-size:11px;cursor:pointer;z-index:100000;border:2px solid #ff3b3b;font-weight:600;user-select:none;font-family:-apple-system,sans-serif;';
+    toggle.textContent='펜 OFF';
+    document.body.appendChild(toggle);
+
+    let penOn=false;
+    let drawing=false;
+    let strokes=[]; // [[{x,y}, ...], ...]
+    let cur=null;
+    let dpr=window.devicePixelRatio||1;
+
+    function resize(){
+        cv.width=window.innerWidth*dpr;
+        cv.height=window.innerHeight*dpr;
+        cv.style.width=window.innerWidth+'px';
+        cv.style.height=window.innerHeight+'px';
+        const ctx=cv.getContext('2d');
+        ctx.scale(dpr,dpr);
+        redrawAll();
+    }
+
+    function redrawAll(){
+        const ctx=cv.getContext('2d');
+        ctx.setTransform(1,0,0,1,0,0);
+        ctx.scale(dpr,dpr);
+        ctx.clearRect(0,0,cv.width/dpr,cv.height/dpr);
+        ctx.strokeStyle='#ff3b3b';
+        ctx.lineWidth=15;
+        ctx.lineCap='round';
+        ctx.lineJoin='round';
+        for(const stroke of strokes){
+            if(stroke.length<2)continue;
+            ctx.beginPath();
+            ctx.moveTo(stroke[0].x,stroke[0].y);
+            for(let i=1;i<stroke.length;i++)ctx.lineTo(stroke[i].x,stroke[i].y);
+            ctx.stroke();
+        }
+    }
+
+    function setPen(on){
+        penOn=on;
+        toggle.textContent=on?'펜 ON':'펜 OFF';
+        toggle.style.background=on?'#ff3b3b':'rgba(0,0,0,0.75)';
+        toggle.style.color='#fff';
+    }
+    toggle.addEventListener('click',()=>setPen(!penOn));
+
+    resize();
+    window.addEventListener('resize',resize);
+
+    // 우클릭 컨텍스트메뉴 차단 (펜 ON일 때만)
+    document.addEventListener('contextmenu',e=>{
+        if(penOn)e.preventDefault();
+    });
+
+    document.addEventListener('mousedown',e=>{
+        if(!penOn||e.button!==2)return;
+        e.preventDefault();
+        drawing=true;
+        cur=[{x:e.clientX,y:e.clientY}];
+    });
+
+    document.addEventListener('mousemove',e=>{
+        if(!penOn||!drawing)return;
+        e.preventDefault();
+        cur.push({x:e.clientX,y:e.clientY});
+        const ctx=cv.getContext('2d');
+        ctx.strokeStyle='#ff3b3b';
+        ctx.lineWidth=15;
+        ctx.lineCap='round';
+        ctx.lineJoin='round';
+        const p1=cur[cur.length-2],p2=cur[cur.length-1];
+        ctx.beginPath();
+        ctx.moveTo(p1.x,p1.y);
+        ctx.lineTo(p2.x,p2.y);
+        ctx.stroke();
+    });
+
+    document.addEventListener('mouseup',e=>{
+        if(!penOn||e.button!==2)return;
+        if(drawing&&cur&&cur.length>1)strokes.push(cur);
+        drawing=false;cur=null;
+    });
+
+    // Backspace: 그림 모두 지우기 (input 안에 있을 땐 무시)
+    document.addEventListener('keydown',e=>{
+        if(e.key!=='Backspace')return;
+        const ae=document.activeElement;
+        const tag=ae?ae.tagName:'';
+        if(tag==='INPUT'||tag==='TEXTAREA'||(ae&&ae.isContentEditable))return;
+        if(!strokes.length&&!drawing)return;
+        e.preventDefault();
+        strokes=[];
+        drawing=false;cur=null;
+        const ctx=cv.getContext('2d');
+        ctx.setTransform(1,0,0,1,0,0);
+        ctx.scale(dpr,dpr);
+        ctx.clearRect(0,0,cv.width/dpr,cv.height/dpr);
+    });
+
+    // Ctrl/Cmd+P 또는 단축키: 펜 토글
+    document.addEventListener('keydown',e=>{
+        if((e.ctrlKey||e.metaKey)&&e.key==='p'){
+            e.preventDefault();
+            setPen(!penOn);
+        }
+    });
+})();
 
 /* ═══════════════════════════════════
    자동매매 제어
