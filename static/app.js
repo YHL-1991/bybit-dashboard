@@ -979,6 +979,63 @@ function detectOrderBlocks(d){
     return blocks.slice(-5); // 최근 5개
 }
 
+// ─── 강화된 오더블록 매물대 감지: 신선도 + 볼륨 + 임펄스 + 클러스터링 ───
+// 반환: [{type, priceLow, priceHigh, volume, impulse, strength(0~6), untested, idx}]
+function detectOrderBlocksAdvanced(d){
+    if(d.length<30)return[];
+    const raw=[];
+    const start=Math.max(2,d.length-120);
+    for(let i=start;i<d.length-2;i++){
+        const c=d[i],n=d[i+1];
+        // Bullish OB: 음봉 + 다음 양봉이 고점 돌파
+        if(c.close<c.open&&n.close>n.open&&n.close>c.high){
+            raw.push({
+                type:'bullish_ob',
+                priceLow:Math.min(c.close,c.open*0.999), // OB zone 하단
+                priceHigh:c.open,                         // OB zone 상단
+                time:c.time,volume:c.volume||0,idx:i,
+                impulse:(n.close-c.high)/c.high,
+            });
+        }
+        // Bearish OB: 양봉 + 다음 음봉이 저점 깨짐
+        if(c.close>c.open&&n.close<n.open&&n.close<c.low){
+            raw.push({
+                type:'bearish_ob',
+                priceLow:c.open,
+                priceHigh:Math.max(c.close,c.open*1.001),
+                time:c.time,volume:c.volume||0,idx:i,
+                impulse:(c.low-n.close)/c.low,
+            });
+        }
+    }
+    if(!raw.length)return[];
+    const avgVol=d.slice(-50).reduce((a,c)=>a+(c.volume||0),0)/Math.max(1,Math.min(50,d.length));
+    raw.forEach(ob=>{
+        let s=0;
+        // 1) 볼륨 강도 (평균 대비)
+        if(avgVol>0){
+            if(ob.volume>avgVol*2)s+=3;
+            else if(ob.volume>avgVol*1.5)s+=2;
+            else if(ob.volume>avgVol)s+=1;
+        }
+        // 2) 임펄스 강도 (다음 봉 돌파 폭)
+        if(ob.impulse>0.03)s+=2;
+        else if(ob.impulse>0.015)s+=1;
+        // 3) 신선도 (이후 OB zone에 다시 침범한 적 없는가)
+        let untested=true;
+        for(let j=ob.idx+2;j<d.length;j++){
+            const dj=d[j];
+            if(ob.type==='bullish_ob'&&dj.low<ob.priceLow*0.998){untested=false;break;}
+            if(ob.type==='bearish_ob'&&dj.high>ob.priceHigh*1.002){untested=false;break;}
+        }
+        if(untested)s+=2;
+        ob.strength=s;
+        ob.untested=untested;
+    });
+    // 강도 높은 순 정렬, 상위 8개
+    return raw.sort((a,b)=>b.strength-a.strength).slice(0,8);
+}
+
 function detectFVG(d){
     const fvgs=[];
     for(let i=2;i<d.length;i++){
@@ -2651,6 +2708,90 @@ function calcStochasticRSI(d,rsiPeriod=14,stochPeriod=14,kSmooth=3,dSmooth=3){
     return{k:smoothK[smoothK.length-1],kPrev:smoothK[smoothK.length-2],d:smoothD[smoothD.length-1],dPrev:smoothD[smoothD.length-2]};
 }
 
+// ─── 강화된 StochRSI 분석: 5가지 패턴 (과매도크로스/과매수크로스/히든다이버/더블바텀/더블탑) ───
+function analyzeStochRSI(d){
+    const rsiData=calcRSI(d,14);
+    if(!rsiData||rsiData.length<35)return null;
+    const rsiVals=rsiData.map(r=>r.value);
+    const stochPeriod=14,kSmooth=3,dSmooth=3;
+    const stochK=[];
+    for(let i=stochPeriod-1;i<rsiVals.length;i++){
+        const slice=rsiVals.slice(i-stochPeriod+1,i+1);
+        const min=Math.min(...slice),max=Math.max(...slice);
+        stochK.push(max===min?50:(rsiVals[i]-min)/(max-min)*100);
+    }
+    const sK=[];
+    for(let i=kSmooth-1;i<stochK.length;i++){
+        let s=0;for(let j=i-kSmooth+1;j<=i;j++)s+=stochK[j];
+        sK.push(s/kSmooth);
+    }
+    const sD=[];
+    for(let i=dSmooth-1;i<sK.length;i++){
+        let s=0;for(let j=i-dSmooth+1;j<=i;j++)s+=sK[j];
+        sD.push(s/dSmooth);
+    }
+    if(sK.length<10||sD.length<10)return null;
+
+    const k=sK[sK.length-1],kP=sK[sK.length-2];
+    const dV=sD[sD.length-1],dP=sD[sD.length-2];
+
+    // 1. 골든/데드 크로스
+    const goldenCross=kP<=dP&&k>dV;
+    const deadCross=kP>=dP&&k<dV;
+    // 2. 과매도/과매수 크로스 (강한 신호)
+    const oversoldGolden=goldenCross&&k<25;
+    const overboughtDead=deadCross&&k>75;
+
+    // 3. Hidden Divergence (가격 vs StochRSI)
+    let hiddenBullDiv=false,hiddenBearDiv=false;
+    if(d.length>=20&&sK.length>=20){
+        const recentLow=Math.min(...d.slice(-5).map(c=>c.low));
+        const prevLow=Math.min(...d.slice(-15,-5).map(c=>c.low));
+        const recentStochLow=Math.min(...sK.slice(-5));
+        const prevStochLow=Math.min(...sK.slice(-15,-5));
+        // Bullish hidden div: 가격 higher low + Stoch lower low (지속 상승)
+        if(recentLow>prevLow*1.001&&recentStochLow<prevStochLow*0.95&&k<35)hiddenBullDiv=true;
+        const recentHigh=Math.max(...d.slice(-5).map(c=>c.high));
+        const prevHigh=Math.max(...d.slice(-15,-5).map(c=>c.high));
+        const recentStochHigh=Math.max(...sK.slice(-5));
+        const prevStochHigh=Math.max(...sK.slice(-15,-5));
+        // Bearish hidden div: 가격 lower high + Stoch higher high (지속 하락)
+        if(recentHigh<prevHigh*0.999&&recentStochHigh>prevStochHigh*1.05&&k>65)hiddenBearDiv=true;
+    }
+
+    // 4. 더블 바텀/탑 (StochRSI 자체)
+    let doubleBottom=false,doubleTop=false;
+    if(sK.length>=20){
+        const r20=sK.slice(-20);
+        const lows=[];
+        for(let i=2;i<r20.length-2;i++){
+            if(r20[i]<r20[i-1]&&r20[i]<r20[i-2]&&r20[i]<r20[i+1]&&r20[i]<r20[i+2]&&r20[i]<25)lows.push({i,v:r20[i]});
+        }
+        if(lows.length>=2){
+            const last2=lows.slice(-2);
+            // 두 저점이 비슷한 수준 + 간격 4봉 이상
+            if(Math.abs(last2[0].v-last2[1].v)<10&&last2[1].i-last2[0].i>=4&&k>last2[1].v+5)doubleBottom=true;
+        }
+        const highs=[];
+        for(let i=2;i<r20.length-2;i++){
+            if(r20[i]>r20[i-1]&&r20[i]>r20[i-2]&&r20[i]>r20[i+1]&&r20[i]>r20[i+2]&&r20[i]>75)highs.push({i,v:r20[i]});
+        }
+        if(highs.length>=2){
+            const last2=highs.slice(-2);
+            if(Math.abs(last2[0].v-last2[1].v)<10&&last2[1].i-last2[0].i>=4&&k<last2[1].v-5)doubleTop=true;
+        }
+    }
+
+    return{
+        k,d:dV,kPrev:kP,dPrev:dP,
+        oversold:k<20,overbought:k>80,
+        goldenCross,deadCross,
+        oversoldGolden,overboughtDead,
+        hiddenBullDiv,hiddenBearDiv,
+        doubleBottom,doubleTop,
+    };
+}
+
 function calcBollingerBands(d,period=20,stdMul=2){
     if(d.length<period)return null;
     const slice=d.slice(-period);
@@ -2693,7 +2834,7 @@ function generateFullSignal(d){
 
     let lS=0,sS=0; // longScore, shortScore (가중합)
     const lR=[],sR=[];
-    const TOTAL_MAX=83; // 78 + 시간대(1) + 가격예측(2) + 사이클(2)
+    const TOTAL_MAX=95; // 83 + OB강화(+5) + StochRSI강화(+5) + Confluence(+5) - 기존(-3)
 
     // ── 1점 조건 (17개, 총 17점) ──
     // 1) RSI 반등/하락
@@ -2813,12 +2954,25 @@ function generateFullSignal(d){
         if(lf.type==='bullish_fvg'&&price<=lf.top&&price>=lf.bottom){lS+=2;lR.push('상승FVG');}
         if(lf.type==='bearish_fvg'&&price>=lf.bottom&&price<=lf.top){sS+=2;sR.push('하락FVG');}
     }
-    // 28) 오더블록
-    const obSigs=detectOrderBlocks(d);
-    if(obSigs.length){const lo=obSigs[obSigs.length-1];
-        if(lo.type==='bullish_ob'&&price<=lo.high&&price>=lo.price){lS+=2;lR.push('상승오더블록');}
-        if(lo.type==='bearish_ob'&&price>=lo.low&&price<=lo.price){sS+=2;sR.push('하락오더블록');}
-    }
+    // 28) 오더블록 매물대 강화 (강도/신선도/볼륨 반영, 최대 7점)
+    const obAdv=detectOrderBlocksAdvanced(d);
+    let obLongHit=null,obShortHit=null;
+    obAdv.forEach(ob=>{
+        // 가격이 OB zone 내부 (±0.2% 허용)
+        if(price>=ob.priceLow*0.998&&price<=ob.priceHigh*1.002){
+            const pts=Math.min(7,2+ob.strength); // 기본 2 + strength(0~6) → 최대 7
+            if(ob.type==='bullish_ob'){
+                lS+=pts;
+                lR.push(`${ob.untested?'신선':''}OB롱(+${pts})`);
+                if(!obLongHit||ob.strength>obLongHit.strength)obLongHit=ob;
+            }
+            if(ob.type==='bearish_ob'){
+                sS+=pts;
+                sR.push(`${ob.untested?'신선':''}OB숏(+${pts})`);
+                if(!obShortHit||ob.strength>obShortHit.strength)obShortHit=ob;
+            }
+        }
+    });
     // 38) 김프
     if(Math.abs(lastKimchiPremium)>0.01){
         if(lastKimchiPremium>3){sS+=2;sR.push(`김프과열+${lastKimchiPremium.toFixed(1)}%`);}
@@ -2863,11 +3017,38 @@ function generateFullSignal(d){
         if(prev.low<=bb.lower&&last.close>bb.lower){lS+=3;lR.push('BB하단반등');}
         if(prev.high>=bb.upper&&last.close<bb.upper){sS+=3;sR.push('BB상단반락');}
     }
-    // 18) 스토캐스틱RSI 크로스
-    const stochRsi=calcStochasticRSI(d);
-    if(stochRsi){
-        if(stochRsi.kPrev<stochRsi.dPrev&&stochRsi.k>stochRsi.d){lS+=3;lR.push('StochRSI골든');}
-        if(stochRsi.kPrev>stochRsi.dPrev&&stochRsi.k<stochRsi.d){sS+=3;sR.push('StochRSI데드');}
+    // 18) StochRSI 강화 (5가지 패턴 - 최대 9점)
+    const stochAna=analyzeStochRSI(d);
+    if(stochAna){
+        // 과매도 골든크로스 = 강한 롱 (3+2 보너스)
+        if(stochAna.oversoldGolden){lS+=5;lR.push('StochRSI과매도골든');}
+        else if(stochAna.goldenCross&&stochAna.k<40){lS+=3;lR.push('StochRSI저점골든');}
+        else if(stochAna.goldenCross){lS+=2;lR.push('StochRSI골든');}
+        // 과매수 데드크로스 = 강한 숏
+        if(stochAna.overboughtDead){sS+=5;sR.push('StochRSI과매수데드');}
+        else if(stochAna.deadCross&&stochAna.k>60){sS+=3;sR.push('StochRSI고점데드');}
+        else if(stochAna.deadCross){sS+=2;sR.push('StochRSI데드');}
+        // Hidden Divergence (지속 신호)
+        if(stochAna.hiddenBullDiv){lS+=3;lR.push('Stoch히든상승다이버');}
+        if(stochAna.hiddenBearDiv){sS+=3;sR.push('Stoch히든하락다이버');}
+        // 더블 바텀/탑
+        if(stochAna.doubleBottom){lS+=2;lR.push('Stoch더블바텀');}
+        if(stochAna.doubleTop){sS+=2;sR.push('Stoch더블탑');}
+    }
+    // ── CONFLUENCE: 오더블록 + StochRSI 조합 보너스 (최대 +5점) ──
+    if(obLongHit&&stochAna){
+        const stochBull=stochAna.oversoldGolden||stochAna.hiddenBullDiv||stochAna.doubleBottom||(stochAna.goldenCross&&stochAna.k<35);
+        if(stochBull){
+            const bonus=obLongHit.untested?5:3;
+            lS+=bonus;lR.push(`OB+Stoch공시이(+${bonus})`);
+        }
+    }
+    if(obShortHit&&stochAna){
+        const stochBear=stochAna.overboughtDead||stochAna.hiddenBearDiv||stochAna.doubleTop||(stochAna.deadCross&&stochAna.k>65);
+        if(stochBear){
+            const bonus=obShortHit.untested?5:3;
+            sS+=bonus;sR.push(`OB+Stoch공시이(+${bonus})`);
+        }
     }
     // 24) RSI 다이버전스
     const rsiDivSigs=detectRSIDivergence(d,rsiData);
@@ -2988,8 +3169,9 @@ function generateFullSignal(d){
     }
 
     // ── 알트는 더 엄격한 임계값 적용 ──
-    const TRIGGER_MIN=isAlt?42:34; // 알트 50% / BTC·ETH 41% 이상
-    const OPPOSITE_MAX=isAlt?12:9;  // 알트 반대 점수 더 엄격
+    // TOTAL_MAX=95 기준: 알트 50%(48) / BTC·ETH 40%(38)
+    const TRIGGER_MIN=isAlt?48:38;
+    const OPPOSITE_MAX=isAlt?14:11;
 
     // ── 확인봉 검증 (prev + prev2 봉 방향 체크 강화) ──
     let confirmed=true;
@@ -3091,16 +3273,45 @@ function checkFullSignalAtCandle(d,idx){
     const fvgH=detectFVG(slc);if(fvgH.length){const lf=fvgH[fvgH.length-1];
         if(lf.type==='bullish_fvg'&&price<=lf.top&&price>=lf.bottom)lc+=2;
         if(lf.type==='bearish_fvg'&&price>=lf.bottom&&price<=lf.top)sc+=2;}
-    // 오더블록
-    const obH=detectOrderBlocks(slc);if(obH.length){const lo=obH[obH.length-1];
-        if(lo.type==='bullish_ob'&&price<=lo.high&&price>=lo.price)lc+=2;
-        if(lo.type==='bearish_ob'&&price>=lo.low&&price<=lo.price)sc+=2;}
+    // 오더블록 매물대 강화 (강도/신선도 반영)
+    const obAdvH=detectOrderBlocksAdvanced(slc);
+    let obLongHitH=null,obShortHitH=null;
+    obAdvH.forEach(ob=>{
+        if(price>=ob.priceLow*0.998&&price<=ob.priceHigh*1.002){
+            const pts=Math.min(7,2+ob.strength);
+            if(ob.type==='bullish_ob'){lc+=pts;if(!obLongHitH||ob.strength>obLongHitH.strength)obLongHitH=ob;}
+            if(ob.type==='bearish_ob'){sc+=pts;if(!obShortHitH||ob.strength>obShortHitH.strength)obShortHitH=ob;}
+        }
+    });
 
     // ── 3점 조건 ──
     const bb=calcBollingerBands(slc,20,2);
     if(bb){if(prev.low<=bb.lower&&c.close>bb.lower)lc+=3;if(prev.high>=bb.upper&&c.close<bb.upper)sc+=3;}
-    const stochH=calcStochasticRSI(slc);
-    if(stochH){if(stochH.kPrev<stochH.dPrev&&stochH.k>stochH.d)lc+=3;if(stochH.kPrev>stochH.dPrev&&stochH.k<stochH.d)sc+=3;}
+    // StochRSI 강화 (5가지 패턴)
+    const stochAnaH=analyzeStochRSI(slc);
+    if(stochAnaH){
+        if(stochAnaH.oversoldGolden)lc+=5;
+        else if(stochAnaH.goldenCross&&stochAnaH.k<40)lc+=3;
+        else if(stochAnaH.goldenCross)lc+=2;
+        if(stochAnaH.overboughtDead)sc+=5;
+        else if(stochAnaH.deadCross&&stochAnaH.k>60)sc+=3;
+        else if(stochAnaH.deadCross)sc+=2;
+        if(stochAnaH.hiddenBullDiv)lc+=3;
+        if(stochAnaH.hiddenBearDiv)sc+=3;
+        if(stochAnaH.doubleBottom)lc+=2;
+        if(stochAnaH.doubleTop)sc+=2;
+    }
+    // CONFLUENCE: OB + StochRSI
+    if(obLongHitH&&stochAnaH){
+        if(stochAnaH.oversoldGolden||stochAnaH.hiddenBullDiv||stochAnaH.doubleBottom||(stochAnaH.goldenCross&&stochAnaH.k<35)){
+            lc+=obLongHitH.untested?5:3;
+        }
+    }
+    if(obShortHitH&&stochAnaH){
+        if(stochAnaH.overboughtDead||stochAnaH.hiddenBearDiv||stochAnaH.doubleTop||(stochAnaH.deadCross&&stochAnaH.k>65)){
+            sc+=obShortHitH.untested?5:3;
+        }
+    }
     const divH=detectRSIDivergence(slc,rsiData);
     divH.forEach(s=>{if(s.type==='bullish_div')lc+=3;if(s.type==='bearish_div')sc+=3;});
     if(slc.length>=52){const ichH=calcIchimoku(slc);if(ichH.senkouA.length&&ichH.senkouB.length){
@@ -3176,8 +3387,8 @@ function checkFullSignalAtCandle(d,idx){
     // ── 연속 캔들 확인: 다음 봉(idx+1)이 같은 방향이어야 유효 ──
     if(idx+1<d.length){
         const next=d[idx+1];
-        if(lc>=22&&next.close<next.open)lc=Math.round(lc*0.6); // 더 큰 감산
-        if(sc>=22&&next.close>next.open)sc=Math.round(sc*0.6);
+        if(lc>=26&&next.close<next.open)lc=Math.round(lc*0.6); // 더 큰 감산
+        if(sc>=26&&next.close>next.open)sc=Math.round(sc*0.6);
     }
     // ── BTC 추세 일치도 (현재 라이브 캐시 사용) ──
     const _isBTC=currentSymbol==='BTCUSDT';
@@ -3187,9 +3398,9 @@ function checkFullSignalAtCandle(d,idx){
         else if(lastBTCTrend.trend==='bear')lc=Math.round(lc*0.8);
     }
 
-    // 가중합 기준: 알트는 27+ / BTC는 22+ (반대 점수 더 엄격)
-    const TR=_isAlt?27:22;
-    const OPP=_isAlt?7:5;
+    // 가중합 기준 (TOTAL_MAX=95에 맞춰 상향): 알트 32+ / BTC 26+
+    const TR=_isAlt?32:26;
+    const OPP=_isAlt?8:6;
     if(lc>=TR&&sc<OPP)return{type:'풀롱',lc,sc};
     if(sc>=TR&&lc<OPP)return{type:'풀숏',lc,sc};
     return null;
