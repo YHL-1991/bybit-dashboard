@@ -3786,12 +3786,22 @@ function renderFullSignalReasonsPanel(){
     cv.style.cssText='position:fixed;top:0;left:0;pointer-events:none;z-index:99999;';
     document.body.appendChild(cv);
 
-    // ON/OFF 토글 버튼 (우상단 고정)
+    // ON/OFF 토글 버튼 (우하단 고정 - 더 크고 눈에 띄게)
     const toggle=document.createElement('div');
     toggle.id='redPenToggle';
-    toggle.style.cssText='position:fixed;bottom:14px;right:14px;background:rgba(0,0,0,0.75);color:#fff;padding:8px 12px;border-radius:50px;font-size:11px;cursor:pointer;z-index:100000;border:2px solid #ff3b3b;font-weight:600;user-select:none;font-family:-apple-system,sans-serif;';
-    toggle.textContent='펜 OFF';
+    toggle.style.cssText='position:fixed;bottom:20px;right:20px;background:#222;color:#fff;padding:14px 22px;border-radius:50px;font-size:14px;cursor:pointer;z-index:100000;border:3px solid #ff3b3b;font-weight:700;user-select:none;font-family:-apple-system,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,0.5);transition:all 0.2s;';
+    toggle.title='클릭 또는 Ctrl/Cmd+P. ON 후 우클릭+드래그로 그리기, Backspace로 지우기';
     document.body.appendChild(toggle);
+
+    // 사용법 안내 툴팁
+    const hint=document.createElement('div');
+    hint.id='redPenHint';
+    hint.style.cssText='position:fixed;bottom:78px;right:20px;background:rgba(255,59,59,0.95);color:#fff;padding:10px 14px;border-radius:6px;font-size:11px;z-index:100000;font-family:-apple-system,sans-serif;max-width:240px;line-height:1.6;pointer-events:none;display:none;';
+    hint.innerHTML='<b>방송용 빨간펜</b><br>1) 빨간 버튼 ON<br>2) 우클릭+드래그 = 빨간 선<br>3) Backspace = 모두 지우기';
+    document.body.appendChild(hint);
+    // 마우스 호버 시 툴팁 표시
+    toggle.addEventListener('mouseenter',()=>{hint.style.display='block';});
+    toggle.addEventListener('mouseleave',()=>{hint.style.display='none';});
 
     let penOn=false;
     let drawing=false;
@@ -3829,28 +3839,30 @@ function renderFullSignalReasonsPanel(){
 
     function setPen(on){
         penOn=on;
-        toggle.textContent=on?'펜 ON':'펜 OFF';
-        toggle.style.background=on?'#ff3b3b':'rgba(0,0,0,0.75)';
+        toggle.textContent=on?'● 펜 ON (우클릭=빨간선)':'펜 OFF (클릭하여 켜기)';
+        toggle.style.background=on?'#ff3b3b':'#222';
         toggle.style.color='#fff';
+        toggle.style.borderColor=on?'#fff':'#ff3b3b';
     }
     toggle.addEventListener('click',()=>setPen(!penOn));
+    setPen(false); // 초기 라벨 적용
 
     resize();
     window.addEventListener('resize',resize);
 
-    // 우클릭 컨텍스트메뉴 차단 (펜 ON일 때만)
-    document.addEventListener('contextmenu',e=>{
-        if(penOn)e.preventDefault();
-    });
+    // capture phase로 등록 → 차트 라이브러리보다 먼저 캡처
+    window.addEventListener('contextmenu',e=>{
+        if(penOn){e.preventDefault();e.stopPropagation();}
+    },true);
 
-    document.addEventListener('mousedown',e=>{
+    window.addEventListener('mousedown',e=>{
         if(!penOn||e.button!==2)return;
-        e.preventDefault();
+        e.preventDefault();e.stopPropagation();
         drawing=true;
         cur=[{x:e.clientX,y:e.clientY}];
-    });
+    },true);
 
-    document.addEventListener('mousemove',e=>{
+    window.addEventListener('mousemove',e=>{
         if(!penOn||!drawing)return;
         e.preventDefault();
         cur.push({x:e.clientX,y:e.clientY});
@@ -3864,13 +3876,14 @@ function renderFullSignalReasonsPanel(){
         ctx.moveTo(p1.x,p1.y);
         ctx.lineTo(p2.x,p2.y);
         ctx.stroke();
-    });
+    },true);
 
-    document.addEventListener('mouseup',e=>{
+    window.addEventListener('mouseup',e=>{
         if(!penOn||e.button!==2)return;
+        e.preventDefault();
         if(drawing&&cur&&cur.length>1)strokes.push(cur);
         drawing=false;cur=null;
-    });
+    },true);
 
     // Backspace: 그림 모두 지우기 (input 안에 있을 땐 무시)
     document.addEventListener('keydown',e=>{
