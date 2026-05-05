@@ -3797,7 +3797,7 @@ function renderFullSignalReasonsPanel(){
     const hint=document.createElement('div');
     hint.id='redPenHint';
     hint.style.cssText='position:fixed;bottom:78px;right:20px;background:rgba(255,59,59,0.95);color:#fff;padding:10px 14px;border-radius:6px;font-size:11px;z-index:100000;font-family:-apple-system,sans-serif;max-width:240px;line-height:1.6;pointer-events:none;display:none;';
-    hint.innerHTML='<b>방송용 빨간펜</b><br>1) 빨간 버튼 ON<br>2) 우클릭+드래그 = 빨간 선<br>3) Backspace = 모두 지우기';
+    hint.innerHTML='<b>방송용 빨간펜</b><br>1) 빨간 버튼 ON<br>2) 우클릭+드래그 = 빨간 선<br>3) Backspace = 마지막 획 지우기 (Undo)<br>4) Shift+Backspace = 모두 지우기';
     document.body.appendChild(hint);
     // 마우스 호버 시 툴팁 표시
     toggle.addEventListener('mouseenter',()=>{hint.style.display='block';});
@@ -3825,7 +3825,7 @@ function renderFullSignalReasonsPanel(){
         ctx.scale(dpr,dpr);
         ctx.clearRect(0,0,cv.width/dpr,cv.height/dpr);
         ctx.strokeStyle='#ff3b3b';
-        ctx.lineWidth=15;
+        ctx.lineWidth=14;
         ctx.lineCap='round';
         ctx.lineJoin='round';
         for(const stroke of strokes){
@@ -3868,7 +3868,7 @@ function renderFullSignalReasonsPanel(){
         cur.push({x:e.clientX,y:e.clientY});
         const ctx=cv.getContext('2d');
         ctx.strokeStyle='#ff3b3b';
-        ctx.lineWidth=15;
+        ctx.lineWidth=14;
         ctx.lineCap='round';
         ctx.lineJoin='round';
         const p1=cur[cur.length-2],p2=cur[cur.length-1];
@@ -3885,7 +3885,7 @@ function renderFullSignalReasonsPanel(){
         drawing=false;cur=null;
     },true);
 
-    // Backspace: 그림 모두 지우기 (input 안에 있을 땐 무시)
+    // Backspace: 마지막 1획만 지우기 (Undo). Shift+Backspace = 모두 지우기
     document.addEventListener('keydown',e=>{
         if(e.key!=='Backspace')return;
         const ae=document.activeElement;
@@ -3893,12 +3893,12 @@ function renderFullSignalReasonsPanel(){
         if(tag==='INPUT'||tag==='TEXTAREA'||(ae&&ae.isContentEditable))return;
         if(!strokes.length&&!drawing)return;
         e.preventDefault();
-        strokes=[];
-        drawing=false;cur=null;
-        const ctx=cv.getContext('2d');
-        ctx.setTransform(1,0,0,1,0,0);
-        ctx.scale(dpr,dpr);
-        ctx.clearRect(0,0,cv.width/dpr,cv.height/dpr);
+        // 그리는 중이면 현재 획 취소
+        if(drawing){drawing=false;cur=null;}
+        // Shift+Backspace → 모두 삭제, 일반 Backspace → 마지막 1획만
+        if(e.shiftKey)strokes=[];
+        else strokes.pop();
+        redrawAll(); // 남은 획만 다시 그림
     });
 
     // Ctrl/Cmd+P 또는 단축키: 펜 토글
