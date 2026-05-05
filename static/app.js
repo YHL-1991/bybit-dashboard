@@ -3825,7 +3825,7 @@ function renderFullSignalReasonsPanel(){
         ctx.scale(dpr,dpr);
         ctx.clearRect(0,0,cv.width/dpr,cv.height/dpr);
         ctx.strokeStyle='#ff3b3b';
-        ctx.lineWidth=10;
+        ctx.lineWidth=8;
         ctx.lineCap='round';
         ctx.lineJoin='round';
         for(const stroke of strokes){
@@ -3868,7 +3868,7 @@ function renderFullSignalReasonsPanel(){
         cur.push({x:e.clientX,y:e.clientY});
         const ctx=cv.getContext('2d');
         ctx.strokeStyle='#ff3b3b';
-        ctx.lineWidth=10;
+        ctx.lineWidth=8;
         ctx.lineCap='round';
         ctx.lineJoin='round';
         const p1=cur[cur.length-2],p2=cur[cur.length-1];
