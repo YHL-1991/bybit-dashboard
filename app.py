@@ -529,14 +529,29 @@ async def api_kimchi_premium():
                                  "KRW-ADA","KRW-AVAX","KRW-DOT","KRW-LINK","KRW-SUI",
                                  "KRW-PEPE","KRW-WIF","KRW-ARB","KRW-OP"]
 
-            # 3) 업비트 시세 + 환율 동시 조회
-            upbit_r, fx_r = await asyncio.gather(
+            # 3) 업비트 시세 + USDT-KRW 환율(kimpga 동일) + fallback FX
+            upbit_r, usdt_r, fx_r = await asyncio.gather(
                 c.get("https://api.upbit.com/v1/ticker", params={"markets": ",".join(valid_markets)}),
+                c.get("https://api.upbit.com/v1/ticker", params={"markets": "KRW-USDT"}),
                 c.get("https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json"),
+                return_exceptions=True,
             )
-            upbit = upbit_r.json() if upbit_r.status_code == 200 else []
-            fx = fx_r.json() if fx_r.status_code == 200 else {}
-            usd_krw = fx.get("usd", {}).get("krw", 1400)
+            upbit = upbit_r.json() if hasattr(upbit_r, "status_code") and upbit_r.status_code == 200 else []
+            # 환율 우선순위: 업비트 USDT-KRW (실제 코인시장 환율, kimpga와 일치) → fawazahmed
+            usd_krw = None
+            try:
+                if hasattr(usdt_r, "status_code") and usdt_r.status_code == 200:
+                    usdt_data = usdt_r.json()
+                    if isinstance(usdt_data, list) and usdt_data:
+                        usd_krw = float(usdt_data[0]["trade_price"])
+            except Exception:
+                pass
+            if not usd_krw:
+                try:
+                    fx = fx_r.json() if hasattr(fx_r, "status_code") else {}
+                    usd_krw = fx.get("usd", {}).get("krw", 1400)
+                except Exception:
+                    usd_krw = 1400
 
             result = {"usd_krw": usd_krw, "coins": {}}
             if isinstance(upbit, list):

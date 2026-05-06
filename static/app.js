@@ -2398,25 +2398,40 @@ async function updateOnchainData(){
 /* ═══════════════════════════════════
    김치프리미엄 (업비트 vs Bybit)
    ═══════════════════════════════════ */
+// kimpga.com 기준: Binance 현물 가격 (클라이언트에서 직접 호출, 서버 차단 우회)
+async function binanceSpotPrice(symbol){
+    try{
+        const r=await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
+        if(!r.ok)return null;
+        const d=await r.json();
+        return parseFloat(d.price)||null;
+    }catch(e){return null;}
+}
+
 async function updateKimchiPremium(){
     if(isStock(currentSymbol))return;
     try{
-        const [kp,ticker]=await Promise.all([
+        // kimpga.com 방식: Upbit KRW vs Binance 현물 USD (Bybit 영구선물 X)
+        const [kp,binancePrice,bybitTicker]=await Promise.all([
             fetchJSON('/api/kimchi-premium'),
-            bybitTickers(currentSymbol)
+            binanceSpotPrice(currentSymbol),
+            bybitTickers(currentSymbol).catch(()=>null),
         ]);
         const coin=currentSymbol.replace('USDT','');
         const upbitData=kp.coins?.[coin];
-        const bybitPrice=parseFloat(ticker.lastPrice||0);
+        // Binance 현물 우선, 실패 시 Bybit 영구선물 fallback
+        const refPrice=binancePrice||parseFloat(bybitTicker?.lastPrice||0);
+        const refSource=binancePrice?'Binance':'Bybit';
         const el=document.getElementById('tickKimchi');
-        if(!upbitData||!bybitPrice||!kp.usd_krw){el.textContent='N/A';return;}
-        const upbitUSD=upbitData.usd_equiv;
-        const premium=((upbitUSD-bybitPrice)/bybitPrice*100);
+        if(!upbitData||!refPrice||!kp.usd_krw){el.textContent='N/A';return;}
+        // 김프 = (업비트 USD환산 - Binance USD) / Binance USD × 100
+        const upbitUSD=upbitData.krw/kp.usd_krw;
+        const premium=((upbitUSD-refPrice)/refPrice*100);
         lastKimchiPremium=premium;
         const color=premium>2?R:premium>0.5?YL:premium<-1?BL:G;
         el.textContent=(premium>=0?'+':'')+premium.toFixed(2)+'%';
         el.style.color=color;
-        el.title=`업비트: ₩${upbitData.krw.toLocaleString()} | Bybit: $${bybitPrice.toLocaleString()} | 환율: ${kp.usd_krw.toFixed(0)}`;
+        el.title=`업비트: ₩${upbitData.krw.toLocaleString()} | ${refSource}: $${refPrice.toLocaleString(undefined,{maximumFractionDigits:6})} | 환율: ${kp.usd_krw.toFixed(2)}`;
     }catch(e){document.getElementById('tickKimchi').textContent='-';}
 }
 
