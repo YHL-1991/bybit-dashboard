@@ -484,6 +484,25 @@ async def api_symbols():
     return {"symbols": SYMBOLS, "stocks": [s for s, _ in STOCKS]}
 
 
+_upbit_markets_cache = {"list": None, "ts": 0}
+
+
+async def _get_upbit_krw_markets(client):
+    """업비트 KRW 마켓 리스트 조회 (1시간 캐시)"""
+    now = _time.time()
+    if _upbit_markets_cache["list"] and now - _upbit_markets_cache["ts"] < 3600:
+        return _upbit_markets_cache["list"]
+    try:
+        r = await client.get("https://api.upbit.com/v1/market/all", params={"isDetails": "false"})
+        markets = r.json()
+        krw = [m["market"] for m in markets if m.get("market", "").startswith("KRW-")]
+        _upbit_markets_cache["list"] = krw
+        _upbit_markets_cache["ts"] = now
+        return krw
+    except Exception:
+        return _upbit_markets_cache["list"] or []
+
+
 @app.get("/api/kimchi-premium")
 async def api_kimchi_premium():
     """김치프리미엄: 업비트(KRW) vs Bybit(USD) 가격 차이"""
@@ -492,28 +511,44 @@ async def api_kimchi_premium():
         return _kimchi_cache["data"]
     try:
         async with _httpx.AsyncClient(timeout=10.0) as c:
-            # 업비트 시세 + 환율 동시 조회
+            # 1) 업비트 KRW 마켓 리스트 가져오기 (1시간 캐시)
+            krw_markets = await _get_upbit_krw_markets(c)
+            krw_market_set = set(krw_markets)
+            # 2) SYMBOLS 중 업비트 KRW 마켓에 존재하는 종목만 필터 (URL 길이 제한 회피)
+            valid_markets = []
+            for s in SYMBOLS:
+                coin = s.replace("USDT", "")
+                m = f"KRW-{coin}"
+                if m in krw_market_set:
+                    valid_markets.append(m)
+                if len(valid_markets) >= 100:  # 안전장치
+                    break
+            if not valid_markets:
+                # 업비트 마켓 조회 실패 시 fallback: 메이저 코인만
+                valid_markets = ["KRW-BTC","KRW-ETH","KRW-SOL","KRW-XRP","KRW-DOGE",
+                                 "KRW-ADA","KRW-AVAX","KRW-DOT","KRW-LINK","KRW-SUI",
+                                 "KRW-PEPE","KRW-WIF","KRW-ARB","KRW-OP"]
+
+            # 3) 업비트 시세 + 환율 동시 조회
             upbit_r, fx_r = await asyncio.gather(
-                c.get("https://api.upbit.com/v1/ticker", params={
-                    "markets": ",".join(f"KRW-{s.replace('USDT','')}" for s in SYMBOLS
-                                        if s.replace('USDT','') not in ('BNB','WIF','RAVE','ENJ','ARIA'))
-                }),
+                c.get("https://api.upbit.com/v1/ticker", params={"markets": ",".join(valid_markets)}),
                 c.get("https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json"),
             )
-            upbit = upbit_r.json()
-            fx = fx_r.json()
+            upbit = upbit_r.json() if upbit_r.status_code == 200 else []
+            fx = fx_r.json() if fx_r.status_code == 200 else {}
             usd_krw = fx.get("usd", {}).get("krw", 1400)
 
             result = {"usd_krw": usd_krw, "coins": {}}
-            for t in upbit:
-                coin = t["market"].replace("KRW-", "")
-                krw_price = t["trade_price"]
-                usd_equiv = krw_price / usd_krw
-                result["coins"][coin] = {
-                    "krw": krw_price,
-                    "usd_equiv": round(usd_equiv, 4),
-                    "change_rate": round(t.get("signed_change_rate", 0) * 100, 2),
-                }
+            if isinstance(upbit, list):
+                for t in upbit:
+                    coin = t["market"].replace("KRW-", "")
+                    krw_price = t["trade_price"]
+                    usd_equiv = krw_price / usd_krw
+                    result["coins"][coin] = {
+                        "krw": krw_price,
+                        "usd_equiv": round(usd_equiv, 4),
+                        "change_rate": round(t.get("signed_change_rate", 0) * 100, 2),
+                    }
             _kimchi_cache["data"] = result
             _kimchi_cache["ts"] = now
             return result
