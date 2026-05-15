@@ -1705,18 +1705,18 @@ function drawFullSignalZones(){
         else shortZones.push({price:c.price,score:sc,label:`저항(${c.touches})`});
     });
 
-    // 7) 청산 클러스터 (가장 큰 청산물량 가격대)
+    // 7) 청산 클러스터 (가격이 자석처럼 끌려가는 자리 - liquidation sweep)
     try{
         const liqData=estimateLiquidationLevels(price,price*1000,[],[]);
         const liqPrices=liqData.price_levels;
         const longLiqs=liqData.long_liquidations;
         const shortLiqs=liqData.short_liquidations;
-        // 가장 높은 롱 청산 가격 → 반등 예상 (풀롱 존)
+        // 큰 롱 청산 클러스터 = 가격이 그쪽으로 빠질 위험 (풀숏 타겟이자 풀롱 위험)
         let maxLongIdx=0;longLiqs.forEach((v,i)=>{if(v>longLiqs[maxLongIdx])maxLongIdx=i;});
-        if(longLiqs[maxLongIdx]>10)longZones.push({price:liqPrices[maxLongIdx],score:20,label:'청산클러스터'});
-        // 가장 높은 숏 청산 가격 → 하락 예상 (풀숏 존)
+        if(longLiqs[maxLongIdx]>10)shortZones.push({price:liqPrices[maxLongIdx],score:25,label:'롱청산타겟'});
+        // 큰 숏 청산 클러스터 = 가격이 그쪽으로 튈 위험 (풀롱 타겟이자 풀숏 위험)
         let maxShortIdx=0;shortLiqs.forEach((v,i)=>{if(v>shortLiqs[maxShortIdx])maxShortIdx=i;});
-        if(shortLiqs[maxShortIdx]>10)shortZones.push({price:liqPrices[maxShortIdx],score:20,label:'청산클러스터'});
+        if(shortLiqs[maxShortIdx]>10)longZones.push({price:liqPrices[maxShortIdx],score:25,label:'숏청산타겟'});
     }catch(e){}
 
     // 8) 이치모쿠 클라우드
@@ -2004,15 +2004,71 @@ async function updateOrderbook(){
 /* ═══════════════════════════════════
    청산 히트맵 (실시간)
    ═══════════════════════════════════ */
+// 청산 데이터 전역 캐시 (시그널 분석용 - 풀롱/풀숏 위험도 평가에 사용)
+let lastLiquidationData=null;
+
 async function updateLiquidation(){
     if(isStock(currentSymbol))return;
     try{
         const d=await fetchLiquidationData(currentSymbol);
+        lastLiquidationData=d; // 전역 캐시 저장
         const labels=d.price_levels.map(p=>fp(p));
         if(liqChart){liqChart.data.labels=labels;liqChart.data.datasets[0].data=d.long_liquidations;liqChart.data.datasets[1].data=d.short_liquidations;liqChart.update('none');}
         else{const ctx=document.getElementById('liqChart').getContext('2d');liqChart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'롱 청산',data:d.long_liquidations,backgroundColor:GD,borderColor:G,borderWidth:1},{label:'숏 청산',data:d.short_liquidations,backgroundColor:RD,borderColor:R,borderWidth:1}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,position:'top',labels:{boxWidth:10}}},scales:{x:{...dso,stacked:true,ticks:{...dso.ticks,maxRotation:45,maxTicksLimit:8}},y:{...dso,stacked:true}}}});}
         document.querySelector('#levTable tbody').innerHTML=d.leverage_markers.map(m=>`<tr><td>${m.leverage}</td><td class="green">${fp(m.long_liq_price)}</td><td class="red">${fp(m.short_liq_price)}</td></tr>`).join('');
     }catch(e){}
+}
+
+/* ═══════════════════════════════════
+   ⚠️ 청산 클러스터 위험도 평가 (Liquidation Hunt 방지)
+   - 시장은 청산 클러스터로 가격을 끌어 청산을 유발 (liquidation sweep)
+   - 가까운 LONG 청산 클러스터 = 풀롱 위험 (price will dump)
+   - 가까운 SHORT 청산 클러스터 = 풀숏 위험 (price will pump)
+   ═══════════════════════════════════ */
+function analyzeLiquidationDanger(currentPrice){
+    if(!lastLiquidationData||!currentPrice)return null;
+    const d=lastLiquidationData;
+    const prices=d.price_levels||[];
+    const longLiqs=d.long_liquidations||[];
+    const shortLiqs=d.short_liquidations||[];
+    if(!prices.length)return null;
+
+    // 1) 현재가 ±5% 범위 청산 클러스터 분석
+    const longBelowVol=[];  // 현재가 아래 롱 청산 (가격 하락시 청산되는 롱)
+    const shortAboveVol=[]; // 현재가 위 숏 청산 (가격 상승시 청산되는 숏)
+    for(let i=0;i<prices.length;i++){
+        const p=prices[i];
+        const pct=(p-currentPrice)/currentPrice;
+        if(p<currentPrice&&pct>-0.05&&longLiqs[i]>0){
+            longBelowVol.push({price:p,vol:longLiqs[i],distPct:Math.abs(pct)});
+        }
+        if(p>currentPrice&&pct<0.05&&shortLiqs[i]>0){
+            shortAboveVol.push({price:p,vol:shortLiqs[i],distPct:pct});
+        }
+    }
+    // 2) 가장 큰 청산 클러스터 찾기
+    longBelowVol.sort((a,b)=>b.vol-a.vol);
+    shortAboveVol.sort((a,b)=>b.vol-a.vol);
+    const maxLongBelow=longBelowVol[0]||null;
+    const maxShortAbove=shortAboveVol[0]||null;
+
+    // 3) 위험도 점수 (volume 대비 + 거리 가중)
+    // 가까울수록(2% 이내), volume 클수록 위험도 높음
+    function dangerScore(c){
+        if(!c)return 0;
+        const distBonus=c.distPct<0.01?3:c.distPct<0.02?2:c.distPct<0.035?1:0.5;
+        const volBonus=c.vol>50?3:c.vol>30?2:c.vol>15?1.5:c.vol>5?1:0;
+        return distBonus*volBonus;
+    }
+
+    return{
+        longDanger:dangerScore(maxLongBelow), // 0~9, 클수록 풀롱 위험
+        shortDanger:dangerScore(maxShortAbove), // 0~9, 클수록 풀숏 위험
+        maxLongCluster:maxLongBelow,
+        maxShortCluster:maxShortAbove,
+        totalLongBelowVol:longBelowVol.reduce((a,b)=>a+b.vol,0),
+        totalShortAboveVol:shortAboveVol.reduce((a,b)=>a+b.vol,0),
+    };
 }
 
 /* ═══════════════════════════════════
@@ -3011,6 +3067,30 @@ function generateFullSignal(d){
         const nf=lastEthFlow.net_flow_eth||0;
         if(nf>500){sS+=2;sR.push(`CEX입금+${nf.toFixed(0)}E`);}   // 입금 급증=매도 압력
         else if(nf<-500){lS+=2;lR.push(`CEX출금${nf.toFixed(0)}E`);} // 출금 급증=매수 의사
+    }
+
+    // ⚠️ 49) 청산 클러스터 위험도 (Liquidation Hunt 방지 - 최대 ±10점)
+    // 시장은 청산 클러스터로 가격을 끌어 청산을 유발함
+    const liqDanger=analyzeLiquidationDanger(price);
+    if(liqDanger){
+        // 가까운 LONG 청산 클러스터 = 가격이 그쪽으로 빠질 위험 → 풀롱 위험, 풀숏 유리
+        if(liqDanger.longDanger>=3){
+            const penalty=Math.min(10,Math.round(liqDanger.longDanger*1.3));
+            lS=Math.max(0,lS-penalty);
+            sS+=Math.min(5,Math.round(liqDanger.longDanger*0.7));
+            const cl=liqDanger.maxLongCluster;
+            lR.push(`⚠️롱청산위험-${penalty}점@${fp(cl.price)}`);
+            sR.push(`롱청산타겟@${fp(cl.price)}`);
+        }
+        // 가까운 SHORT 청산 클러스터 = 가격이 그쪽으로 튈 위험 → 풀숏 위험, 풀롱 유리
+        if(liqDanger.shortDanger>=3){
+            const penalty=Math.min(10,Math.round(liqDanger.shortDanger*1.3));
+            sS=Math.max(0,sS-penalty);
+            lS+=Math.min(5,Math.round(liqDanger.shortDanger*0.7));
+            const cl=liqDanger.maxShortCluster;
+            sR.push(`⚠️숏청산위험-${penalty}점@${fp(cl.price)}`);
+            lR.push(`숏청산타겟@${fp(cl.price)}`);
+        }
     }
 
     // ── 42) 상위추세 맥락 (MA200) - 2점 + 후처리 부스트 ──
