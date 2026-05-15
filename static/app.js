@@ -4129,11 +4129,11 @@ async function refreshAll(){
         if(refreshCount%15===0) tasks.push(updateEtherscan());
         // 매 30초: BTC 추세 (알트 정확도 향상용)
         if(refreshCount%30===0||refreshCount===1) tasks.push(updateBTCTrend());
-        // 매 60초: 다중 시간프레임 분석 (주봉/일봉/4h/1h)
-        if(refreshCount%60===0||refreshCount===1) tasks.push(updateMultiTimeframeAnalysis());
-        // 매 45초: 다중 시간구간 청산 분석 (12h~1w)
-        if(refreshCount%45===0||refreshCount===2) tasks.push(updateMultiPeriodLiquidation());
-        // 매 30초: 다중 거래소 청산 (Binance + Bybit)
+        // 매 1초: 다중 시간프레임 분석 (inflight 락이 자연 throttle)
+        tasks.push(updateMultiTimeframeAnalysis());
+        // 매 1초: 다중 시간구간 청산 분석 (inflight 락이 자연 throttle)
+        tasks.push(updateMultiPeriodLiquidation());
+        // 매 30초: 다중 거래소 청산 (외부 API 부담)
         if(refreshCount%30===0||refreshCount===3) tasks.push(updateMultiExchangeLiquidation());
     }
     // 매크로 데이터는 주식에도 유용 → 항상 갱신
