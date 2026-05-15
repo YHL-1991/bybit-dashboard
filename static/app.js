@@ -2867,7 +2867,137 @@ async function updateBTCTrend(){
 /* ═══════════════════════════════════
    예측 UI 렌더링
    ═══════════════════════════════════ */
+// ─── 매수/매도 추천 가격 계산 (지지/저항 + Fib + MA + BB 종합) ───
+function calculateTradeRecommendation(d,signalResult){
+    if(!d||d.length<50)return null;
+    const price=d[d.length-1].close;
+    const atr=calcATR(d,14)||price*0.02;
+    const _last=arr=>arr&&arr.length?arr[arr.length-1].value:null;
+    const ma20=_last(calcSMA(d,20));
+    const ma50=_last(calcSMA(d,50));
+    const ma100=_last(calcSMA(d,100));
+    const ma200=_last(calcSMA(d,200));
+    const bb=calcBollingerBands(d,20,2);
+
+    const pvts=findPivots(d,5,5);
+    const recentLows=pvts.lows.slice(-5).map(p=>p.price);
+    const recentHighs=pvts.highs.slice(-5).map(p=>p.price);
+
+    const slice=d.slice(-100);
+    const fibHigh=Math.max(...slice.map(c=>c.high));
+    const fibLow=Math.min(...slice.map(c=>c.low));
+    const fibRange=fibHigh-fibLow;
+
+    const supports=[];
+    if(bb&&bb.lower<price)supports.push({price:bb.lower,label:'BB하단'});
+    if(ma20&&ma20<price)supports.push({price:ma20,label:'MA20'});
+    if(ma50&&ma50<price)supports.push({price:ma50,label:'MA50'});
+    if(ma100&&ma100<price)supports.push({price:ma100,label:'MA100'});
+    if(ma200&&ma200<price)supports.push({price:ma200,label:'MA200'});
+    recentLows.forEach(p=>{if(p<price)supports.push({price:p,label:'직전저점'});});
+    [0.236,0.382,0.5,0.618,0.786].forEach(f=>{
+        const fp=fibHigh-fibRange*f;
+        if(fp<price&&fp>fibLow*0.95)supports.push({price:fp,label:`Fib${(f*100).toFixed(1)}%`});
+    });
+
+    const resistances=[];
+    if(bb&&bb.upper>price)resistances.push({price:bb.upper,label:'BB상단'});
+    if(ma20&&ma20>price)resistances.push({price:ma20,label:'MA20'});
+    if(ma50&&ma50>price)resistances.push({price:ma50,label:'MA50'});
+    if(ma100&&ma100>price)resistances.push({price:ma100,label:'MA100'});
+    if(ma200&&ma200>price)resistances.push({price:ma200,label:'MA200'});
+    recentHighs.forEach(p=>{if(p>price)resistances.push({price:p,label:'직전고점'});});
+    [0.236,0.382,0.5,0.618,0.786].forEach(f=>{
+        const fp=fibLow+fibRange*f;
+        if(fp>price&&fp<fibHigh*1.05)resistances.push({price:fp,label:`Fib${(f*100).toFixed(1)}%`});
+    });
+
+    function cluster(arr){
+        arr.sort((a,b)=>a.price-b.price);
+        const out=[];
+        for(const it of arr){
+            const found=out.find(o=>Math.abs(o.price-it.price)/price<0.005);
+            if(found){found.labels.push(it.label);found.price=(found.price+it.price)/2;}
+            else out.push({price:it.price,labels:[it.label]});
+        }
+        return out;
+    }
+    const supCl=cluster(supports).sort((a,b)=>b.price-a.price);
+    const resCl=cluster(resistances).sort((a,b)=>a.price-b.price);
+
+    const liqDanger=analyzeLiquidationDanger(price);
+    const buy1=supCl[0]||{price:price-atr,labels:['ATR']};
+    const buy2=supCl[1]||{price:price-atr*2,labels:['ATR×2']};
+    const sell1=resCl[0]||{price:price+atr,labels:['ATR']};
+    const sell2=resCl[1]||{price:price+atr*2,labels:['ATR×2']};
+    const stopLoss=Math.min(buy2.price*0.995,price-atr*2.5);
+    const risk=price-stopLoss;
+    const rr1=risk>0?((sell1.price-price)/risk).toFixed(2):'-';
+    const rr2=risk>0?((sell2.price-price)/risk).toFixed(2):'-';
+
+    let bias='neutral',biasLabel='중립';
+    if(signalResult){
+        if(signalResult.signal?.type==='풀롱'){bias='strong_long';biasLabel='강한 풀롱';}
+        else if(signalResult.signal?.type==='풀숏'){bias='strong_short';biasLabel='강한 풀숏';}
+        else if(signalResult.longConds>signalResult.shortConds+10){bias='long';biasLabel='롱 우세';}
+        else if(signalResult.shortConds>signalResult.longConds+10){bias='short';biasLabel='숏 우세';}
+    }
+
+    return{
+        price,bias,biasLabel,
+        buy1,buy2,sell1,sell2,stopLoss,
+        dangerLong:liqDanger?.maxLongCluster?.price,
+        dangerShort:liqDanger?.maxShortCluster?.price,
+        rr1,rr2,atr,
+    };
+}
+
+function renderTradeRecommendation(rec){
+    const el=document.getElementById('tradeRecPanel');
+    if(!el)return;
+    if(!rec){el.style.display='none';return;}
+    el.style.display='';
+    const fmt=v=>v?fp(v):'-';
+    const pct=v=>v?((v-rec.price)/rec.price*100).toFixed(2):'-';
+    const biasColor={
+        strong_long:'#FFD700',long:'rgba(255,215,0,0.7)',
+        strong_short:'#FF69B4',short:'rgba(255,105,180,0.7)',
+        neutral:'#888',
+    }[rec.bias];
+    el.innerHTML=`
+        <div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:14px;align-items:center;padding:10px 16px;">
+            <div style="border-right:1px solid var(--border);padding-right:14px;">
+                <div style="font-size:10px;color:var(--text-secondary);">시그널 방향</div>
+                <div style="font-size:16px;font-weight:800;color:${biasColor};">${rec.biasLabel}</div>
+                <div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">현재 ${fmt(rec.price)}</div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#FFD700;font-weight:700;margin-bottom:4px;">매수가 (분할)</div>
+                <div style="font-size:13px;color:var(--text-primary);font-weight:600;">${fmt(rec.buy1.price)} <span style="color:var(--text-secondary);font-size:10px;">(${pct(rec.buy1.price)}%) ${rec.buy1.labels.slice(0,2).join('+')}</span></div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${fmt(rec.buy2.price)} <span style="font-size:10px;">(${pct(rec.buy2.price)}%) ${rec.buy2.labels.slice(0,2).join('+')}</span></div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#FF69B4;font-weight:700;margin-bottom:4px;">매도가/익절 (분할)</div>
+                <div style="font-size:13px;color:var(--text-primary);font-weight:600;">${fmt(rec.sell1.price)} <span style="color:var(--text-secondary);font-size:10px;">(+${pct(rec.sell1.price)}%) ${rec.sell1.labels.slice(0,2).join('+')}</span></div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${fmt(rec.sell2.price)} <span style="font-size:10px;">(+${pct(rec.sell2.price)}%) ${rec.sell2.labels.slice(0,2).join('+')}</span></div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#ff4757;font-weight:700;margin-bottom:4px;">손절 / 위험</div>
+                <div style="font-size:13px;color:#ff4757;font-weight:600;">${fmt(rec.stopLoss)} <span style="color:var(--text-secondary);font-size:10px;">(${pct(rec.stopLoss)}%)</span></div>
+                <div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">R:R 1차 <b style="color:${parseFloat(rec.rr1)>=2?'#00d26a':parseFloat(rec.rr1)>=1?'#FFD700':'#ff4757'}">${rec.rr1}</b> / 2차 <b style="color:${parseFloat(rec.rr2)>=2?'#00d26a':parseFloat(rec.rr2)>=1?'#FFD700':'#ff4757'}">${rec.rr2}</b></div>
+                ${rec.dangerLong?`<div style="font-size:10px;color:#ff4757;margin-top:2px;">⚠ 롱청산자석 ${fmt(rec.dangerLong)}</div>`:''}
+                ${rec.dangerShort?`<div style="font-size:10px;color:#ff4757;margin-top:2px;">⚠ 숏청산자석 ${fmt(rec.dangerShort)}</div>`:''}
+            </div>
+        </div>
+    `;
+}
+
 function renderPredictionPanel(d,signalResult){
+    // 매수/매도 추천도 함께 갱신
+    try{
+        const rec=calculateTradeRecommendation(d,signalResult);
+        renderTradeRecommendation(rec);
+    }catch(e){console.warn('trade rec err',e);}
     const el=document.getElementById('predictionPanel');
     if(!el)return;
     if(!d||d.length<60){el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;">데이터 부족</div>';return;}
