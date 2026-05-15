@@ -2007,6 +2007,267 @@ async function updateOrderbook(){
 // 청산 데이터 전역 캐시 (시그널 분석용 - 풀롱/풀숏 위험도 평가에 사용)
 let lastLiquidationData=null;
 
+/* ═══════════════════════════════════
+   🎯 다중 시간프레임 우선순위 분석 (주봉→일봉→4h→1h)
+   - 큰 시간프레임이 작은 시간프레임보다 더 강한 가중치
+   - 모든 시간프레임이 같은 방향이면 매우 강한 신호
+   ═══════════════════════════════════ */
+let lastMultiTFAnalysis={tfs:{},consensus:null,ts:0};
+let _mtfInflight=false;
+
+function _evaluateTFSignalSimple(d){
+    if(!d||d.length<60)return{lc:0,sc:0,type:null};
+    const idx=d.length-1;
+    try{
+        const sig=checkFullSignalAtCandle(d,idx);
+        return{lc:sig?.lc||0,sc:sig?.sc||0,type:sig?.type||null};
+    }catch(e){return{lc:0,sc:0,type:null};}
+}
+
+async function updateMultiTimeframeAnalysis(){
+    if(_mtfInflight)return;
+    if(isStock(currentSymbol))return;
+    _mtfInflight=true;
+    const sym=currentSymbol;
+    try{
+        const tfs=[
+            {key:'W',label:'주봉',weight:4},
+            {key:'D',label:'일봉',weight:3},
+            {key:'240',label:'4시간',weight:2},
+            {key:'60',label:'1시간',weight:1},
+        ];
+        const results={};
+        for(const tf of tfs){
+            try{
+                const candles=await bybitKline(sym,tf.key,500);
+                if(candles&&candles.length>=60){
+                    const r=_evaluateTFSignalSimple(candles);
+                    results[tf.label]={...r,weight:tf.weight,key:tf.key};
+                }
+            }catch(e){}
+            await new Promise(r=>setTimeout(r,250)); // throttle
+        }
+        // 합의 계산: 가중치 합산
+        let longWeight=0,shortWeight=0,totalWeight=0;
+        Object.values(results).forEach(r=>{
+            totalWeight+=r.weight;
+            if(r.type==='풀롱'||(r.lc>r.sc&&r.lc>=15))longWeight+=r.weight;
+            else if(r.type==='풀숏'||(r.sc>r.lc&&r.sc>=15))shortWeight+=r.weight;
+        });
+        const longPct=totalWeight?Math.round(longWeight/totalWeight*100):0;
+        const shortPct=totalWeight?Math.round(shortWeight/totalWeight*100):0;
+        let bias='neutral';
+        if(longPct>=70)bias='strong_long';
+        else if(longPct>=40)bias='long';
+        else if(shortPct>=70)bias='strong_short';
+        else if(shortPct>=40)bias='short';
+        lastMultiTFAnalysis={
+            tfs:results,
+            consensus:{longPct,shortPct,bias,longWeight,shortWeight,totalWeight},
+            ts:Date.now(),
+        };
+        renderMultiTFCard();
+    }finally{_mtfInflight=false;}
+}
+
+function renderMultiTFCard(){
+    const el=document.getElementById('multiTFContent');
+    if(!el)return;
+    const a=lastMultiTFAnalysis;
+    if(!a||!a.consensus){
+        el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:12px;">분석 중...</div>';
+        return;
+    }
+    const c=a.consensus;
+    const biasMap={
+        strong_long:{color:'#FFD700',label:'강한 풀롱',bg:'rgba(255,215,0,0.15)'},
+        long:{color:'#FFD700',label:'롱 우세',bg:'rgba(255,215,0,0.08)'},
+        neutral:{color:'#888',label:'중립',bg:'rgba(255,255,255,0.05)'},
+        short:{color:'#FF69B4',label:'숏 우세',bg:'rgba(255,105,180,0.08)'},
+        strong_short:{color:'#FF69B4',label:'강한 풀숏',bg:'rgba(255,105,180,0.15)'},
+    };
+    const b=biasMap[c.bias];
+    let rows='';
+    const order=['주봉','일봉','4시간','1시간'];
+    order.forEach(label=>{
+        const r=a.tfs[label];
+        if(!r){rows+=`<tr><td style="padding:5px 8px;color:var(--text-secondary);">${label}</td><td colspan="3" style="color:var(--text-secondary);font-size:10px;">-</td></tr>`;return;}
+        const typeColor=r.type==='풀롱'?'#FFD700':r.type==='풀숏'?'#FF69B4':r.lc>r.sc?'#FFD700':r.sc>r.lc?'#FF69B4':'#888';
+        const typeLabel=r.type||(r.lc>r.sc?'롱우세':r.sc>r.lc?'숏우세':'중립');
+        rows+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+            <td style="padding:5px 8px;font-weight:600;">${label}</td>
+            <td style="padding:5px 8px;text-align:right;color:#FFD700;">롱 ${r.lc}</td>
+            <td style="padding:5px 8px;text-align:right;color:#FF69B4;">숏 ${r.sc}</td>
+            <td style="padding:5px 8px;text-align:right;color:${typeColor};font-weight:700;">${typeLabel}</td>
+        </tr>`;
+    });
+    el.innerHTML=`
+        <div style="background:${b.bg};border:1px solid ${b.color};padding:8px 12px;border-radius:5px;margin-bottom:8px;text-align:center;">
+            <div style="color:${b.color};font-size:14px;font-weight:700;">${b.label}</div>
+            <div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">롱 가중 ${c.longPct}% | 숏 가중 ${c.shortPct}% (총 ${c.totalWeight}점)</div>
+        </div>
+        <table style="width:100%;font-size:11px;border-collapse:collapse;">
+            <thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);">
+                <th style="text-align:left;padding:4px 8px;">시간프레임</th>
+                <th style="text-align:right;padding:4px 8px;">롱점수</th>
+                <th style="text-align:right;padding:4px 8px;">숏점수</th>
+                <th style="text-align:right;padding:4px 8px;">판정</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+    `;
+}
+
+/* ═══════════════════════════════════
+   🎯 다중 시간구간 청산 분석 (12h, 24h, 48h, 3d, 1w)
+   - 청산 클러스터가 여러 시간구간에 걸쳐 지속되면 강력한 자석
+   ═══════════════════════════════════ */
+let lastMultiPeriodLiq={periods:{},ts:0};
+let _mplInflight=false;
+
+async function updateMultiPeriodLiquidation(){
+    if(_mplInflight)return;
+    if(isStock(currentSymbol))return;
+    _mplInflight=true;
+    try{
+        // 각 시간구간을 대표할 1h 캔들 수 (lookback)
+        const periods=[
+            {label:'12h',hours:12},
+            {label:'24h',hours:24},
+            {label:'48h',hours:48},
+            {label:'3일',hours:72},
+            {label:'1주일',hours:168},
+        ];
+        // 청산 데이터는 현재 1개 endpoint 사용. 각 period에서 가격 변동 범위와 OI 변화를 추정해 청산 강도 평가
+        const candles=await bybitKline(currentSymbol,'60',200);
+        if(!candles||candles.length<50){_mplInflight=false;return;}
+        const curPrice=candles[candles.length-1].close;
+        const results={};
+        periods.forEach(p=>{
+            const slice=candles.slice(-Math.min(p.hours,candles.length));
+            const high=Math.max(...slice.map(c=>c.high));
+            const low=Math.min(...slice.map(c=>c.low));
+            const vol=slice.reduce((s,c)=>s+(c.turnover||c.volume*c.close),0);
+            // 청산 추정: 가격 범위에서 현재가까지 거리에 비례
+            const longLiqProb=(curPrice-low)/curPrice; // 가격이 저점 위에 있을수록 롱 청산 잠재력 ↑
+            const shortLiqProb=(high-curPrice)/curPrice;
+            results[p.label]={
+                high,low,volume:vol,
+                longTarget:low, // 롱 청산 타겟 (저점 근처)
+                shortTarget:high,// 숏 청산 타겟 (고점 근처)
+                longRisk:longLiqProb*100, // %
+                shortRisk:shortLiqProb*100,
+            };
+        });
+        lastMultiPeriodLiq={periods:results,ts:Date.now()};
+        renderMultiPeriodLiqCard();
+    }catch(e){console.warn('multi-period liq',e);}
+    finally{_mplInflight=false;}
+}
+
+function renderMultiPeriodLiqCard(){
+    const el=document.getElementById('multiPeriodLiqContent');
+    if(!el)return;
+    const a=lastMultiPeriodLiq;
+    if(!a.periods||!Object.keys(a.periods).length){
+        el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:12px;">로딩 중...</div>';
+        return;
+    }
+    let rows='';
+    Object.entries(a.periods).forEach(([label,d])=>{
+        const longC=d.longRisk>5?'#FFD700':'#888';
+        const shortC=d.shortRisk>5?'#FF69B4':'#888';
+        rows+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+            <td style="padding:5px 8px;font-weight:600;">${label}</td>
+            <td style="padding:5px 8px;text-align:right;color:#FF69B4;">${fp(d.longTarget)}</td>
+            <td style="padding:5px 8px;text-align:right;color:${longC};">${d.longRisk.toFixed(1)}%</td>
+            <td style="padding:5px 8px;text-align:right;color:#FFD700;">${fp(d.shortTarget)}</td>
+            <td style="padding:5px 8px;text-align:right;color:${shortC};">${d.shortRisk.toFixed(1)}%</td>
+        </tr>`;
+    });
+    el.innerHTML=`
+        <table style="width:100%;font-size:11px;border-collapse:collapse;">
+            <thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);">
+                <th style="text-align:left;padding:4px 8px;">기간</th>
+                <th style="text-align:right;padding:4px 8px;">롱청산타겟</th>
+                <th style="text-align:right;padding:4px 8px;">롱위험</th>
+                <th style="text-align:right;padding:4px 8px;">숏청산타겟</th>
+                <th style="text-align:right;padding:4px 8px;">숏위험</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+        <p class="hint">롱청산타겟=가격이 끌려갈 저점 / 숏청산타겟=가격이 끌려갈 고점 | 위험% 높을수록 청산 가능성↑</p>
+    `;
+}
+
+/* ═══════════════════════════════════
+   🎯 다중 거래소 청산 통합 (Binance + Bybit + 등)
+   - 현재 Bybit + 클라이언트사이드 Binance 가격 정보 활용
+   ═══════════════════════════════════ */
+let lastMultiExchangeLiq={data:null,ts:0};
+
+async function updateMultiExchangeLiquidation(){
+    if(isStock(currentSymbol))return;
+    const sym=currentSymbol;
+    try{
+        // Binance Open Interest 변동률 + Long/Short 비율 직접 가져오기 (공개 API)
+        const [biOI,biRatio]=await Promise.all([
+            fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=1h&limit=24`).then(r=>r.ok?r.json():null).catch(()=>null),
+            fetch(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=1h&limit=24`).then(r=>r.ok?r.json():null).catch(()=>null),
+        ]);
+        const result={binance:null,bybit:lastLiquidationData};
+        if(biOI&&Array.isArray(biOI)&&biOI.length){
+            const first=parseFloat(biOI[0].sumOpenInterest);
+            const last=parseFloat(biOI[biOI.length-1].sumOpenInterest);
+            const oiChange=(last-first)/first*100;
+            result.binance={oiChange,oiCurrent:last};
+        }
+        if(biRatio&&Array.isArray(biRatio)&&biRatio.length){
+            const last=biRatio[biRatio.length-1];
+            result.binance=result.binance||{};
+            result.binance.longRatio=parseFloat(last.longAccount)*100;
+            result.binance.shortRatio=parseFloat(last.shortAccount)*100;
+            result.binance.lsRatio=parseFloat(last.longShortRatio);
+        }
+        lastMultiExchangeLiq={data:result,ts:Date.now()};
+        renderMultiExchangeCard();
+    }catch(e){console.warn('multi-exchange',e);}
+}
+
+function renderMultiExchangeCard(){
+    const el=document.getElementById('multiExchangeContent');
+    if(!el)return;
+    const d=lastMultiExchangeLiq.data;
+    if(!d){el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:12px;">로딩 중...</div>';return;}
+    let html='<table style="width:100%;font-size:11px;border-collapse:collapse;">';
+    html+='<thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 8px;">거래소</th><th style="text-align:right;padding:4px 8px;">OI 변동(24h)</th><th style="text-align:right;padding:4px 8px;">L/S 비율</th><th style="text-align:right;padding:4px 8px;">롱%</th><th style="text-align:right;padding:4px 8px;">숏%</th></tr></thead><tbody>';
+    if(d.binance){
+        const b=d.binance;
+        const oiC=b.oiChange>0?'#FFD700':'#FF69B4';
+        const lsC=b.lsRatio>1?'#FFD700':'#FF69B4';
+        html+=`<tr><td style="padding:5px 8px;font-weight:600;">Binance</td>
+            <td style="padding:5px 8px;text-align:right;color:${oiC};">${b.oiChange>=0?'+':''}${b.oiChange?.toFixed(2)||'-'}%</td>
+            <td style="padding:5px 8px;text-align:right;color:${lsC};font-weight:700;">${b.lsRatio?.toFixed(2)||'-'}</td>
+            <td style="padding:5px 8px;text-align:right;color:#FFD700;">${b.longRatio?.toFixed(1)||'-'}%</td>
+            <td style="padding:5px 8px;text-align:right;color:#FF69B4;">${b.shortRatio?.toFixed(1)||'-'}%</td>
+        </tr>`;
+    }
+    if(d.bybit){
+        const totLong=(d.bybit.long_liquidations||[]).reduce((a,b)=>a+b,0);
+        const totShort=(d.bybit.short_liquidations||[]).reduce((a,b)=>a+b,0);
+        const ratio=totShort>0?totLong/totShort:1;
+        const rC=ratio>1?'#FFD700':'#FF69B4';
+        html+=`<tr><td style="padding:5px 8px;font-weight:600;">Bybit</td>
+            <td style="padding:5px 8px;text-align:right;color:var(--text-secondary);">-</td>
+            <td style="padding:5px 8px;text-align:right;color:${rC};font-weight:700;">${ratio.toFixed(2)}</td>
+            <td style="padding:5px 8px;text-align:right;color:#FFD700;">L:${totLong.toFixed(0)}</td>
+            <td style="padding:5px 8px;text-align:right;color:#FF69B4;">S:${totShort.toFixed(0)}</td>
+        </tr>`;
+    }
+    html+='</tbody></table>';
+    el.innerHTML=html;
+}
+
 async function updateLiquidation(){
     if(isStock(currentSymbol))return;
     try{
@@ -2905,7 +3166,7 @@ function generateFullSignal(d){
 
     let lS=0,sS=0; // longScore, shortScore (가중합)
     const lR=[],sR=[];
-    const TOTAL_MAX=95; // 83 + OB강화(+5) + StochRSI강화(+5) + Confluence(+5) - 기존(-3)
+    const TOTAL_MAX=125; // 95 + 청산위험(±10) + MTF(±15) + 주간청산(±5) + 거래소(±3) ≈ 125
 
     // ── 1점 조건 (17개, 총 17점) ──
     // 1) RSI 반등/하락
@@ -3093,6 +3354,50 @@ function generateFullSignal(d){
         }
     }
 
+    // 🎯 50) 다중 시간프레임 우선순위 (주봉>일봉>4h>1h) - 최대 ±15점
+    // 큰 시간프레임이 일치할수록 강한 신호
+    if(lastMultiTFAnalysis&&lastMultiTFAnalysis.consensus){
+        const c=lastMultiTFAnalysis.consensus;
+        if(c.bias==='strong_long'){lS+=15;lR.push(`MTF강한롱(주${lastMultiTFAnalysis.tfs['주봉']?.type||'-'},일${lastMultiTFAnalysis.tfs['일봉']?.type||'-'})`);sS=Math.max(0,sS-8);}
+        else if(c.bias==='long'){lS+=8;lR.push(`MTF롱우세${c.longPct}%`);sS=Math.max(0,sS-3);}
+        else if(c.bias==='strong_short'){sS+=15;sR.push(`MTF강한숏(주${lastMultiTFAnalysis.tfs['주봉']?.type||'-'},일${lastMultiTFAnalysis.tfs['일봉']?.type||'-'})`);lS=Math.max(0,lS-8);}
+        else if(c.bias==='short'){sS+=8;sR.push(`MTF숏우세${c.shortPct}%`);lS=Math.max(0,lS-3);}
+        // 주봉 단독 강한 신호 (가장 큰 가중)
+        const w=lastMultiTFAnalysis.tfs['주봉'];
+        if(w&&w.type==='풀롱'){lS+=5;lR.push('주봉풀롱');}
+        else if(w&&w.type==='풀숏'){sS+=5;sR.push('주봉풀숏');}
+    }
+
+    // 🎯 51) 다중 시간구간 청산 (12h~1w) - 가까운 청산 타겟에 따른 가중 ±5점
+    if(lastMultiPeriodLiq&&lastMultiPeriodLiq.periods){
+        const periods=lastMultiPeriodLiq.periods;
+        // 1주일 lookback 청산 타겟이 현재가 ±5% 이내면 위험
+        const week=periods['1주일'];
+        if(week){
+            const longDist=(price-week.longTarget)/price; // 양수 = 저점 위
+            const shortDist=(week.shortTarget-price)/price;
+            if(longDist<0.05&&longDist>0){
+                lS=Math.max(0,lS-5);
+                sS+=3;
+                lR.push(`주간롱청산위험@${fp(week.longTarget)}`);
+            }
+            if(shortDist<0.05&&shortDist>0){
+                sS=Math.max(0,sS-5);
+                lS+=3;
+                sR.push(`주간숏청산위험@${fp(week.shortTarget)}`);
+            }
+        }
+    }
+
+    // 🎯 52) 다중 거래소 OI/L-S 비율 (Binance + Bybit) - ±3점
+    if(lastMultiExchangeLiq&&lastMultiExchangeLiq.data&&lastMultiExchangeLiq.data.binance){
+        const b=lastMultiExchangeLiq.data.binance;
+        if(b.oiChange&&b.oiChange>10)sR.push(`Binance OI급증${b.oiChange.toFixed(1)}%`),sS+=2;
+        else if(b.oiChange&&b.oiChange<-10)lR.push(`Binance OI급감${b.oiChange.toFixed(1)}%`),lS+=2;
+        if(b.lsRatio&&b.lsRatio>2.5){sS+=3;sR.push(`Binance롱과열${b.lsRatio.toFixed(2)}`);} // 롱 너무 많음=청산 위험
+        else if(b.lsRatio&&b.lsRatio<0.6){lS+=3;lR.push(`Binance숏과열${b.lsRatio.toFixed(2)}`);} // 숏 너무 많음=숏스퀴즈
+    }
+
     // ── 42) 상위추세 맥락 (MA200) - 2점 + 후처리 부스트 ──
     const htTrend=detectHigherTFTrend(d);
     if(htTrend==='bull'){lS+=2;lR.push('상위추세↑');}
@@ -3264,9 +3569,9 @@ function generateFullSignal(d){
     }
 
     // ── 알트는 더 엄격한 임계값 적용 ──
-    // TOTAL_MAX=95 기준: 알트 50%(48) / BTC·ETH 40%(38)
-    const TRIGGER_MIN=isAlt?48:38;
-    const OPPOSITE_MAX=isAlt?14:11;
+    // TOTAL_MAX=125 기준: 알트 ~48% (60점) / BTC·ETH ~40% (50점)
+    const TRIGGER_MIN=isAlt?60:50;
+    const OPPOSITE_MAX=isAlt?16:13;
 
     // ── 확인봉 검증 (prev + prev2 봉 방향 체크 강화) ──
     let confirmed=true;
@@ -3613,6 +3918,12 @@ async function refreshAll(){
         if(refreshCount%15===0) tasks.push(updateEtherscan());
         // 매 30초: BTC 추세 (알트 정확도 향상용)
         if(refreshCount%30===0||refreshCount===1) tasks.push(updateBTCTrend());
+        // 매 60초: 다중 시간프레임 분석 (주봉/일봉/4h/1h)
+        if(refreshCount%60===0||refreshCount===1) tasks.push(updateMultiTimeframeAnalysis());
+        // 매 45초: 다중 시간구간 청산 분석 (12h~1w)
+        if(refreshCount%45===0||refreshCount===2) tasks.push(updateMultiPeriodLiquidation());
+        // 매 30초: 다중 거래소 청산 (Binance + Bybit)
+        if(refreshCount%30===0||refreshCount===3) tasks.push(updateMultiExchangeLiquidation());
     }
     // 매크로 데이터는 주식에도 유용 → 항상 갱신
     if(refreshCount%60===0) tasks.push(updateMacroData());

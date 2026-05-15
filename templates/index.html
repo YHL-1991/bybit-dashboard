@@ -83,6 +83,52 @@
         </div>
     </div>
 
+    <!-- 다중 시간프레임 우선순위 분석 (주봉→일봉→4h→1h) -->
+    <div class="section-full">
+        <div class="card">
+            <div class="card-title">
+                <span class="dot" style="background:#FFD700"></span> 다중 시간프레임 우선순위 (주봉 → 일봉 → 4h → 1h)
+            </div>
+            <div id="multiTFContent" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:12px;">로딩 중...</div>
+            </div>
+            <p class="hint">주봉이 가장 강한 가중치(×4). 모든 TF가 일치할수록 강한 시그널. <b>매 60초 갱신</b>. 시그널 점수에 ±15점 반영됨.</p>
+        </div>
+    </div>
+
+    <!-- 다중 시간구간 청산 + 다중 거래소 -->
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-title">
+                <span class="dot" style="background:#FF69B4"></span> 다중 시간구간 청산 타겟 (12h ~ 1주일)
+            </div>
+            <div id="multiPeriodLiqContent" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:12px;">로딩 중...</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-title">
+                <span class="dot" style="background:#58a6ff"></span> 다중 거래소 청산/OI (Binance + Bybit)
+            </div>
+            <div id="multiExchangeContent" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:12px;">로딩 중...</div>
+            </div>
+            <p class="hint">OI 변동률·롱숏비율 통합. L/S 2.5+ = 롱 과열(청산위험), 0.6- = 숏 과열(스퀴즈 가능). 시그널에 자동 반영.</p>
+        </div>
+    </div>
+
+    <!-- Coinglass 청산히트맵 임베드 -->
+    <div class="section-full">
+        <div class="card">
+            <div class="card-title">
+                <span class="dot" style="background:#ff9f43"></span> Coinglass 청산히트맵 (외부 데이터)
+                <a href="https://www.coinglass.com/ko/pro/futures/LiquidationHeatMap" target="_blank" style="margin-left:auto;font-size:10px;color:var(--blue);text-decoration:none;">[Coinglass 새 탭으로 열기]</a>
+            </div>
+            <iframe id="coinglassFrame" src="https://www.coinglass.com/ko/pro/futures/LiquidationHeatMap" style="width:100%;height:600px;border:1px solid var(--border);border-radius:5px;background:#0d1117;" loading="lazy"></iframe>
+            <p class="hint">Coinglass 공식 청산 히트맵 페이지. 일부 데이터는 로그인 또는 페이지 직접 방문이 필요할 수 있습니다.</p>
+        </div>
+    </div>
+
     <!-- 가격 예측 & 시점 분석 -->
     <div class="section-full">
         <div class="card">
@@ -358,6 +404,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260507a"></script>
+    <script src="/static/app.js?v=20260507b"></script>
 </body>
 </html>
