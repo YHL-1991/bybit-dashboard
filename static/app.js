@@ -2868,87 +2868,182 @@ async function updateBTCTrend(){
    예측 UI 렌더링
    ═══════════════════════════════════ */
 // ─── 매수/매도 추천 가격 계산 (지지/저항 + Fib + MA + BB 종합) ───
+// ─── 모든 Velox 지표를 총동원해서 진입/종료 가격 산출 ───
 function calculateTradeRecommendation(d,signalResult){
     if(!d||d.length<50)return null;
     const price=d[d.length-1].close;
     const atr=calcATR(d,14)||price*0.02;
     const _last=arr=>arr&&arr.length?arr[arr.length-1].value:null;
+
+    // 1) 기본 MA / BB
+    const ma7=_last(calcSMA(d,7));
     const ma20=_last(calcSMA(d,20));
     const ma50=_last(calcSMA(d,50));
     const ma100=_last(calcSMA(d,100));
     const ma200=_last(calcSMA(d,200));
     const bb=calcBollingerBands(d,20,2);
 
+    // 2) 피벗 + Fib + 직전 저고점
     const pvts=findPivots(d,5,5);
     const recentLows=pvts.lows.slice(-5).map(p=>p.price);
     const recentHighs=pvts.highs.slice(-5).map(p=>p.price);
-
     const slice=d.slice(-100);
     const fibHigh=Math.max(...slice.map(c=>c.high));
     const fibLow=Math.min(...slice.map(c=>c.low));
     const fibRange=fibHigh-fibLow;
 
+    // 3) 고급 패턴 - OB / FVG / Liquidity / Ichimoku / Harmonic
+    let obAdv=[],fvgs=[],sweeps=[],ich=null,harm=null,wyckoff=null,flag=null,srLevels=[];
+    try{obAdv=detectOrderBlocksAdvanced(d);}catch(e){}
+    try{fvgs=detectFVG(d);}catch(e){}
+    try{sweeps=detectLiquiditySweep(d,20);}catch(e){}
+    try{ich=calcIchimoku(d);}catch(e){}
+    try{harm=detectHarmonic(d);}catch(e){}
+    try{wyckoff=detectWyckoffSpring(d,20);}catch(e){}
+    try{flag=detectFlag(d);}catch(e){}
+    try{srLevels=findSRLevels(d);}catch(e){}
+
+    // 4) 다중구간 청산 타겟 (전역 캐시)
+    const mpl=lastMultiPeriodLiq?.periods||{};
+    // 5) 청산 위험 가까운 클러스터
+    const liqDanger=analyzeLiquidationDanger(price);
+
+    // ───── 지지(롱 진입가 후보) 모으기 ─────
     const supports=[];
-    if(bb&&bb.lower<price)supports.push({price:bb.lower,label:'BB하단'});
-    if(ma20&&ma20<price)supports.push({price:ma20,label:'MA20'});
-    if(ma50&&ma50<price)supports.push({price:ma50,label:'MA50'});
-    if(ma100&&ma100<price)supports.push({price:ma100,label:'MA100'});
-    if(ma200&&ma200<price)supports.push({price:ma200,label:'MA200'});
-    recentLows.forEach(p=>{if(p<price)supports.push({price:p,label:'직전저점'});});
+    if(bb&&bb.lower<price)supports.push({price:bb.lower,label:'BB하단',w:2});
+    if(ma20&&ma20<price)supports.push({price:ma20,label:'MA20',w:2});
+    if(ma50&&ma50<price)supports.push({price:ma50,label:'MA50',w:2});
+    if(ma100&&ma100<price)supports.push({price:ma100,label:'MA100',w:3});
+    if(ma200&&ma200<price)supports.push({price:ma200,label:'MA200',w:4});
+    recentLows.forEach(p=>{if(p<price)supports.push({price:p,label:'직전저점',w:2});});
+    srLevels.forEach(lv=>{if(lv<price)supports.push({price:lv,label:'S/R지지',w:3});});
     [0.236,0.382,0.5,0.618,0.786].forEach(f=>{
         const fp=fibHigh-fibRange*f;
-        if(fp<price&&fp>fibLow*0.95)supports.push({price:fp,label:`Fib${(f*100).toFixed(1)}%`});
+        if(fp<price&&fp>fibLow*0.95)supports.push({price:fp,label:`Fib${(f*100).toFixed(1)}%`,w:f===0.618||f===0.5?3:2});
     });
+    // 신선 OB
+    obAdv.forEach(ob=>{
+        if(ob.type==='bullish_ob'&&ob.priceLow<price){
+            supports.push({price:ob.priceLow,label:ob.untested?'신선OB':'OB',w:ob.untested?5:3});
+        }
+    });
+    // FVG 하단
+    fvgs.forEach(fv=>{if(fv.type==='bullish_fvg'&&fv.bottom<price)supports.push({price:fv.bottom,label:'상승FVG',w:3});});
+    // Liquidity Sweep (저점 스윕)
+    sweeps.forEach(sw=>{if(sw.type==='bullish_sweep'&&sw.price<price)supports.push({price:sw.price,label:'저점스윕',w:4});});
+    // Ichimoku 구름 하단
+    if(ich&&ich.senkouA.length&&ich.senkouB.length){
+        const sa=ich.senkouA[ich.senkouA.length-1].value,sb=ich.senkouB[ich.senkouB.length-1].value;
+        const bot=Math.min(sa,sb);
+        if(bot<price)supports.push({price:bot,label:'이치모쿠하단',w:3});
+    }
+    // 청산 매수 자석 (롱청산자석은 저점 자석)
+    if(liqDanger?.maxLongCluster?.price<price){
+        const lc=liqDanger.maxLongCluster.price;
+        supports.push({price:lc,label:'청산자석(롱)',w:1}); // 위험 표시 - 가중치 낮음
+    }
+    // 다중구간 청산 타겟 (저점)
+    Object.values(mpl).forEach(p=>{if(p.longTarget<price)supports.push({price:p.longTarget,label:'주기저점',w:2});});
+    // Wyckoff Spring
+    if(wyckoff?.type==='bullish_spring'){supports.push({price:price*0.99,label:'Spring영역',w:4});}
 
+    // ───── 저항(롱 종료가 / 숏 진입가 후보) 모으기 ─────
     const resistances=[];
-    if(bb&&bb.upper>price)resistances.push({price:bb.upper,label:'BB상단'});
-    if(ma20&&ma20>price)resistances.push({price:ma20,label:'MA20'});
-    if(ma50&&ma50>price)resistances.push({price:ma50,label:'MA50'});
-    if(ma100&&ma100>price)resistances.push({price:ma100,label:'MA100'});
-    if(ma200&&ma200>price)resistances.push({price:ma200,label:'MA200'});
-    recentHighs.forEach(p=>{if(p>price)resistances.push({price:p,label:'직전고점'});});
+    if(bb&&bb.upper>price)resistances.push({price:bb.upper,label:'BB상단',w:2});
+    if(ma20&&ma20>price)resistances.push({price:ma20,label:'MA20',w:2});
+    if(ma50&&ma50>price)resistances.push({price:ma50,label:'MA50',w:2});
+    if(ma100&&ma100>price)resistances.push({price:ma100,label:'MA100',w:3});
+    if(ma200&&ma200>price)resistances.push({price:ma200,label:'MA200',w:4});
+    recentHighs.forEach(p=>{if(p>price)resistances.push({price:p,label:'직전고점',w:2});});
+    srLevels.forEach(lv=>{if(lv>price)resistances.push({price:lv,label:'S/R저항',w:3});});
     [0.236,0.382,0.5,0.618,0.786].forEach(f=>{
         const fp=fibLow+fibRange*f;
-        if(fp>price&&fp<fibHigh*1.05)resistances.push({price:fp,label:`Fib${(f*100).toFixed(1)}%`});
+        if(fp>price&&fp<fibHigh*1.05)resistances.push({price:fp,label:`Fib${(f*100).toFixed(1)}%`,w:f===0.618||f===0.5?3:2});
     });
+    obAdv.forEach(ob=>{
+        if(ob.type==='bearish_ob'&&ob.priceHigh>price){
+            resistances.push({price:ob.priceHigh,label:ob.untested?'신선OB':'OB',w:ob.untested?5:3});
+        }
+    });
+    fvgs.forEach(fv=>{if(fv.type==='bearish_fvg'&&fv.top>price)resistances.push({price:fv.top,label:'하락FVG',w:3});});
+    sweeps.forEach(sw=>{if(sw.type==='bearish_sweep'&&sw.price>price)resistances.push({price:sw.price,label:'고점스윕',w:4});});
+    if(ich&&ich.senkouA.length&&ich.senkouB.length){
+        const sa=ich.senkouA[ich.senkouA.length-1].value,sb=ich.senkouB[ich.senkouB.length-1].value;
+        const top=Math.max(sa,sb);
+        if(top>price)resistances.push({price:top,label:'이치모쿠상단',w:3});
+    }
+    if(liqDanger?.maxShortCluster?.price>price){
+        const sc=liqDanger.maxShortCluster.price;
+        resistances.push({price:sc,label:'청산자석(숏)',w:1});
+    }
+    Object.values(mpl).forEach(p=>{if(p.shortTarget>price)resistances.push({price:p.shortTarget,label:'주기고점',w:2});});
+    if(wyckoff?.type==='bearish_upthrust'){resistances.push({price:price*1.01,label:'Upthrust영역',w:4});}
 
-    function cluster(arr){
+    // 가중 클러스터링: 0.5% 이내 묶고 가중치 합산
+    function clusterWeighted(arr){
         arr.sort((a,b)=>a.price-b.price);
         const out=[];
         for(const it of arr){
             const found=out.find(o=>Math.abs(o.price-it.price)/price<0.005);
-            if(found){found.labels.push(it.label);found.price=(found.price+it.price)/2;}
-            else out.push({price:it.price,labels:[it.label]});
+            if(found){
+                found.labels.push(it.label);
+                found.price=(found.price*found.w+it.price*it.w)/(found.w+it.w);
+                found.w+=it.w;
+            }else out.push({price:it.price,labels:[it.label],w:it.w});
         }
-        return out;
+        return out.sort((a,b)=>b.w-a.w); // 가중치 높은 순
     }
-    const supCl=cluster(supports).sort((a,b)=>b.price-a.price);
-    const resCl=cluster(resistances).sort((a,b)=>a.price-b.price);
+    const supCl=clusterWeighted(supports);
+    const resCl=clusterWeighted(resistances);
 
-    const liqDanger=analyzeLiquidationDanger(price);
-    const buy1=supCl[0]||{price:price-atr,labels:['ATR']};
-    const buy2=supCl[1]||{price:price-atr*2,labels:['ATR×2']};
-    const sell1=resCl[0]||{price:price+atr,labels:['ATR']};
-    const sell2=resCl[1]||{price:price+atr*2,labels:['ATR×2']};
-    const stopLoss=Math.min(buy2.price*0.995,price-atr*2.5);
-    const risk=price-stopLoss;
-    const rr1=risk>0?((sell1.price-price)/risk).toFixed(2):'-';
-    const rr2=risk>0?((sell2.price-price)/risk).toFixed(2):'-';
-
-    let bias='neutral',biasLabel='중립';
+    // 시그널 방향 판정
+    let bias='neutral',biasLabel='중립',direction='관망';
     if(signalResult){
-        if(signalResult.signal?.type==='풀롱'){bias='strong_long';biasLabel='강한 풀롱';}
-        else if(signalResult.signal?.type==='풀숏'){bias='strong_short';biasLabel='강한 풀숏';}
-        else if(signalResult.longConds>signalResult.shortConds+10){bias='long';biasLabel='롱 우세';}
-        else if(signalResult.shortConds>signalResult.longConds+10){bias='short';biasLabel='숏 우세';}
+        if(signalResult.signal?.type==='풀롱'){bias='strong_long';biasLabel='강한 풀롱';direction='롱';}
+        else if(signalResult.signal?.type==='풀숏'){bias='strong_short';biasLabel='강한 풀숏';direction='숏';}
+        else if(signalResult.longConds>signalResult.shortConds+10){bias='long';biasLabel='롱 우세';direction='롱';}
+        else if(signalResult.shortConds>signalResult.longConds+10){bias='short';biasLabel='숏 우세';direction='숏';}
+        else if(signalResult.longConds>signalResult.shortConds){direction='롱(약)';}
+        else if(signalResult.shortConds>signalResult.longConds){direction='숏(약)';}
     }
+
+    // 방향별 진입/종료가 결정 (가중치 가장 높은 클러스터 선택, 너무 가까운 것 제외)
+    const minDistPct=0.003; // 진입은 현재가에서 0.3% 이상 떨어진 곳
+    const isShort=direction==='숏'||direction==='숏(약)'||bias==='strong_short'||bias==='short';
+
+    // 롱: 진입가=지지, 종료가=저항
+    // 숏: 진입가=저항, 종료가=지지
+    const entryPool=isShort
+        ?resCl.filter(c=>(c.price-price)/price>=minDistPct)
+        :supCl.filter(c=>(price-c.price)/price>=minDistPct);
+    const exitPool=isShort
+        ?supCl.filter(c=>(price-c.price)/price>=minDistPct)
+        :resCl.filter(c=>(c.price-price)/price>=minDistPct);
+
+    const entry1=entryPool[0]||(isShort?{price:price+atr,labels:['ATR'],w:1}:{price:price-atr,labels:['ATR'],w:1});
+    const entry2=entryPool[1]||(isShort?{price:price+atr*2,labels:['ATR×2'],w:1}:{price:price-atr*2,labels:['ATR×2'],w:1});
+    const exit1=exitPool[0]||(isShort?{price:price-atr,labels:['ATR'],w:1}:{price:price+atr,labels:['ATR'],w:1});
+    const exit2=exitPool[1]||(isShort?{price:price-atr*2,labels:['ATR×2'],w:1}:{price:price+atr*2,labels:['ATR×2'],w:1});
+
+    // 손절: 롱이면 entry2 -0.5% 또는 ATR×2.5 아래, 숏이면 entry2 +0.5% 또는 ATR×2.5 위
+    const stopLoss=isShort
+        ?Math.max(entry2.price*1.005,price+atr*2.5)
+        :Math.min(entry2.price*0.995,price-atr*2.5);
+
+    // R:R 계산
+    const risk=Math.abs(price-stopLoss);
+    const reward1=Math.abs(exit1.price-price);
+    const reward2=Math.abs(exit2.price-price);
+    const rr1=risk>0?(reward1/risk).toFixed(2):'-';
+    const rr2=risk>0?(reward2/risk).toFixed(2):'-';
 
     return{
-        price,bias,biasLabel,
-        buy1,buy2,sell1,sell2,stopLoss,
+        price,bias,biasLabel,direction,isShort,
+        entry1,entry2,exit1,exit2,stopLoss,
         dangerLong:liqDanger?.maxLongCluster?.price,
         dangerShort:liqDanger?.maxShortCluster?.price,
         rr1,rr2,atr,
+        indicatorCount:supports.length+resistances.length,
     };
 }
 
@@ -2964,29 +3059,37 @@ function renderTradeRecommendation(rec){
         strong_short:'#FF69B4',short:'rgba(255,105,180,0.7)',
         neutral:'#888',
     }[rec.bias];
+    const entryColor=rec.isShort?'#FF69B4':'#FFD700';
+    const exitColor=rec.isShort?'#FFD700':'#FF69B4';
+    const dirBadge=rec.direction==='롱'||rec.direction==='롱(약)'
+        ?`<span style="display:inline-block;padding:2px 10px;border-radius:50px;background:#FFD700;color:#000;font-size:12px;font-weight:800;margin-right:6px;">롱 LONG</span>`
+        :rec.direction==='숏'||rec.direction==='숏(약)'
+        ?`<span style="display:inline-block;padding:2px 10px;border-radius:50px;background:#FF69B4;color:#fff;font-size:12px;font-weight:800;margin-right:6px;">숏 SHORT</span>`
+        :`<span style="display:inline-block;padding:2px 10px;border-radius:50px;background:#888;color:#fff;font-size:12px;font-weight:800;margin-right:6px;">관망</span>`;
     el.innerHTML=`
         <div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:14px;align-items:center;padding:10px 16px;">
             <div style="border-right:1px solid var(--border);padding-right:14px;">
                 <div style="font-size:10px;color:var(--text-secondary);">시그널 방향</div>
-                <div style="font-size:16px;font-weight:800;color:${biasColor};">${rec.biasLabel}</div>
-                <div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">현재 ${fmt(rec.price)}</div>
+                <div style="margin-top:4px;">${dirBadge}</div>
+                <div style="font-size:13px;font-weight:700;color:${biasColor};margin-top:4px;">${rec.biasLabel}</div>
+                <div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">현재 ${fmt(rec.price)} · ${rec.indicatorCount}개 지표</div>
             </div>
             <div>
-                <div style="font-size:11px;color:#FFD700;font-weight:700;margin-bottom:4px;">매수가 (분할)</div>
-                <div style="font-size:13px;color:var(--text-primary);font-weight:600;">${fmt(rec.buy1.price)} <span style="color:var(--text-secondary);font-size:10px;">(${pct(rec.buy1.price)}%) ${rec.buy1.labels.slice(0,2).join('+')}</span></div>
-                <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${fmt(rec.buy2.price)} <span style="font-size:10px;">(${pct(rec.buy2.price)}%) ${rec.buy2.labels.slice(0,2).join('+')}</span></div>
+                <div style="font-size:11px;color:${entryColor};font-weight:700;margin-bottom:4px;">진입가 (분할)</div>
+                <div style="font-size:13px;color:var(--text-primary);font-weight:600;">${fmt(rec.entry1.price)} <span style="color:var(--text-secondary);font-size:10px;">(${pct(rec.entry1.price)}%) [w:${rec.entry1.w}] ${rec.entry1.labels.slice(0,2).join('+')}</span></div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${fmt(rec.entry2.price)} <span style="font-size:10px;">(${pct(rec.entry2.price)}%) [w:${rec.entry2.w}] ${rec.entry2.labels.slice(0,2).join('+')}</span></div>
             </div>
             <div>
-                <div style="font-size:11px;color:#FF69B4;font-weight:700;margin-bottom:4px;">매도가/익절 (분할)</div>
-                <div style="font-size:13px;color:var(--text-primary);font-weight:600;">${fmt(rec.sell1.price)} <span style="color:var(--text-secondary);font-size:10px;">(+${pct(rec.sell1.price)}%) ${rec.sell1.labels.slice(0,2).join('+')}</span></div>
-                <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${fmt(rec.sell2.price)} <span style="font-size:10px;">(+${pct(rec.sell2.price)}%) ${rec.sell2.labels.slice(0,2).join('+')}</span></div>
+                <div style="font-size:11px;color:${exitColor};font-weight:700;margin-bottom:4px;">종료가 (분할)</div>
+                <div style="font-size:13px;color:var(--text-primary);font-weight:600;">${fmt(rec.exit1.price)} <span style="color:var(--text-secondary);font-size:10px;">(${pct(rec.exit1.price)}%) [w:${rec.exit1.w}] ${rec.exit1.labels.slice(0,2).join('+')}</span></div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${fmt(rec.exit2.price)} <span style="font-size:10px;">(${pct(rec.exit2.price)}%) [w:${rec.exit2.w}] ${rec.exit2.labels.slice(0,2).join('+')}</span></div>
             </div>
             <div>
                 <div style="font-size:11px;color:#ff4757;font-weight:700;margin-bottom:4px;">손절 / 위험</div>
                 <div style="font-size:13px;color:#ff4757;font-weight:600;">${fmt(rec.stopLoss)} <span style="color:var(--text-secondary);font-size:10px;">(${pct(rec.stopLoss)}%)</span></div>
                 <div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">R:R 1차 <b style="color:${parseFloat(rec.rr1)>=2?'#00d26a':parseFloat(rec.rr1)>=1?'#FFD700':'#ff4757'}">${rec.rr1}</b> / 2차 <b style="color:${parseFloat(rec.rr2)>=2?'#00d26a':parseFloat(rec.rr2)>=1?'#FFD700':'#ff4757'}">${rec.rr2}</b></div>
-                ${rec.dangerLong?`<div style="font-size:10px;color:#ff4757;margin-top:2px;">⚠ 롱청산자석 ${fmt(rec.dangerLong)}</div>`:''}
-                ${rec.dangerShort?`<div style="font-size:10px;color:#ff4757;margin-top:2px;">⚠ 숏청산자석 ${fmt(rec.dangerShort)}</div>`:''}
+                ${rec.dangerLong?`<div style="font-size:10px;color:#ff4757;margin-top:2px;">롱청산자석 ${fmt(rec.dangerLong)}</div>`:''}
+                ${rec.dangerShort?`<div style="font-size:10px;color:#ff4757;margin-top:2px;">숏청산자석 ${fmt(rec.dangerShort)}</div>`:''}
             </div>
         </div>
     `;
