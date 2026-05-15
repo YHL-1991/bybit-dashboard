@@ -2015,13 +2015,94 @@ let lastLiquidationData=null;
 let lastMultiTFAnalysis={tfs:{},consensus:null,ts:0};
 let _mtfInflight=false;
 
+// 가격 기반 지표만 사용하는 독립 평가 (외부 글로벌 의존 X, 임계값 미달이어도 점수 반환)
 function _evaluateTFSignalSimple(d){
     if(!d||d.length<60)return{lc:0,sc:0,type:null};
-    const idx=d.length-1;
     try{
-        const sig=checkFullSignalAtCandle(d,idx);
-        return{lc:sig?.lc||0,sc:sig?.sc||0,type:sig?.type||null};
-    }catch(e){return{lc:0,sc:0,type:null};}
+        const c=d[d.length-1];
+        const prev=d[d.length-2];
+        const price=c.close;
+        let lc=0,sc=0;
+
+        // RSI (최대 4점)
+        const rsiData=calcRSI(d,14);
+        const rsi=rsiData[rsiData.length-1]?.value||50;
+        const rsiPrev=rsiData[rsiData.length-2]?.value||50;
+        if(rsi<25)lc+=3;else if(rsi<35)lc+=2;else if(rsi<45)lc+=1;
+        if(rsi>75)sc+=3;else if(rsi>65)sc+=2;else if(rsi>55)sc+=1;
+        if(rsi>rsiPrev)lc+=1;else sc+=1;
+
+        // MACD (최대 4점)
+        const macd=calcMACD(d);
+        if(macd&&macd.hist&&macd.hist.length>=2){
+            const h=macd.hist[macd.hist.length-1].value;
+            const hP=macd.hist[macd.hist.length-2].value;
+            if(h>0)lc+=2;else sc+=2;
+            if(h>hP)lc+=2;else sc+=2;
+        }
+
+        // MA 정렬 (최대 5점)
+        const ma7=calcSMA(d,7),ma20=calcSMA(d,20),ma100=calcSMA(d,100),ma200=calcSMA(d,200);
+        if(ma7.length&&ma20.length&&ma100.length){
+            const v7=ma7[ma7.length-1].value,v20=ma20[ma20.length-1].value,v100=ma100[ma100.length-1].value;
+            if(price>v7&&v7>v20&&v20>v100)lc+=3;
+            else if(price<v7&&v7<v20&&v20<v100)sc+=3;
+            if(price>v20)lc+=2;else sc+=2;
+        }
+        if(ma200.length){
+            const m200=ma200[ma200.length-1].value;
+            if(price>m200*1.02)lc+=3;
+            else if(price<m200*0.98)sc+=3;
+        }
+
+        // StochRSI (최대 5점)
+        try{
+            const st=calcStochasticRSI(d);
+            if(st){
+                if(st.kPrev<=st.dPrev&&st.k>st.d){
+                    if(st.k<25)lc+=5;else if(st.k<50)lc+=3;else lc+=2;
+                }
+                if(st.kPrev>=st.dPrev&&st.k<st.d){
+                    if(st.k>75)sc+=5;else if(st.k>50)sc+=3;else sc+=2;
+                }
+            }
+        }catch(e){}
+
+        // 볼린저 (최대 3점)
+        try{
+            const bb=calcBollingerBands(d,20,2);
+            if(bb){
+                if(prev.low<=bb.lower&&c.close>bb.lower)lc+=3;
+                if(prev.high>=bb.upper&&c.close<bb.upper)sc+=3;
+            }
+        }catch(e){}
+
+        // 추세 (최근 10봉 변동률, 최대 3점)
+        const last10=d.slice(-10);
+        if(last10.length>=10){
+            const trendPct=(last10[last10.length-1].close-last10[0].close)/last10[0].close*100;
+            if(trendPct>3)lc+=3;else if(trendPct>1)lc+=2;else if(trendPct>0)lc+=1;
+            if(trendPct<-3)sc+=3;else if(trendPct<-1)sc+=2;else if(trendPct<0)sc+=1;
+        }
+
+        // ADX 추세 강도 (최대 3점)
+        try{
+            const adx=calcADX(d,14);
+            if(adx&&adx.adx>25){
+                if(adx.plusDI>adx.minusDI)lc+=Math.min(3,Math.round((adx.adx-25)/10)+1);
+                if(adx.minusDI>adx.plusDI)sc+=Math.min(3,Math.round((adx.adx-25)/10)+1);
+            }
+        }catch(e){}
+
+        // 신호 판정 (총 ~30점 가능 → 18+ 풀롱/풀숏)
+        let type=null;
+        if(lc>=18&&sc<7)type='풀롱';
+        else if(sc>=18&&lc<7)type='풀숏';
+        return{lc,sc,type};
+    }catch(e){
+        console.warn('TF eval err',e);
+        return{lc:0,sc:0,type:null};
+    }
 }
 
 async function updateMultiTimeframeAnalysis(){
@@ -3941,6 +4022,12 @@ document.getElementById('symbolSelect').addEventListener('change',e=>{
     lastKlineData=[];liqFeedItems=[];whaleFeedItems=[];
     // 차트 완전 재생성 (가격 범례 리셋)
     srLines=[];cmeGapLines=[];fibLines=[];
+    // MTF/청산 데이터 리셋 + 즉시 재계산
+    lastMultiTFAnalysis={tfs:{},consensus:null,ts:0};
+    lastMultiPeriodLiq={periods:{},ts:0};
+    lastMultiExchangeLiq={data:null,ts:0};
+    _mtfInflight=false;_mplInflight=false;
+    renderMultiTFCard();renderMultiPeriodLiqCard();renderMultiExchangeCard();
     initTVChart().then(()=>{updateTVChart();});
     initRSIChart();initMACDChart();
     // 주식 모드: 호가창 placeholder 즉시 표시
@@ -3948,6 +4035,8 @@ document.getElementById('symbolSelect').addEventListener('change',e=>{
         updateOrderbook(); // placeholder 렌더
     }
     refreshAll();connectWS();
+    // 새 종목 MTF 즉시 갱신
+    setTimeout(()=>{updateMultiTimeframeAnalysis();updateMultiPeriodLiquidation();updateMultiExchangeLiquidation();},300);
 });
 document.getElementById('intervalSelect').addEventListener('change',e=>{currentInterval=e.target.value;updateTVChart();});
 
@@ -4549,6 +4638,9 @@ async function renderBacktestResults(){
     await updateTVChart();refreshAll();connectWS();
     // 초기 로드: 컨센서스, 매크로, 온체인
     updateExpertConsensus();updateMacroData();updateOnchainData();
+    // 초기 로드: MTF + 다중구간/거래소 청산
+    updateMultiTimeframeAnalysis();
+    setTimeout(()=>{updateMultiPeriodLiquidation();updateMultiExchangeLiquidation();},800);
     // 백테스트 결과 표시
     renderBacktestResults();
     refreshInterval=setInterval(()=>{refreshAll();checkAutoTrade();},1000);
