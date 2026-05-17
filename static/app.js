@@ -2016,6 +2016,65 @@ let lastMultiTFAnalysis={tfs:{},consensus:null,ts:0};
 let _mtfInflight=false;
 let _lastUnifiedSignal=null; // 모든 시그널 표시의 단일 소스
 
+// ─── 시그널 방향 안정화 (뚝심있게 유지) ───
+// 방향 전환 조건: 새 방향이 10번 연속 + 기존 방향 최소 30초 유지 후
+let _stableDirection={current:null,confirmedAt:0,pendingDir:null,pendingCount:0,lastSymbol:null};
+
+function getStableSignalDirection(longConds,shortConds,fullSignalType){
+    // 종목 바뀌면 리셋
+    if(_stableDirection.lastSymbol!==currentSymbol){
+        _stableDirection={current:null,confirmedAt:0,pendingDir:null,pendingCount:0,lastSymbol:currentSymbol};
+    }
+    let raw;
+    // 풀롱/풀숏은 강한 신호이므로 그대로
+    if(fullSignalType==='풀롱')raw='풀롱';
+    else if(fullSignalType==='풀숏')raw='풀숏';
+    // 일반 방향은 매우 넓은 hysteresis (30점 차이 이상이어야 방향 인정)
+    else if(longConds>shortConds+30)raw='롱';
+    else if(shortConds>longConds+30)raw='숏';
+    else raw='관망'; // 차이 30 미만은 무조건 관망
+    const now=Date.now();
+    // 첫 호출
+    if(!_stableDirection.current){
+        _stableDirection.current=raw;
+        _stableDirection.confirmedAt=now;
+        return{direction:raw,pending:null,pendingPct:0,heldMin:0};
+    }
+    // 같은 방향 → pending 리셋
+    if(raw===_stableDirection.current){
+        _stableDirection.pendingDir=null;
+        _stableDirection.pendingCount=0;
+        return{
+            direction:_stableDirection.current,pending:null,pendingPct:0,
+            heldMin:Math.round((now-_stableDirection.confirmedAt)/60000),
+        };
+    }
+    // 다른 방향 → pending 카운터
+    if(raw===_stableDirection.pendingDir){_stableDirection.pendingCount++;}
+    else{_stableDirection.pendingDir=raw;_stableDirection.pendingCount=1;}
+    const heldFor=now-_stableDirection.confirmedAt;
+    // 강화된 전환 조건:
+    //   1) 최소 90초 (1분30초) 기존 방향 유지
+    //   2) 새 방향이 30번 연속 (=30초) 감지
+    //   3) 풀롱/풀숏 신호면 60초 + 20회로 완화
+    const isStrongChange=raw==='풀롱'||raw==='풀숏';
+    const minHold=isStrongChange?60000:90000;
+    const requiredCount=isStrongChange?20:30;
+    if(_stableDirection.pendingCount>=requiredCount&&heldFor>=minHold){
+        _stableDirection.current=raw;
+        _stableDirection.confirmedAt=now;
+        _stableDirection.pendingDir=null;
+        _stableDirection.pendingCount=0;
+        return{direction:raw,pending:null,pendingPct:0,heldMin:0};
+    }
+    return{
+        direction:_stableDirection.current,
+        pending:_stableDirection.pendingDir,
+        pendingPct:Math.round(_stableDirection.pendingCount/requiredCount*100),
+        heldMin:Math.round(heldFor/60000),
+    };
+}
+
 /* ═══════════════════════════════════
    🎯 실시간 종목 픽 스캐너 (시그널 일관성 보장)
    - _evaluateTFSignalSimple 동일 사용 → 캔들차트 노란/분홍 라인과 일치
@@ -3146,14 +3205,22 @@ function calculateTradeRecommendation(d,signalResult){
     const resCl=clusterWeighted(resistances);
 
     // 시그널 방향 판정
+    // 안정화된 방향 사용 (signalResult에 stableDirection이 있으면)
     let bias='neutral',biasLabel='중립',direction='관망';
-    if(signalResult){
+    const stable=signalResult?.stableDirection;
+    if(stable){
+        const d=stable.direction;
+        if(d==='풀롱'){bias='strong_long';biasLabel='강한 풀롱';direction='롱';}
+        else if(d==='풀숏'){bias='strong_short';biasLabel='강한 풀숏';direction='숏';}
+        else if(d==='롱'){bias='long';biasLabel='롱 우세';direction='롱';}
+        else if(d==='숏'){bias='short';biasLabel='숏 우세';direction='숏';}
+        else{bias='neutral';biasLabel='관망';direction='관망';}
+    }else if(signalResult){
+        // fallback
         if(signalResult.signal?.type==='풀롱'){bias='strong_long';biasLabel='강한 풀롱';direction='롱';}
         else if(signalResult.signal?.type==='풀숏'){bias='strong_short';biasLabel='강한 풀숏';direction='숏';}
-        else if(signalResult.longConds>signalResult.shortConds+10){bias='long';biasLabel='롱 우세';direction='롱';}
-        else if(signalResult.shortConds>signalResult.longConds+10){bias='short';biasLabel='숏 우세';direction='숏';}
-        else if(signalResult.longConds>signalResult.shortConds){direction='롱(약)';}
-        else if(signalResult.shortConds>signalResult.longConds){direction='숏(약)';}
+        else if(signalResult.longConds>signalResult.shortConds+20){bias='long';biasLabel='롱 우세';direction='롱';}
+        else if(signalResult.shortConds>signalResult.longConds+20){bias='short';biasLabel='숏 우세';direction='숏';}
     }
 
     // 방향별 진입/종료가 결정 (가중치 가장 높은 클러스터 선택, 너무 가까운 것 제외)
@@ -4297,23 +4364,38 @@ function addFullSignalMarkers(d,existingMarkers){
     try{renderPredictionPanel(d,result);}catch(e){}
 
     // ── 통일 (Unified Signal): 모든 UI가 generateFullSignal 결과를 따름 ──
-    _lastUnifiedSignal=result; // 전역 캐시 (top picks, MTF 등이 참조)
+    _lastUnifiedSignal=result; // 전역 캐시
+    // 안정화된 방향 계산 (뚝심있게 유지)
+    const stable=getStableSignalDirection(result.longConds,result.shortConds,result.signal?.type);
+    _lastUnifiedSignal.stableDirection=stable;
     try{
         const dirEl=document.getElementById('signalDirection');
         const scoreEl=document.getElementById('signalScore');
         const reasonEl=document.getElementById('signalReasons');
         if(dirEl){
-            if(result.signal?.type==='풀롱'){dirEl.textContent='LONG';dirEl.className='signal-badge long';}
-            else if(result.signal?.type==='풀숏'){dirEl.textContent='SHORT';dirEl.className='signal-badge short';}
-            else if(result.longConds>result.shortConds+10){dirEl.textContent='약한 LONG';dirEl.className='signal-badge long';}
-            else if(result.shortConds>result.longConds+10){dirEl.textContent='약한 SHORT';dirEl.className='signal-badge short';}
-            else{dirEl.textContent='관망';dirEl.className='signal-badge neutral';}
+            const dirMap={
+                '풀롱':{text:'⚡ 풀롱 LONG',cls:'long'},
+                '풀숏':{text:'⚡ 풀숏 SHORT',cls:'short'},
+                '롱':{text:'롱 LONG',cls:'long'},
+                '숏':{text:'숏 SHORT',cls:'short'},
+                '관망':{text:'관망',cls:'neutral'},
+            };
+            const m=dirMap[stable.direction]||dirMap['관망'];
+            dirEl.textContent=m.text;
+            dirEl.className='signal-badge '+m.cls;
         }
         if(scoreEl){
-            scoreEl.textContent=`롱: ${result.longConds}점 | 숏: ${result.shortConds}점 | 차이: ${(result.longConds-result.shortConds)>=0?'+':''}${result.longConds-result.shortConds}`;
+            const diff=result.longConds-result.shortConds;
+            // 차이 15 미만 = 진입 금지 경고
+            const dangerWarn=Math.abs(diff)<15&&stable.direction!=='풀롱'&&stable.direction!=='풀숏';
+            let extras='';
+            if(stable.heldMin>0)extras+=` <span style="color:#00d26a;font-size:11px;">✓ ${stable.heldMin}분 확정 유지</span>`;
+            if(stable.pending)extras+=` <span style="color:#ff9f43;font-weight:700;font-size:11px;">⏳ ${stable.pending} 전환 검토중 ${stable.pendingPct}% (확정 시까지 진입 금지)</span>`;
+            if(dangerWarn&&!stable.pending)extras+=` <span style="color:#ff4757;font-weight:700;font-size:11px;">⚠ 차이 부족 - 진입 금지</span>`;
+            scoreEl.innerHTML=`롱: ${result.longConds}점 | 숏: ${result.shortConds}점 | 차이: ${diff>=0?'+':''}${diff}${extras}`;
         }
         if(reasonEl){
-            const top=(result.signal?.type==='풀롱'||result.longConds>result.shortConds?result.longReasons:result.shortReasons)||[];
+            const top=(stable.direction.includes('롱')?result.longReasons:result.shortReasons)||[];
             reasonEl.textContent=top.slice(0,6).join(' | ');
         }
     }catch(e){}
