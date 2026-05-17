@@ -4409,8 +4409,8 @@ async function refreshAll(){
         tasks.push(updateMultiPeriodLiquidation());
         // 매 30초: 다중 거래소 청산 (외부 API 부담)
         if(refreshCount%30===0||refreshCount===3) tasks.push(updateMultiExchangeLiquidation());
-        // 매 60초: 실시간 종목 픽 스캔 (~40개 종목, inflight 락이 자연 throttle)
-        if(refreshCount%60===0||refreshCount===4) tasks.push(scanTopPicks());
+        // 매 5초: 실시간 종목 픽 스캔 (~40개 종목, inflight 락이 자연 throttle)
+        if(refreshCount%5===0||refreshCount===4) tasks.push(scanTopPicks());
     }
     // 매크로 데이터는 주식에도 유용 → 항상 갱신
     if(refreshCount%60===0) tasks.push(updateMacroData());
