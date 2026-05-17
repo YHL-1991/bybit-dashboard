@@ -2081,23 +2081,46 @@ function _getScanCandidates(){
     return out;
 }
 
+// 빠른 진입/종료/손절 계산 (BB+MA+ATR 기반)
+function _quickTradeLevels(candles,price,direction){
+    if(!candles||candles.length<20)return null;
+    const atr=calcATR(candles,14)||price*0.02;
+    const ma20=calcSMA(candles,20);
+    const ma20v=ma20.length?ma20[ma20.length-1].value:price;
+    const bb=calcBollingerBands(candles,20,2);
+    const isShort=direction==='숏'||direction==='풀숏';
+    const isLong=direction==='롱'||direction==='풀롱';
+    if(!isShort&&!isLong)return null;
+    let entry,exit,stop;
+    if(isShort){
+        entry=Math.max(bb?.upper||price+atr*0.5,price+atr*0.3);
+        exit=Math.min(ma20v-atr*0.5,price-atr*1.5);
+        stop=entry+atr*1.2;
+    }else{
+        entry=Math.min(bb?.lower||price-atr*0.5,price-atr*0.3);
+        exit=Math.max(ma20v+atr*0.5,price+atr*1.5);
+        stop=entry-atr*1.2;
+    }
+    const risk=Math.abs(entry-stop);
+    const reward=Math.abs(exit-entry);
+    return{entry,exit,stop,rr:risk>0?(reward/risk).toFixed(2):'-'};
+}
+
 async function scanTopPicks(){
     if(_scannerInflight)return;
     _scannerInflight=true;
     try{
         const symbols=_getScanCandidates();
         const picks=[];
-        // 정규화 계수: _evaluateTFSignalSimple 만점(~30) × 4 ≈ generateFullSignal 만점(125)
         const SCALE=4;
         for(let i=0;i<symbols.length;i++){
             const sym=symbols[i];
             try{
-                let lc,sc,direction,dirEmoji='',price,atrPct;
-                // 현재 종목은 _lastUnifiedSignal (캔들차트/매매신호와 100% 일치)
+                let lc,sc,direction,dirEmoji='',price,atrPct,candles;
                 if(sym===currentSymbol&&_lastUnifiedSignal){
                     const u=_lastUnifiedSignal;
                     lc=u.longConds;sc=u.shortConds;
-                    const candles=await bybitKline(sym,'60',200).catch(()=>null);
+                    candles=await bybitKline(sym,'60',200).catch(()=>null);
                     if(candles&&candles.length>=60){
                         price=candles[candles.length-1].close;
                         const atr=calcATR(candles,14)||price*0.02;
@@ -2106,18 +2129,14 @@ async function scanTopPicks(){
                         price=lastKlineData?.[lastKlineData.length-1]?.close||0;
                         atrPct='-';
                     }
-                    // 방향: 안정화된 방향 그대로 사용
                     const stable=u.stableDirection;
                     if(stable){
                         const map={'풀롱':'풀롱','풀숏':'풀숏','롱':'롱','숏':'숏','약한롱':'약한롱','약한숏':'약한숏','관망':'관망'};
                         direction=map[stable.direction]||'관망';
                         if(direction==='풀롱'||direction==='풀숏')dirEmoji='⚡';
-                    }else{
-                        direction='관망';
-                    }
+                    }else direction='관망';
                 }else{
-                    // 다른 종목: simple 평가 × 4 (스케일 통일)
-                    const candles=await bybitKline(sym,'60',200);
+                    candles=await bybitKline(sym,'60',200);
                     if(!candles||candles.length<60)continue;
                     const sig=_evaluateTFSignalSimple(candles);
                     lc=sig.lc*SCALE;sc=sig.sc*SCALE;
@@ -2133,26 +2152,36 @@ async function scanTopPicks(){
                     else if(diff<=-8)direction='약한숏';
                     else direction='관망';
                 }
-                // 신뢰도: 정규화 점수 기반
+                // 진입 가능 여부: 풀롱/풀숏/롱/숏만 (약한+관망 제외)
+                const actionable=direction==='풀롱'||direction==='풀숏'||direction==='롱'||direction==='숏';
+                let levels=null,rrNum=0;
+                if(actionable){
+                    levels=_quickTradeLevels(candles,price,direction);
+                    if(levels)rrNum=parseFloat(levels.rr)||0;
+                }
                 const margin=Math.abs(lc-sc);
                 const totalScore=Math.max(lc,sc);
-                const confidence=Math.round(totalScore*0.5+margin*1.5);
+                // 신뢰도: 점수 + R:R 보너스
+                const confidence=Math.round(totalScore*0.4+margin*1.2+(rrNum>=2?20:rrNum>=1.5?10:0));
                 picks.push({
-                    symbol:sym,price,
-                    lc,sc,direction,dirEmoji,
-                    confidence,margin,totalScore,
-                    atrPct,
+                    symbol:sym,price,lc,sc,direction,dirEmoji,
+                    confidence,margin,totalScore,atrPct,
+                    actionable,levels,
                 });
             }catch(e){}
             lastTopPicks.progress=Math.round((i+1)/symbols.length*100);
             renderTopPicksCard();
             await new Promise(r=>setTimeout(r,80));
         }
-        // 정렬: 풀롱/풀숏 우선, 그 다음 confidence 순
+        // 정렬: actionable 우선 → 풀롱/풀숏 우선 → R:R 2+ 우선 → confidence
         picks.sort((a,b)=>{
+            if(a.actionable!==b.actionable)return b.actionable-a.actionable;
             const aFull=a.direction==='풀롱'||a.direction==='풀숏'?1:0;
             const bFull=b.direction==='풀롱'||b.direction==='풀숏'?1:0;
             if(aFull!==bFull)return bFull-aFull;
+            const aRR=parseFloat(a.levels?.rr)||0;
+            const bRR=parseFloat(b.levels?.rr)||0;
+            if(Math.abs(aRR-bRR)>=0.5)return bRR-aRR;
             return b.confidence-a.confidence;
         });
         lastTopPicks={picks,ts:Date.now(),progress:100};
@@ -2172,52 +2201,57 @@ function renderTopPicksCard(){
         }
         return;
     }
-    // 롱 픽 / 숏 픽 분리
-    const longPicks=a.picks.filter(p=>p.direction==='풀롱'||p.direction==='롱'||p.direction==='롱(약)').slice(0,5);
-    const shortPicks=a.picks.filter(p=>p.direction==='풀숏'||p.direction==='숏'||p.direction==='숏(약)').slice(0,5);
+    // 진입 가능한 종목만 필터 (약한 + 관망 제외)
+    const actionablePicks=a.picks.filter(p=>p.actionable);
+    const longPicks=actionablePicks.filter(p=>p.direction==='풀롱'||p.direction==='롱').slice(0,5);
+    const shortPicks=actionablePicks.filter(p=>p.direction==='풀숏'||p.direction==='숏').slice(0,5);
     function row(p,isLong){
         const color=isLong?'#FFD700':'#FF69B4';
         const bgColor=isLong?'rgba(255,215,0,0.08)':'rgba(255,105,180,0.08)';
         const dirBg=p.direction==='풀롱'||p.direction==='풀숏'?color:'transparent';
         const dirColor=p.direction==='풀롱'?'#000':p.direction==='풀숏'?'#fff':color;
         const isFullSignal=p.direction==='풀롱'||p.direction==='풀숏';
+        const lv=p.levels||{};
+        const rrColor=parseFloat(lv.rr)>=2?'#00d26a':parseFloat(lv.rr)>=1.5?'#FFD700':parseFloat(lv.rr)>=1?'#ff9f43':'#ff4757';
         return `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);${isFullSignal?'background:'+bgColor:''}">
             <td style="padding:6px 8px;cursor:pointer;color:#58a6ff;font-weight:600;" onclick="document.getElementById('symbolSelect').value='${p.symbol}';document.getElementById('symbolSelect').dispatchEvent(new Event('change',{bubbles:true}));">${p.symbol}</td>
-            <td style="padding:6px 8px;text-align:right;font-family:monospace;">${fp(p.price)}</td>
+            <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10px;">${fp(p.price)}</td>
             <td style="padding:6px 8px;text-align:center;"><span style="padding:1px 8px;border-radius:50px;background:${dirBg};color:${dirColor};border:1px solid ${color};font-size:10px;font-weight:700;">${p.dirEmoji}${p.direction}</span></td>
-            <td style="padding:6px 8px;text-align:right;color:#FFD700;">${p.lc}</td>
-            <td style="padding:6px 8px;text-align:right;color:#FF69B4;">${p.sc}</td>
+            <td style="padding:6px 8px;text-align:right;color:${color};font-family:monospace;font-size:10px;">${lv.entry?fp(lv.entry):'-'}</td>
+            <td style="padding:6px 8px;text-align:right;color:${isLong?'#FF69B4':'#FFD700'};font-family:monospace;font-size:10px;">${lv.exit?fp(lv.exit):'-'}</td>
+            <td style="padding:6px 8px;text-align:right;color:#ff4757;font-family:monospace;font-size:10px;">${lv.stop?fp(lv.stop):'-'}</td>
+            <td style="padding:6px 8px;text-align:right;color:${rrColor};font-weight:700;">${lv.rr||'-'}</td>
             <td style="padding:6px 8px;text-align:right;color:${color};font-weight:700;">${p.confidence}</td>
-            <td style="padding:6px 8px;text-align:right;color:var(--text-secondary);font-size:10px;">${p.atrPct}%</td>
         </tr>`;
     }
     const header=`<tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);">
         <th style="text-align:left;padding:4px 8px;">종목</th>
         <th style="text-align:right;padding:4px 8px;">현재가</th>
         <th style="text-align:center;padding:4px 8px;">방향</th>
-        <th style="text-align:right;padding:4px 8px;">롱점수</th>
-        <th style="text-align:right;padding:4px 8px;">숏점수</th>
+        <th style="text-align:right;padding:4px 8px;">진입가</th>
+        <th style="text-align:right;padding:4px 8px;">종료가</th>
+        <th style="text-align:right;padding:4px 8px;">손절가</th>
+        <th style="text-align:right;padding:4px 8px;">R:R</th>
         <th style="text-align:right;padding:4px 8px;">신뢰도</th>
-        <th style="text-align:right;padding:4px 8px;">변동성</th>
     </tr>`;
     el.innerHTML=`
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div>
-                <div style="color:#FFD700;font-weight:700;font-size:12px;margin-bottom:6px;border-left:3px solid #FFD700;padding-left:8px;">롱 TOP 5 (확률 높은 순)</div>
+                <div style="color:#FFD700;font-weight:700;font-size:12px;margin-bottom:6px;border-left:3px solid #FFD700;padding-left:8px;">롱 TOP 5 - 지금 들어가도 되는 종목</div>
                 <table style="width:100%;font-size:11px;border-collapse:collapse;">
                     <thead>${header}</thead>
-                    <tbody>${longPicks.length?longPicks.map(p=>row(p,true)).join(''):'<tr><td colspan="7" style="padding:14px;text-align:center;color:var(--text-secondary);font-size:11px;">롱 시그널 없음</td></tr>'}</tbody>
+                    <tbody>${longPicks.length?longPicks.map(p=>row(p,true)).join(''):'<tr><td colspan="8" style="padding:14px;text-align:center;color:var(--text-secondary);font-size:11px;">진입 가능 롱 종목 없음 (모두 관망/약한 신호)</td></tr>'}</tbody>
                 </table>
             </div>
             <div>
-                <div style="color:#FF69B4;font-weight:700;font-size:12px;margin-bottom:6px;border-left:3px solid #FF69B4;padding-left:8px;">숏 TOP 5 (확률 높은 순)</div>
+                <div style="color:#FF69B4;font-weight:700;font-size:12px;margin-bottom:6px;border-left:3px solid #FF69B4;padding-left:8px;">숏 TOP 5 - 지금 들어가도 되는 종목</div>
                 <table style="width:100%;font-size:11px;border-collapse:collapse;">
                     <thead>${header}</thead>
-                    <tbody>${shortPicks.length?shortPicks.map(p=>row(p,false)).join(''):'<tr><td colspan="7" style="padding:14px;text-align:center;color:var(--text-secondary);font-size:11px;">숏 시그널 없음</td></tr>'}</tbody>
+                    <tbody>${shortPicks.length?shortPicks.map(p=>row(p,false)).join(''):'<tr><td colspan="8" style="padding:14px;text-align:center;color:var(--text-secondary);font-size:11px;">진입 가능 숏 종목 없음 (모두 관망/약한 신호)</td></tr>'}</tbody>
                 </table>
             </div>
         </div>
-        <div style="font-size:9px;color:var(--text-secondary);text-align:right;margin-top:6px;">스캔 ${a.picks.length}개 종목 · ${new Date(a.ts).toLocaleTimeString()} 갱신 · <b style="color:${a.progress===100?'#00d26a':'#FFD700'}">${a.progress||100}%</b></div>
+        <div style="font-size:9px;color:var(--text-secondary);text-align:right;margin-top:6px;">스캔 ${a.picks.length}개 중 진입가능 ${actionablePicks.length}개 · ${new Date(a.ts).toLocaleTimeString()} 갱신 · <b style="color:${a.progress===100?'#00d26a':'#FFD700'}">${a.progress||100}%</b></div>
     `;
 }
 
