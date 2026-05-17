@@ -2201,11 +2201,57 @@ function renderTopPicksCard(){
         }
         return;
     }
-    // 진입 가능한 종목만 필터 (약한 + 관망 제외)
+    // 진입 가능한 종목만 필터
     const actionablePicks=a.picks.filter(p=>p.actionable);
     const longPicks=actionablePicks.filter(p=>p.direction==='풀롱'||p.direction==='롱').slice(0,5);
     const shortPicks=actionablePicks.filter(p=>p.direction==='풀숏'||p.direction==='숏').slice(0,5);
-    function row(p,isLong){
+    const isMobile=window.innerWidth<=768;
+
+    // 모바일: 컴팩트 카드 형태
+    function rowMobile(p,isLong){
+        const color=isLong?'#FFD700':'#FF69B4';
+        const isFullSignal=p.direction==='풀롱'||p.direction==='풀숏';
+        const dirBg=isFullSignal?color:'transparent';
+        const dirColor=p.direction==='풀롱'?'#000':p.direction==='풀숏'?'#fff':color;
+        const lv=p.levels||{};
+        const rrColor=parseFloat(lv.rr)>=2?'#00d26a':parseFloat(lv.rr)>=1.5?'#FFD700':parseFloat(lv.rr)>=1?'#ff9f43':'#ff4757';
+        return `<div style="padding:5px 6px;border-bottom:1px solid rgba(255,255,255,0.05);${isFullSignal?'background:rgba('+(isLong?'255,215,0':'255,105,180')+',0.08);':''}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+                <span style="color:#58a6ff;font-weight:700;font-size:11px;" onclick="document.getElementById('symbolSelect').value='${p.symbol}';document.getElementById('symbolSelect').dispatchEvent(new Event('change',{bubbles:true}));">${p.symbol}</span>
+                <span style="padding:1px 5px;border-radius:50px;background:${dirBg};color:${dirColor};border:1px solid ${color};font-size:8px;font-weight:700;">${p.dirEmoji}${p.direction}</span>
+                <span style="color:${rrColor};font-weight:700;font-size:10px;">R:R ${lv.rr||'-'}</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:2px;font-size:9px;line-height:1.25;">
+                <div><span style="color:var(--text-secondary);font-size:8px;">현재</span><br><span style="font-family:monospace;">${fp(p.price)}</span></div>
+                <div><span style="color:${color};font-size:8px;">진입</span><br><span style="color:${color};font-family:monospace;">${lv.entry?fp(lv.entry):'-'}</span></div>
+                <div><span style="color:${isLong?'#FF69B4':'#FFD700'};font-size:8px;">종료</span><br><span style="color:${isLong?'#FF69B4':'#FFD700'};font-family:monospace;">${lv.exit?fp(lv.exit):'-'}</span></div>
+                <div><span style="color:#ff4757;font-size:8px;">손절</span><br><span style="color:#ff4757;font-family:monospace;">${lv.stop?fp(lv.stop):'-'}</span></div>
+            </div>
+        </div>`;
+    }
+
+    if(isMobile){
+        // 모바일: TOP 3씩, 1열 카드
+        const lTop=longPicks.slice(0,3);
+        const sTop=shortPicks.slice(0,3);
+        el.innerHTML=`
+            <div style="display:grid;grid-template-columns:1fr;gap:6px;">
+                <div>
+                    <div style="color:#FFD700;font-weight:700;font-size:10px;margin-bottom:3px;border-left:3px solid #FFD700;padding-left:6px;">롱 TOP 3 - 진입 가능</div>
+                    <div>${lTop.length?lTop.map(p=>rowMobile(p,true)).join(''):'<div style="padding:8px;text-align:center;color:var(--text-secondary);font-size:9px;">롱 시그널 없음</div>'}</div>
+                </div>
+                <div>
+                    <div style="color:#FF69B4;font-weight:700;font-size:10px;margin-bottom:3px;border-left:3px solid #FF69B4;padding-left:6px;">숏 TOP 3 - 진입 가능</div>
+                    <div>${sTop.length?sTop.map(p=>rowMobile(p,false)).join(''):'<div style="padding:8px;text-align:center;color:var(--text-secondary);font-size:9px;">숏 시그널 없음</div>'}</div>
+                </div>
+            </div>
+            <div style="font-size:8px;color:var(--text-secondary);text-align:right;margin-top:3px;">${actionablePicks.length}/${a.picks.length}개 · ${new Date(a.ts).toLocaleTimeString()} · <b style="color:${a.progress===100?'#00d26a':'#FFD700'}">${a.progress||100}%</b></div>
+        `;
+        return;
+    }
+
+    // 데스크탑: 기존 테이블
+    function rowDesktop(p,isLong){
         const color=isLong?'#FFD700':'#FF69B4';
         const bgColor=isLong?'rgba(255,215,0,0.08)':'rgba(255,105,180,0.08)';
         const dirBg=p.direction==='풀롱'||p.direction==='풀숏'?color:'transparent';
@@ -2240,14 +2286,14 @@ function renderTopPicksCard(){
                 <div style="color:#FFD700;font-weight:700;font-size:12px;margin-bottom:6px;border-left:3px solid #FFD700;padding-left:8px;">롱 TOP 5 - 지금 들어가도 되는 종목</div>
                 <table style="width:100%;font-size:11px;border-collapse:collapse;">
                     <thead>${header}</thead>
-                    <tbody>${longPicks.length?longPicks.map(p=>row(p,true)).join(''):'<tr><td colspan="8" style="padding:14px;text-align:center;color:var(--text-secondary);font-size:11px;">진입 가능 롱 종목 없음 (모두 관망/약한 신호)</td></tr>'}</tbody>
+                    <tbody>${longPicks.length?longPicks.map(p=>rowDesktop(p,true)).join(''):'<tr><td colspan="8" style="padding:14px;text-align:center;color:var(--text-secondary);font-size:11px;">진입 가능 롱 종목 없음 (모두 관망/약한 신호)</td></tr>'}</tbody>
                 </table>
             </div>
             <div>
                 <div style="color:#FF69B4;font-weight:700;font-size:12px;margin-bottom:6px;border-left:3px solid #FF69B4;padding-left:8px;">숏 TOP 5 - 지금 들어가도 되는 종목</div>
                 <table style="width:100%;font-size:11px;border-collapse:collapse;">
                     <thead>${header}</thead>
-                    <tbody>${shortPicks.length?shortPicks.map(p=>row(p,false)).join(''):'<tr><td colspan="8" style="padding:14px;text-align:center;color:var(--text-secondary);font-size:11px;">진입 가능 숏 종목 없음 (모두 관망/약한 신호)</td></tr>'}</tbody>
+                    <tbody>${shortPicks.length?shortPicks.map(p=>rowDesktop(p,false)).join(''):'<tr><td colspan="8" style="padding:14px;text-align:center;color:var(--text-secondary);font-size:11px;">진입 가능 숏 종목 없음 (모두 관망/약한 신호)</td></tr>'}</tbody>
                 </table>
             </div>
         </div>
