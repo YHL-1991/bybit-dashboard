@@ -2014,6 +2014,149 @@ let lastLiquidationData=null;
    ═══════════════════════════════════ */
 let lastMultiTFAnalysis={tfs:{},consensus:null,ts:0};
 let _mtfInflight=false;
+let _lastUnifiedSignal=null; // 모든 시그널 표시의 단일 소스
+
+/* ═══════════════════════════════════
+   🎯 실시간 종목 픽 스캐너 (시그널 일관성 보장)
+   - _evaluateTFSignalSimple 동일 사용 → 캔들차트 노란/분홍 라인과 일치
+   ═══════════════════════════════════ */
+let lastTopPicks={picks:[],ts:0,progress:0};
+let _scannerInflight=false;
+
+function _getScanCandidates(){
+    // 우선순위 + 인기 종목 우선 (검색 dropdown items 활용)
+    const PRIORITY=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','BNBUSDT','ADAUSDT','AVAXUSDT','DOTUSDT','LINKUSDT','SUIUSDT','PEPEUSDT','WIFUSDT','ARBUSDT','OPUSDT','APTUSDT','SEIUSDT','TIAUSDT','NEARUSDT','INJUSDT','TRXUSDT','LTCUSDT','BCHUSDT','ETCUSDT','UNIUSDT','AAVEUSDT','RUNEUSDT','MKRUSDT','ATOMUSDT','FILUSDT'];
+    const got=new Set();
+    const out=[];
+    // 1) 우선순위
+    PRIORITY.forEach(s=>{if(!got.has(s)){got.add(s);out.push(s);}});
+    // 2) hidden select에서 추가 종목 (최대 40개까지)
+    try{
+        const sel=document.getElementById('symbolSelect');
+        if(sel){
+            sel.querySelectorAll('optgroup[label="코인 선물"] option').forEach(o=>{
+                if(out.length>=40)return;
+                const v=o.value;
+                if(!got.has(v)&&v.endsWith('USDT')&&!v.startsWith('STK:')){
+                    got.add(v);out.push(v);
+                }
+            });
+        }
+    }catch(e){}
+    return out;
+}
+
+async function scanTopPicks(){
+    if(_scannerInflight)return;
+    _scannerInflight=true;
+    try{
+        const symbols=_getScanCandidates();
+        const picks=[];
+        for(let i=0;i<symbols.length;i++){
+            const sym=symbols[i];
+            try{
+                const candles=await bybitKline(sym,'60',200);
+                if(!candles||candles.length<60)continue;
+                const sig=_evaluateTFSignalSimple(candles); // 동일 평가 함수 (일관성)
+                const price=candles[candles.length-1].close;
+                const atr=calcATR(candles,14)||price*0.02;
+                const atrPct=atr/price*100;
+                // 신뢰도: 점수 차이(margin) + 절대 점수
+                const margin=Math.abs(sig.lc-sig.sc);
+                const totalScore=Math.max(sig.lc,sig.sc);
+                const confidence=Math.round(totalScore*1.5+margin*2);
+                // 방향
+                let direction='관망',dirEmoji='';
+                if(sig.type==='풀롱'){direction='풀롱';dirEmoji='⚡';}
+                else if(sig.type==='풀숏'){direction='풀숏';dirEmoji='⚡';}
+                else if(sig.lc>sig.sc+5){direction='롱';}
+                else if(sig.sc>sig.lc+5){direction='숏';}
+                else if(sig.lc>sig.sc){direction='롱(약)';}
+                else if(sig.sc>sig.lc){direction='숏(약)';}
+                picks.push({
+                    symbol:sym,price,
+                    lc:sig.lc,sc:sig.sc,
+                    direction,dirEmoji,
+                    confidence,margin,totalScore,
+                    atrPct:atrPct.toFixed(2),
+                });
+            }catch(e){}
+            lastTopPicks.progress=Math.round((i+1)/symbols.length*100);
+            renderTopPicksCard(); // 진행률 실시간 표시
+            await new Promise(r=>setTimeout(r,80)); // throttle
+        }
+        // 정렬: 풀롱/풀숏 우선, 그 다음 confidence 순
+        picks.sort((a,b)=>{
+            const aFull=a.direction==='풀롱'||a.direction==='풀숏'?1:0;
+            const bFull=b.direction==='풀롱'||b.direction==='풀숏'?1:0;
+            if(aFull!==bFull)return bFull-aFull;
+            return b.confidence-a.confidence;
+        });
+        lastTopPicks={picks,ts:Date.now(),progress:100};
+        renderTopPicksCard();
+    }finally{_scannerInflight=false;}
+}
+
+function renderTopPicksCard(){
+    const el=document.getElementById('topPicksContent');
+    if(!el)return;
+    const a=lastTopPicks;
+    if(!a.picks||!a.picks.length){
+        if(_scannerInflight){
+            el.innerHTML=`<div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:14px;">스캔 중... ${a.progress||0}%</div>`;
+        }else{
+            el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:14px;">로딩 중...</div>';
+        }
+        return;
+    }
+    // 롱 픽 / 숏 픽 분리
+    const longPicks=a.picks.filter(p=>p.direction==='풀롱'||p.direction==='롱'||p.direction==='롱(약)').slice(0,5);
+    const shortPicks=a.picks.filter(p=>p.direction==='풀숏'||p.direction==='숏'||p.direction==='숏(약)').slice(0,5);
+    function row(p,isLong){
+        const color=isLong?'#FFD700':'#FF69B4';
+        const bgColor=isLong?'rgba(255,215,0,0.08)':'rgba(255,105,180,0.08)';
+        const dirBg=p.direction==='풀롱'||p.direction==='풀숏'?color:'transparent';
+        const dirColor=p.direction==='풀롱'?'#000':p.direction==='풀숏'?'#fff':color;
+        const isFullSignal=p.direction==='풀롱'||p.direction==='풀숏';
+        return `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);${isFullSignal?'background:'+bgColor:''}">
+            <td style="padding:6px 8px;cursor:pointer;color:#58a6ff;font-weight:600;" onclick="document.getElementById('symbolSelect').value='${p.symbol}';document.getElementById('symbolSelect').dispatchEvent(new Event('change',{bubbles:true}));">${p.symbol}</td>
+            <td style="padding:6px 8px;text-align:right;font-family:monospace;">${fp(p.price)}</td>
+            <td style="padding:6px 8px;text-align:center;"><span style="padding:1px 8px;border-radius:50px;background:${dirBg};color:${dirColor};border:1px solid ${color};font-size:10px;font-weight:700;">${p.dirEmoji}${p.direction}</span></td>
+            <td style="padding:6px 8px;text-align:right;color:#FFD700;">${p.lc}</td>
+            <td style="padding:6px 8px;text-align:right;color:#FF69B4;">${p.sc}</td>
+            <td style="padding:6px 8px;text-align:right;color:${color};font-weight:700;">${p.confidence}</td>
+            <td style="padding:6px 8px;text-align:right;color:var(--text-secondary);font-size:10px;">${p.atrPct}%</td>
+        </tr>`;
+    }
+    const header=`<tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);">
+        <th style="text-align:left;padding:4px 8px;">종목</th>
+        <th style="text-align:right;padding:4px 8px;">현재가</th>
+        <th style="text-align:center;padding:4px 8px;">방향</th>
+        <th style="text-align:right;padding:4px 8px;">롱점수</th>
+        <th style="text-align:right;padding:4px 8px;">숏점수</th>
+        <th style="text-align:right;padding:4px 8px;">신뢰도</th>
+        <th style="text-align:right;padding:4px 8px;">변동성</th>
+    </tr>`;
+    el.innerHTML=`
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div>
+                <div style="color:#FFD700;font-weight:700;font-size:12px;margin-bottom:6px;border-left:3px solid #FFD700;padding-left:8px;">롱 TOP 5 (확률 높은 순)</div>
+                <table style="width:100%;font-size:11px;border-collapse:collapse;">
+                    <thead>${header}</thead>
+                    <tbody>${longPicks.length?longPicks.map(p=>row(p,true)).join(''):'<tr><td colspan="7" style="padding:14px;text-align:center;color:var(--text-secondary);font-size:11px;">롱 시그널 없음</td></tr>'}</tbody>
+                </table>
+            </div>
+            <div>
+                <div style="color:#FF69B4;font-weight:700;font-size:12px;margin-bottom:6px;border-left:3px solid #FF69B4;padding-left:8px;">숏 TOP 5 (확률 높은 순)</div>
+                <table style="width:100%;font-size:11px;border-collapse:collapse;">
+                    <thead>${header}</thead>
+                    <tbody>${shortPicks.length?shortPicks.map(p=>row(p,false)).join(''):'<tr><td colspan="7" style="padding:14px;text-align:center;color:var(--text-secondary);font-size:11px;">숏 시그널 없음</td></tr>'}</tbody>
+                </table>
+            </div>
+        </div>
+        <div style="font-size:9px;color:var(--text-secondary);text-align:right;margin-top:6px;">스캔 ${a.picks.length}개 종목 · ${new Date(a.ts).toLocaleTimeString()} 갱신 · <b style="color:${a.progress===100?'#00d26a':'#FFD700'}">${a.progress||100}%</b></div>
+    `;
+}
 
 // 가격 기반 지표만 사용하는 독립 평가 (외부 글로벌 의존 X, 임계값 미달이어도 점수 반환)
 function _evaluateTFSignalSimple(d){
@@ -2168,15 +2311,21 @@ function renderMultiTFCard(){
         strong_short:{color:'#FF69B4',label:'강한 풀숏',bg:'rgba(255,105,180,0.15)'},
     };
     const b=biasMap[c.bias];
+    // 현재 차트의 시간프레임 매핑 (캔들차트와 일관성 표시)
+    const curTFMap={'W':'주봉','D':'일봉','240':'4시간','60':'1시간'};
+    const curTFLabel=curTFMap[currentInterval]||null;
     let rows='';
     const order=['주봉','일봉','4시간','1시간'];
     order.forEach(label=>{
         const r=a.tfs[label];
-        if(!r){rows+=`<tr><td style="padding:5px 8px;color:var(--text-secondary);">${label}</td><td colspan="3" style="color:var(--text-secondary);font-size:10px;">-</td></tr>`;return;}
+        const isCur=label===curTFLabel;
+        const curBg=isCur?'background:rgba(88,166,255,0.08);':'';
+        const curMark=isCur?'<span style="color:#58a6ff;font-size:9px;margin-left:4px;">◆ 캔들차트 동기화</span>':'';
+        if(!r){rows+=`<tr style="${curBg}"><td style="padding:5px 8px;color:var(--text-secondary);">${label}${curMark}</td><td colspan="3" style="color:var(--text-secondary);font-size:10px;">-</td></tr>`;return;}
         const typeColor=r.type==='풀롱'?'#FFD700':r.type==='풀숏'?'#FF69B4':r.lc>r.sc?'#FFD700':r.sc>r.lc?'#FF69B4':'#888';
         const typeLabel=r.type||(r.lc>r.sc?'롱우세':r.sc>r.lc?'숏우세':'중립');
-        rows+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
-            <td style="padding:5px 8px;font-weight:600;">${label}</td>
+        rows+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);${curBg}">
+            <td style="padding:5px 8px;font-weight:600;">${label}${curMark}</td>
             <td style="padding:5px 8px;text-align:right;color:#FFD700;">롱 ${r.lc}</td>
             <td style="padding:5px 8px;text-align:right;color:#FF69B4;">숏 ${r.sc}</td>
             <td style="padding:5px 8px;text-align:right;color:${typeColor};font-weight:700;">${typeLabel}</td>
@@ -4147,6 +4296,28 @@ function addFullSignalMarkers(d,existingMarkers){
     // 예측 패널 렌더링
     try{renderPredictionPanel(d,result);}catch(e){}
 
+    // ── 통일 (Unified Signal): 모든 UI가 generateFullSignal 결과를 따름 ──
+    _lastUnifiedSignal=result; // 전역 캐시 (top picks, MTF 등이 참조)
+    try{
+        const dirEl=document.getElementById('signalDirection');
+        const scoreEl=document.getElementById('signalScore');
+        const reasonEl=document.getElementById('signalReasons');
+        if(dirEl){
+            if(result.signal?.type==='풀롱'){dirEl.textContent='LONG';dirEl.className='signal-badge long';}
+            else if(result.signal?.type==='풀숏'){dirEl.textContent='SHORT';dirEl.className='signal-badge short';}
+            else if(result.longConds>result.shortConds+10){dirEl.textContent='약한 LONG';dirEl.className='signal-badge long';}
+            else if(result.shortConds>result.longConds+10){dirEl.textContent='약한 SHORT';dirEl.className='signal-badge short';}
+            else{dirEl.textContent='관망';dirEl.className='signal-badge neutral';}
+        }
+        if(scoreEl){
+            scoreEl.textContent=`롱: ${result.longConds}점 | 숏: ${result.shortConds}점 | 차이: ${(result.longConds-result.shortConds)>=0?'+':''}${result.longConds-result.shortConds}`;
+        }
+        if(reasonEl){
+            const top=(result.signal?.type==='풀롱'||result.longConds>result.shortConds?result.longReasons:result.shortReasons)||[];
+            reasonEl.textContent=top.slice(0,6).join(' | ');
+        }
+    }catch(e){}
+
     // 시그널 패널 업데이트
     const sigEl=document.getElementById('signalContent');
     if(sigEl){
@@ -4238,6 +4409,8 @@ async function refreshAll(){
         tasks.push(updateMultiPeriodLiquidation());
         // 매 30초: 다중 거래소 청산 (외부 API 부담)
         if(refreshCount%30===0||refreshCount===3) tasks.push(updateMultiExchangeLiquidation());
+        // 매 60초: 실시간 종목 픽 스캔 (~40개 종목, inflight 락이 자연 throttle)
+        if(refreshCount%60===0||refreshCount===4) tasks.push(scanTopPicks());
     }
     // 매크로 데이터는 주식에도 유용 → 항상 갱신
     if(refreshCount%60===0) tasks.push(updateMacroData());
@@ -4871,9 +5044,11 @@ async function renderBacktestResults(){
     await updateTVChart();refreshAll();connectWS();
     // 초기 로드: 컨센서스, 매크로, 온체인
     updateExpertConsensus();updateMacroData();updateOnchainData();
-    // 초기 로드: MTF + 다중구간/거래소 청산
+    // 초기 로드: MTF + 다중구간/거래소 청산 + 종목 스캐너
     updateMultiTimeframeAnalysis();
     setTimeout(()=>{updateMultiPeriodLiquidation();updateMultiExchangeLiquidation();},800);
+    // 종목 스캐너는 5초 후 시작 (다른 초기 로드 부담 줄임)
+    setTimeout(()=>scanTopPicks(),5000);
     // 백테스트 결과 표시
     renderBacktestResults();
     refreshInterval=setInterval(()=>{refreshAll();checkAutoTrade();},1000);
