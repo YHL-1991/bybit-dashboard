@@ -2118,38 +2118,66 @@ async function scanTopPicks(){
     try{
         const symbols=_getScanCandidates();
         const picks=[];
+        // 정규화 계수: _evaluateTFSignalSimple 만점(~30) × 4 ≈ generateFullSignal 만점(125)
+        const SCALE=4;
         for(let i=0;i<symbols.length;i++){
             const sym=symbols[i];
             try{
-                const candles=await bybitKline(sym,'60',200);
-                if(!candles||candles.length<60)continue;
-                const sig=_evaluateTFSignalSimple(candles); // 동일 평가 함수 (일관성)
-                const price=candles[candles.length-1].close;
-                const atr=calcATR(candles,14)||price*0.02;
-                const atrPct=atr/price*100;
-                // 신뢰도: 점수 차이(margin) + 절대 점수
-                const margin=Math.abs(sig.lc-sig.sc);
-                const totalScore=Math.max(sig.lc,sig.sc);
-                const confidence=Math.round(totalScore*1.5+margin*2);
-                // 방향
-                let direction='관망',dirEmoji='';
-                if(sig.type==='풀롱'){direction='풀롱';dirEmoji='⚡';}
-                else if(sig.type==='풀숏'){direction='풀숏';dirEmoji='⚡';}
-                else if(sig.lc>sig.sc+5){direction='롱';}
-                else if(sig.sc>sig.lc+5){direction='숏';}
-                else if(sig.lc>sig.sc){direction='롱(약)';}
-                else if(sig.sc>sig.lc){direction='숏(약)';}
+                let lc,sc,direction,dirEmoji='',price,atrPct;
+                // 현재 종목은 _lastUnifiedSignal (캔들차트/매매신호와 100% 일치)
+                if(sym===currentSymbol&&_lastUnifiedSignal){
+                    const u=_lastUnifiedSignal;
+                    lc=u.longConds;sc=u.shortConds;
+                    const candles=await bybitKline(sym,'60',200).catch(()=>null);
+                    if(candles&&candles.length>=60){
+                        price=candles[candles.length-1].close;
+                        const atr=calcATR(candles,14)||price*0.02;
+                        atrPct=(atr/price*100).toFixed(2);
+                    }else{
+                        price=lastKlineData?.[lastKlineData.length-1]?.close||0;
+                        atrPct='-';
+                    }
+                    // 방향: 안정화된 방향 그대로 사용
+                    const stable=u.stableDirection;
+                    if(stable){
+                        const map={'풀롱':'풀롱','풀숏':'풀숏','롱':'롱','숏':'숏','약한롱':'약한롱','약한숏':'약한숏','관망':'관망'};
+                        direction=map[stable.direction]||'관망';
+                        if(direction==='풀롱'||direction==='풀숏')dirEmoji='⚡';
+                    }else{
+                        direction='관망';
+                    }
+                }else{
+                    // 다른 종목: simple 평가 × 4 (스케일 통일)
+                    const candles=await bybitKline(sym,'60',200);
+                    if(!candles||candles.length<60)continue;
+                    const sig=_evaluateTFSignalSimple(candles);
+                    lc=sig.lc*SCALE;sc=sig.sc*SCALE;
+                    price=candles[candles.length-1].close;
+                    const atr=calcATR(candles,14)||price*0.02;
+                    atrPct=(atr/price*100).toFixed(2);
+                    const diff=lc-sc;
+                    if(sig.type==='풀롱'){direction='풀롱';dirEmoji='⚡';}
+                    else if(sig.type==='풀숏'){direction='풀숏';dirEmoji='⚡';}
+                    else if(diff>=18)direction='롱';
+                    else if(diff<=-18)direction='숏';
+                    else if(diff>=8)direction='약한롱';
+                    else if(diff<=-8)direction='약한숏';
+                    else direction='관망';
+                }
+                // 신뢰도: 정규화 점수 기반
+                const margin=Math.abs(lc-sc);
+                const totalScore=Math.max(lc,sc);
+                const confidence=Math.round(totalScore*0.5+margin*1.5);
                 picks.push({
                     symbol:sym,price,
-                    lc:sig.lc,sc:sig.sc,
-                    direction,dirEmoji,
+                    lc,sc,direction,dirEmoji,
                     confidence,margin,totalScore,
-                    atrPct:atrPct.toFixed(2),
+                    atrPct,
                 });
             }catch(e){}
             lastTopPicks.progress=Math.round((i+1)/symbols.length*100);
-            renderTopPicksCard(); // 진행률 실시간 표시
-            await new Promise(r=>setTimeout(r,80)); // throttle
+            renderTopPicksCard();
+            await new Promise(r=>setTimeout(r,80));
         }
         // 정렬: 풀롱/풀숏 우선, 그 다음 confidence 순
         picks.sort((a,b)=>{
@@ -2326,23 +2354,45 @@ async function updateMultiTimeframeAnalysis(){
             {key:'240',label:'4시간',weight:2},
             {key:'60',label:'1시간',weight:1},
         ];
+        const SCALE=4; // simple eval(~30) → full(~125) 스케일 통일
         const results={};
+        // 현재 차트 시간프레임 (캔들차트와 직접 비교용)
+        const curTFMap={'W':'주봉','D':'일봉','240':'4시간','60':'1시간'};
+        const curTFLabel=curTFMap[currentInterval]||null;
         for(const tf of tfs){
             try{
-                const candles=await bybitKline(sym,tf.key,500);
-                if(candles&&candles.length>=60){
-                    const r=_evaluateTFSignalSimple(candles);
-                    results[tf.label]={...r,weight:tf.weight,key:tf.key};
+                // 현재 시간프레임이면 _lastUnifiedSignal 사용 (캔들차트와 100% 일치)
+                if(tf.label===curTFLabel&&_lastUnifiedSignal){
+                    const u=_lastUnifiedSignal;
+                    results[tf.label]={
+                        lc:u.longConds,sc:u.shortConds,
+                        type:u.signal?.type||null,
+                        weight:tf.weight,key:tf.key,
+                        isCurrent:true,
+                    };
+                }else{
+                    const candles=await bybitKline(sym,tf.key,500);
+                    if(candles&&candles.length>=60){
+                        const r=_evaluateTFSignalSimple(candles);
+                        // 정규화 ×4
+                        results[tf.label]={
+                            lc:r.lc*SCALE,sc:r.sc*SCALE,
+                            type:r.type,
+                            weight:tf.weight,key:tf.key,
+                            isCurrent:false,
+                        };
+                    }
                 }
             }catch(e){}
-            await new Promise(r=>setTimeout(r,250)); // throttle
+            await new Promise(r=>setTimeout(r,250));
         }
-        // 합의 계산: 가중치 합산
+        // 합의 계산 (정규화 점수 기준)
         let longWeight=0,shortWeight=0,totalWeight=0;
         Object.values(results).forEach(r=>{
             totalWeight+=r.weight;
-            if(r.type==='풀롱'||(r.lc>r.sc&&r.lc>=15))longWeight+=r.weight;
-            else if(r.type==='풀숏'||(r.sc>r.lc&&r.sc>=15))shortWeight+=r.weight;
+            // 정규화 18*4=72 또는 풀롱/풀숏 트리거
+            if(r.type==='풀롱'||(r.lc>r.sc&&(r.lc-r.sc)>=18))longWeight+=r.weight;
+            else if(r.type==='풀숏'||(r.sc>r.lc&&(r.sc-r.lc)>=18))shortWeight+=r.weight;
         });
         const longPct=totalWeight?Math.round(longWeight/totalWeight*100):0;
         const shortPct=totalWeight?Math.round(shortWeight/totalWeight*100):0;
