@@ -3360,9 +3360,34 @@ function calculateTradeRecommendation(d,signalResult){
     const rr1=risk>0?(reward1/risk).toFixed(2):'-';
     const rr2=risk>0?(reward2/risk).toFixed(2):'-';
 
+    // ─── 안전 청산가 계산 (각 진입가별) ───
+    // 청산가는 손절가보다 충분히 멀어야 함 (손절선 닿기 전에 청산되면 안 됨)
+    // 권장: 청산가 = 손절가에서 5% 추가 버퍼
+    // 안전 청산가 계산 함수
+    function calcSafeLiq(entry){
+        if(isShort){
+            return entry*1.18; // 숏: 진입가 +18% 위에서 청산 (5x 레버 안전권)
+        }else{
+            return entry*0.82; // 롱: 진입가 -18% 아래에서 청산
+        }
+    }
+    // 권장 최대 레버리지 (손절가까지 거리 + 2배 버퍼)
+    function calcMaxLev(entry){
+        const distPct=Math.abs(entry-stopLoss)/entry;
+        // 청산가가 손절가의 2배 거리에 오도록 → 레버리지 = 1/(2*distPct + 유지마진0.005)
+        const maxLev=Math.floor(1/(distPct*2+0.005));
+        return Math.min(Math.max(maxLev,2),10); // 2~10배 범위
+    }
+    const entry1SafeLiq=calcSafeLiq(entry1.price);
+    const entry2SafeLiq=calcSafeLiq(entry2.price);
+    const entry1MaxLev=calcMaxLev(entry1.price);
+    const entry2MaxLev=calcMaxLev(entry2.price);
+
     return{
         price,bias,biasLabel,direction,isShort,
         entry1,entry2,exit1,exit2,stopLoss,
+        entry1SafeLiq,entry2SafeLiq,
+        entry1MaxLev,entry2MaxLev,
         dangerLong:liqDanger?.maxLongCluster?.price,
         dangerShort:liqDanger?.maxShortCluster?.price,
         rr1,rr2,atr,
@@ -3398,9 +3423,11 @@ function renderTradeRecommendation(rec){
                 <div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">현재 ${fmt(rec.price)} · ${rec.indicatorCount}개 지표</div>
             </div>
             <div>
-                <div style="font-size:11px;color:${entryColor};font-weight:700;margin-bottom:4px;">진입가 (분할)</div>
-                <div style="font-size:13px;color:var(--text-primary);font-weight:600;">${fmt(rec.entry1.price)} <span style="color:var(--text-secondary);font-size:10px;">(${pct(rec.entry1.price)}%) [w:${rec.entry1.w}] ${rec.entry1.labels.slice(0,2).join('+')}</span></div>
-                <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${fmt(rec.entry2.price)} <span style="font-size:10px;">(${pct(rec.entry2.price)}%) [w:${rec.entry2.w}] ${rec.entry2.labels.slice(0,2).join('+')}</span></div>
+                <div style="font-size:11px;color:${entryColor};font-weight:700;margin-bottom:4px;">진입가 (분할) · 안전 청산가 / 권장 레버리지</div>
+                <div style="font-size:13px;color:var(--text-primary);font-weight:600;">${fmt(rec.entry1.price)} <span style="color:var(--text-secondary);font-size:10px;">(${pct(rec.entry1.price)}%) [w:${rec.entry1.w}]</span></div>
+                <div style="font-size:9px;color:#ff6b6b;margin-top:1px;">▸ 안전 청산가 ${fmt(rec.entry1SafeLiq)} · 권장 ≤${rec.entry1MaxLev}x · ${rec.entry1.labels.slice(0,2).join('+')}</div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">${fmt(rec.entry2.price)} <span style="font-size:10px;">(${pct(rec.entry2.price)}%) [w:${rec.entry2.w}]</span></div>
+                <div style="font-size:9px;color:#ff6b6b;margin-top:1px;">▸ 안전 청산가 ${fmt(rec.entry2SafeLiq)} · 권장 ≤${rec.entry2MaxLev}x · ${rec.entry2.labels.slice(0,2).join('+')}</div>
             </div>
             <div>
                 <div style="font-size:11px;color:${exitColor};font-weight:700;margin-bottom:4px;">종료가 (분할)</div>
