@@ -3425,9 +3425,9 @@ function renderTradeRecommendation(rec){
             <div>
                 <div style="font-size:11px;color:${entryColor};font-weight:700;margin-bottom:4px;">진입가 (분할) · 안전 청산가 / 권장 레버리지</div>
                 <div style="font-size:13px;color:var(--text-primary);font-weight:600;">${fmt(rec.entry1.price)} <span style="color:var(--text-secondary);font-size:10px;">(${pct(rec.entry1.price)}%) [w:${rec.entry1.w}]</span></div>
-                <div style="font-size:9px;color:#ff6b6b;margin-top:1px;">▸ 안전 청산가 ${fmt(rec.entry1SafeLiq)} · 권장 ≤${rec.entry1MaxLev}x · ${rec.entry1.labels.slice(0,2).join('+')}</div>
-                <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">${fmt(rec.entry2.price)} <span style="font-size:10px;">(${pct(rec.entry2.price)}%) [w:${rec.entry2.w}]</span></div>
-                <div style="font-size:9px;color:#ff6b6b;margin-top:1px;">▸ 안전 청산가 ${fmt(rec.entry2SafeLiq)} · 권장 ≤${rec.entry2MaxLev}x · ${rec.entry2.labels.slice(0,2).join('+')}</div>
+                <div style="font-size:12px;color:#ff6b6b;margin-top:2px;font-weight:600;">▸ 안전 청산가 <b style="font-size:14px;">${fmt(rec.entry1SafeLiq)}</b> · 권장 <b style="font-size:14px;">≤${rec.entry1MaxLev}x</b> <span style="color:var(--text-secondary);font-weight:400;font-size:10px;">· ${rec.entry1.labels.slice(0,2).join('+')}</span></div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:6px;">${fmt(rec.entry2.price)} <span style="font-size:10px;">(${pct(rec.entry2.price)}%) [w:${rec.entry2.w}]</span></div>
+                <div style="font-size:12px;color:#ff6b6b;margin-top:2px;font-weight:600;">▸ 안전 청산가 <b style="font-size:14px;">${fmt(rec.entry2SafeLiq)}</b> · 권장 <b style="font-size:14px;">≤${rec.entry2MaxLev}x</b> <span style="color:var(--text-secondary);font-weight:400;font-size:10px;">· ${rec.entry2.labels.slice(0,2).join('+')}</span></div>
             </div>
             <div>
                 <div style="font-size:11px;color:${exitColor};font-weight:700;margin-bottom:4px;">종료가 (분할)</div>
