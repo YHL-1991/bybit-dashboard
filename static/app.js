@@ -108,16 +108,20 @@ async function updateStockTicker(yahooSym){
 const LEV_WEIGHTS={3:0.15,5:0.25,10:0.25,25:0.20,50:0.10,100:0.05};
 const LEV_LEVELS=[3,5,10,25,50,100];
 
+// 청산 추정맵 v3: 실데이터(호가창 매물벽) 우선 + 레버리지 가우시안은 배경(약)
+// ⚠️ 주의: 레버리지 가우시안 항은 결정론적 추정(현재가의 함수)이므로 신뢰도 낮음.
+// 실제 시장 정보는 호가창 매물벽(obLong/obShort)이 담당. 둘을 분리 정규화 후 결합.
 function estimateLiquidationLevels(currentPrice,oiValue,bids,asks,rangeP=0.15,bins=100){
-    if(currentPrice<=0)return{price_levels:[],long_liquidations:[],short_liquidations:[],leverage_markers:[],current_price:0};
+    if(currentPrice<=0)return{price_levels:[],long_liquidations:[],short_liquidations:[],leverage_markers:[],current_price:0,real_data:false};
     const low=currentPrice*(1-rangeP),high=currentPrice*(1+rangeP);
     const priceLevels=[];
     for(let i=0;i<bins;i++)priceLevels.push(low+(high-low)*i/(bins-1));
-    const longLiqs=new Float64Array(bins);
-    const shortLiqs=new Float64Array(bins);
+    const gaussLong=new Float64Array(bins),gaussShort=new Float64Array(bins);
+    const obLong=new Float64Array(bins),obShort=new Float64Array(bins);
     const leverageMarkers=[];
     const SQRT2PI=Math.sqrt(2*Math.PI);
 
+    // ── 1) 레버리지 가우시안 (추정 배경) ──
     for(const lev of LEV_LEVELS){
         const weight=LEV_WEIGHTS[lev];
         const oiPortion=oiValue*weight;
@@ -131,40 +135,51 @@ function estimateLiquidationLevels(currentPrice,oiValue,bids,asks,rangeP=0.15,bi
             const p=priceLevels[i];
             if(p<currentPrice){
                 const dist=Math.abs(p-longLiqP);
-                const w=Math.exp(-0.5*(dist*invSigma)**2);
-                longLiqs[i]+=oiPortion*w*invSigma/SQRT2PI;
+                gaussLong[i]+=oiPortion*Math.exp(-0.5*(dist*invSigma)**2)*invSigma/SQRT2PI;
             }else{
                 const dist=Math.abs(p-shortLiqP);
-                const w=Math.exp(-0.5*(dist*invSigma)**2);
-                shortLiqs[i]+=oiPortion*w*invSigma/SQRT2PI;
+                gaussShort[i]+=oiPortion*Math.exp(-0.5*(dist*invSigma)**2)*invSigma/SQRT2PI;
             }
         }
     }
-    // 호가창 대형 매물벽 반영
+    // ── 2) 호가창 매물벽 (실데이터) — 더 넓은 분포 + 임계값 완화 ──
+    let realData=false;
     if(bids&&asks&&bids.length&&asks.length){
-        let maxQ=1;
+        realData=true;
         const allQ=[...bids.map(b=>parseFloat(b[1])),...asks.map(a=>parseFloat(a[1]))];
-        if(allQ.length)maxQ=Math.max(...allQ);
-        for(const bid of bids.slice(0,50)){
+        const avgQ=allQ.reduce((a,b)=>a+b,0)/allQ.length||1;
+        const band=currentPrice*0.008; // 매물벽 영향 폭
+        for(const bid of bids.slice(0,200)){
             const bp=parseFloat(bid[0]),bq=parseFloat(bid[1]);
-            if(bq>maxQ*0.3){
+            if(bq>avgQ*1.5){ // 평균 1.5배 이상 매물벽만
+                const strength=bq/avgQ;
                 for(let i=0;i<bins;i++){
-                    if(Math.abs(priceLevels[i]-bp*0.98)<currentPrice*0.005)
-                        longLiqs[i]+=bq/maxQ*20;
+                    const d=Math.abs(priceLevels[i]-bp);
+                    if(d<band)obLong[i]+=strength*Math.exp(-0.5*(d/band)**2);
                 }
             }
         }
-        for(const ask of asks.slice(0,50)){
+        for(const ask of asks.slice(0,200)){
             const ap=parseFloat(ask[0]),aq=parseFloat(ask[1]);
-            if(aq>maxQ*0.3){
+            if(aq>avgQ*1.5){
+                const strength=aq/avgQ;
                 for(let i=0;i<bins;i++){
-                    if(Math.abs(priceLevels[i]-ap*1.02)<currentPrice*0.005)
-                        shortLiqs[i]+=aq/maxQ*20;
+                    const d=Math.abs(priceLevels[i]-ap);
+                    if(d<band)obShort[i]+=strength*Math.exp(-0.5*(d/band)**2);
                 }
             }
         }
     }
-    // 정규화: 최대값=100
+    // ── 3) 각각 정규화 후 결합: 실데이터 70% + 추정 30% ──
+    const norm=(arr)=>{let m=0;for(const v of arr)if(v>m)m=v;return m>0?arr.map(v=>v/m):arr;};
+    const gL=norm(gaussLong),gS=norm(gaussShort),oL=norm(obLong),oS=norm(obShort);
+    const longLiqs=new Float64Array(bins),shortLiqs=new Float64Array(bins);
+    const OB_W=realData?0.7:0, GA_W=realData?0.3:1.0;
+    for(let i=0;i<bins;i++){
+        longLiqs[i]=oL[i]*OB_W+gL[i]*GA_W;
+        shortLiqs[i]=oS[i]*OB_W+gS[i]*GA_W;
+    }
+    // 최종 정규화 (최대=100)
     let maxV=1;
     for(let i=0;i<bins;i++){if(longLiqs[i]>maxV)maxV=longLiqs[i];if(shortLiqs[i]>maxV)maxV=shortLiqs[i];}
     const longArr=[],shortArr=[],plArr=[];
@@ -173,7 +188,7 @@ function estimateLiquidationLevels(currentPrice,oiValue,bids,asks,rangeP=0.15,bi
         shortArr.push(+(shortLiqs[i]/maxV*100).toFixed(2));
         plArr.push(+priceLevels[i].toFixed(6));
     }
-    return{price_levels:plArr,long_liquidations:longArr,short_liquidations:shortArr,leverage_markers:leverageMarkers,current_price:currentPrice};
+    return{price_levels:plArr,long_liquidations:longArr,short_liquidations:shortArr,leverage_markers:leverageMarkers,current_price:currentPrice,real_data:realData};
 }
 
 /* ───── 브라우저에서 청산 데이터 계산 ───── */
@@ -1705,18 +1720,19 @@ function drawFullSignalZones(){
         else shortZones.push({price:c.price,score:sc,label:`저항(${c.touches})`});
     });
 
-    // 7) 청산 클러스터 (가격이 자석처럼 끌려가는 자리 - liquidation sweep)
+    // 7) 청산 클러스터 (실데이터 호가창 기반만 사용. lastLiquidationData가 실데이터)
+    //    ⚠️ 결정론적 추정(빈 호가창)은 제거 - 실제 호가창 데이터 있을 때만 반영
     try{
-        const liqData=estimateLiquidationLevels(price,price*1000,[],[]);
-        const liqPrices=liqData.price_levels;
-        const longLiqs=liqData.long_liquidations;
-        const shortLiqs=liqData.short_liquidations;
-        // 큰 롱 청산 클러스터 = 가격이 그쪽으로 빠질 위험 (풀숏 타겟이자 풀롱 위험)
-        let maxLongIdx=0;longLiqs.forEach((v,i)=>{if(v>longLiqs[maxLongIdx])maxLongIdx=i;});
-        if(longLiqs[maxLongIdx]>10)shortZones.push({price:liqPrices[maxLongIdx],score:25,label:'롱청산타겟'});
-        // 큰 숏 청산 클러스터 = 가격이 그쪽으로 튈 위험 (풀롱 타겟이자 풀숏 위험)
-        let maxShortIdx=0;shortLiqs.forEach((v,i)=>{if(v>shortLiqs[maxShortIdx])maxShortIdx=i;});
-        if(shortLiqs[maxShortIdx]>10)longZones.push({price:liqPrices[maxShortIdx],score:25,label:'숏청산타겟'});
+        const liqData=lastLiquidationData;
+        if(liqData&&liqData.real_data){
+            const liqPrices=liqData.price_levels;
+            const longLiqs=liqData.long_liquidations;
+            const shortLiqs=liqData.short_liquidations;
+            let maxLongIdx=0;longLiqs.forEach((v,i)=>{if(v>longLiqs[maxLongIdx])maxLongIdx=i;});
+            if(longLiqs[maxLongIdx]>30&&liqPrices[maxLongIdx]<price)shortZones.push({price:liqPrices[maxLongIdx],score:15,label:'매물벽(롱청산)'});
+            let maxShortIdx=0;shortLiqs.forEach((v,i)=>{if(v>shortLiqs[maxShortIdx])maxShortIdx=i;});
+            if(shortLiqs[maxShortIdx]>30&&liqPrices[maxShortIdx]>price)longZones.push({price:liqPrices[maxShortIdx],score:15,label:'매물벽(숏청산)'});
+        }
     }catch(e){}
 
     // 8) 이치모쿠 클라우드
@@ -3219,8 +3235,8 @@ function calculateTradeRecommendation(d,signalResult){
 
     // 4) 다중구간 청산 타겟 (전역 캐시)
     const mpl=lastMultiPeriodLiq?.periods||{};
-    // 5) 청산 위험 가까운 클러스터
-    const liqDanger=analyzeLiquidationDanger(price);
+    // 5) 청산 위험 — 실데이터(호가창 매물벽) 있을 때만
+    const liqDanger=(lastLiquidationData&&lastLiquidationData.real_data)?analyzeLiquidationDanger(price):null;
 
     // ───── 지지(롱 진입가 후보) 모으기 ─────
     const supports=[];
@@ -3807,6 +3823,30 @@ function calcOBVSeries(d){
     return obvs;
 }
 
+// ─── forward-test 로깅 (풀롱/풀숏 트리거 시 1종목당 중복방지) ───
+let _ftLastLog={}; // {symbol: {type, ts}}
+function logForwardTest(result){
+    if(!result||!result.signal)return; // 풀롱/풀숏 트리거만 기록
+    const sym=currentSymbol;
+    const type=result.signal.type;
+    const now=Date.now();
+    const last=_ftLastLog[sym];
+    // 같은 종목+방향은 30분 내 중복 기록 안 함
+    if(last&&last.type===type&&now-last.ts<1800000)return;
+    _ftLastLog[sym]={type,ts:now};
+    const price=lastKlineData?.[lastKlineData.length-1]?.close||0;
+    const symClass=sym==='BTCUSDT'||sym==='ETHUSDT'?'major':isStock(sym)?'stock':'alt';
+    fetch('/api/forwardtest/log',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+            symbol:sym,symClass,type,price,
+            interval:currentInterval,
+            longConds:result.longConds,shortConds:result.shortConds,
+            ts:now,
+        }),
+    }).catch(()=>{});
+}
+
 function generateFullSignal(d){
     if(d.length<110)return null;
     const last=d[d.length-1],prev=d[d.length-2],prev2=d[d.length-3];
@@ -3830,7 +3870,9 @@ function generateFullSignal(d){
 
     let lS=0,sS=0; // longScore, shortScore (가중합)
     const lR=[],sR=[];
-    const TOTAL_MAX=125; // 95 + 청산위험(±10) + MTF(±15) + 주간청산(±5) + 거래소(±3) ≈ 125
+    // 주식은 크립토 전용 지표(OI/청산/펀딩/김프/가스/거래소) 부재 → 가격 TA만으로 평가
+    const _isStockSym=isStock(currentSymbol);
+    const TOTAL_MAX=_isStockSym?95:125; // 주식: 가격 TA 기반 95 / 크립토: 125
 
     // ── 1점 조건 (17개, 총 17점) ──
     // 1) RSI 반등/하락
@@ -3994,27 +4036,23 @@ function generateFullSignal(d){
         else if(nf<-500){lS+=2;lR.push(`CEX출금${nf.toFixed(0)}E`);} // 출금 급증=매수 의사
     }
 
-    // ⚠️ 49) 청산 클러스터 위험도 (Liquidation Hunt 방지 - 최대 ±10점)
-    // 시장은 청산 클러스터로 가격을 끌어 청산을 유발함
-    const liqDanger=analyzeLiquidationDanger(price);
+    // ⚠️ 49) 청산 클러스터 위험도 — 실데이터(호가창 매물벽) 있을 때만, 약하게 (최대 ±4점)
+    // 청산맵의 가우시안 항은 결정론적 추정이므로 신뢰 X. real_data 매물벽만 신호 반영.
+    const liqDanger=(lastLiquidationData&&lastLiquidationData.real_data)?analyzeLiquidationDanger(price):null;
     if(liqDanger){
-        // 가까운 LONG 청산 클러스터 = 가격이 그쪽으로 빠질 위험 → 풀롱 위험, 풀숏 유리
-        if(liqDanger.longDanger>=3){
-            const penalty=Math.min(10,Math.round(liqDanger.longDanger*1.3));
+        if(liqDanger.longDanger>=4){ // 강한 매물벽만 (임계 상향)
+            const penalty=Math.min(4,Math.round(liqDanger.longDanger*0.5));
             lS=Math.max(0,lS-penalty);
-            sS+=Math.min(5,Math.round(liqDanger.longDanger*0.7));
+            sS+=Math.min(2,Math.round(liqDanger.longDanger*0.3));
             const cl=liqDanger.maxLongCluster;
-            lR.push(`⚠️롱청산위험-${penalty}점@${fp(cl.price)}`);
-            sR.push(`롱청산타겟@${fp(cl.price)}`);
+            lR.push(`매물벽롱위험-${penalty}@${fp(cl.price)}`);
         }
-        // 가까운 SHORT 청산 클러스터 = 가격이 그쪽으로 튈 위험 → 풀숏 위험, 풀롱 유리
-        if(liqDanger.shortDanger>=3){
-            const penalty=Math.min(10,Math.round(liqDanger.shortDanger*1.3));
+        if(liqDanger.shortDanger>=4){
+            const penalty=Math.min(4,Math.round(liqDanger.shortDanger*0.5));
             sS=Math.max(0,sS-penalty);
-            lS+=Math.min(5,Math.round(liqDanger.shortDanger*0.7));
+            lS+=Math.min(2,Math.round(liqDanger.shortDanger*0.3));
             const cl=liqDanger.maxShortCluster;
-            sR.push(`⚠️숏청산위험-${penalty}점@${fp(cl.price)}`);
-            lR.push(`숏청산타겟@${fp(cl.price)}`);
+            sR.push(`매물벽숏위험-${penalty}@${fp(cl.price)}`);
         }
     }
 
@@ -4032,8 +4070,8 @@ function generateFullSignal(d){
         else if(w&&w.type==='풀숏'){sS+=5;sR.push('주봉풀숏');}
     }
 
-    // 🎯 51) 다중 시간구간 청산 (12h~1w) - 가까운 청산 타겟에 따른 가중 ±5점
-    if(lastMultiPeriodLiq&&lastMultiPeriodLiq.periods){
+    // 🎯 51) 다중 시간구간 청산 (12h~1w) - 가까운 청산 타겟에 따른 가중 ±5점 (주식 제외)
+    if(!_isStockSym&&lastMultiPeriodLiq&&lastMultiPeriodLiq.periods){
         const periods=lastMultiPeriodLiq.periods;
         // 1주일 lookback 청산 타겟이 현재가 ±5% 이내면 위험
         const week=periods['1주일'];
@@ -4053,8 +4091,8 @@ function generateFullSignal(d){
         }
     }
 
-    // 🎯 52) 다중 거래소 OI/L-S 비율 (Binance + Bybit) - ±3점
-    if(lastMultiExchangeLiq&&lastMultiExchangeLiq.data&&lastMultiExchangeLiq.data.binance){
+    // 🎯 52) 다중 거래소 OI/L-S 비율 (Binance + Bybit) - ±3점 (주식 제외)
+    if(!_isStockSym&&lastMultiExchangeLiq&&lastMultiExchangeLiq.data&&lastMultiExchangeLiq.data.binance){
         const b=lastMultiExchangeLiq.data.binance;
         if(b.oiChange&&b.oiChange>10)sR.push(`Binance OI급증${b.oiChange.toFixed(1)}%`),sS+=2;
         else if(b.oiChange&&b.oiChange<-10)lR.push(`Binance OI급감${b.oiChange.toFixed(1)}%`),lS+=2;
@@ -4502,6 +4540,8 @@ function addFullSignalMarkers(d,existingMarkers){
     // 안정화된 방향 계산 (뚝심있게 유지)
     const stable=getStableSignalDirection(result.longConds,result.shortConds,result.signal?.type);
     _lastUnifiedSignal.stableDirection=stable;
+    // forward-test 로깅: 풀롱/풀숏 트리거 발생 시 기록 (과최적화 방지 실측 검증)
+    try{logForwardTest(result);}catch(e){}
     try{
         const dirEl=document.getElementById('signalDirection');
         const scoreEl=document.getElementById('signalScore');
@@ -4541,7 +4581,8 @@ function addFullSignalMarkers(d,existingMarkers){
         }
         if(reasonEl){
             const top=(stable.direction.includes('롱')?result.longReasons:result.shortReasons)||[];
-            reasonEl.textContent=top.slice(0,6).join(' | ');
+            const stockNote=isStock(currentSymbol)?'⚠ 주식 모드: 가격 TA만 (OI/청산/펀딩 N/A) · ':'';
+            reasonEl.textContent=stockNote+top.slice(0,6).join(' | ');
         }
     }catch(e){}
 

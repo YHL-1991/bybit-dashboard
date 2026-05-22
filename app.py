@@ -1,11 +1,12 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import uvicorn
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
@@ -19,6 +20,27 @@ from auto_trader import (
 import auto_trader
 
 app = FastAPI(title="Bybit Futures Dashboard")
+
+# ─── 자동매매 엔드포인트 보안 ───
+# 환경변수 TRADER_TOKEN이 설정돼 있어야만 trader 엔드포인트 사용 가능.
+# 미설정 시 모든 실거래 엔드포인트 차단 (안전 기본값).
+TRADER_TOKEN = os.environ.get("TRADER_TOKEN", "")
+
+
+def _check_trader_auth(request: Request):
+    """trader 엔드포인트 인증. 통과하면 None, 실패하면 JSONResponse 반환."""
+    if not TRADER_TOKEN:
+        return JSONResponse(
+            {"status": "disabled", "message": "실거래 기능 비활성화됨 (서버에 TRADER_TOKEN 미설정). 보안을 위해 기본 차단."},
+            status_code=403,
+        )
+    token = request.headers.get("X-Trader-Token", "") or request.query_params.get("token", "")
+    if token != TRADER_TOKEN:
+        return JSONResponse(
+            {"status": "unauthorized", "message": "인증 토큰 불일치"},
+            status_code=401,
+        )
+    return None
 
 BASE_DIR = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -427,9 +449,17 @@ async def api_eth_flow():
         return {"error": str(e), "txs": [], "flow": {}}
 
 
-# ── 백테스트 결과 영구 저장 ──
+# ── 백테스트 결과 저장 ──
+# 우선순위: DATA_DIR 환경변수(Railway 볼륨) → 앱 디렉토리(재시작엔 유지, 재배포엔 소실)
+# ⚠️ 진정한 영구 저장은 Railway Volume 마운트 + DATA_DIR 설정 필요
 import os as _os
-BACKTEST_FILE = _os.environ.get("BACKTEST_FILE", "/tmp/velox_backtest.json")
+_DATA_DIR = _os.environ.get("DATA_DIR", str(BASE_DIR / "data"))
+try:
+    _os.makedirs(_DATA_DIR, exist_ok=True)
+except Exception:
+    _DATA_DIR = "/tmp"
+BACKTEST_FILE = _os.path.join(_DATA_DIR, "velox_backtest.json")
+FORWARDTEST_FILE = _os.path.join(_DATA_DIR, "velox_forwardtest.json")
 
 
 def _load_backtest():
@@ -448,6 +478,46 @@ def _save_backtest(data):
             json.dump(data, f, ensure_ascii=False)
     except Exception:
         pass
+
+
+def _load_forwardtest():
+    if _os.path.exists(FORWARDTEST_FILE):
+        try:
+            with open(FORWARDTEST_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _append_forwardtest(entry):
+    """실시간 신호 → 결과 로그 (forward-test, 과최적화 방지 검증용)"""
+    try:
+        log = _load_forwardtest()
+        log.append(entry)
+        log = log[-2000:]  # 최근 2000건만 유지
+        with open(FORWARDTEST_FILE, "w", encoding="utf-8") as f:
+            json.dump(log, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+@app.get("/api/forwardtest")
+async def api_forwardtest_get():
+    """forward-test 로그 조회 (실시간 신호 vs 실제 결과)"""
+    return {"log": _load_forwardtest()}
+
+
+@app.post("/api/forwardtest/log")
+async def api_forwardtest_log(request: Request):
+    """실시간 신호 기록 (종목군별 적중률 추적용)"""
+    try:
+        body = await request.json()
+        body["ts"] = int(_time.time())
+        _append_forwardtest(body)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.get("/api/backtest")
@@ -793,7 +863,9 @@ async def api_volume_alerts():
 
 @app.post("/api/trader/connect")
 async def api_trader_connect(request: Request):
-    """API 키로 트레이더 연결"""
+    """API 키로 트레이더 연결 (인증 필요)"""
+    auth = _check_trader_auth(request)
+    if auth: return auth
     body = await request.json()
     key = body.get("api_key", "")
     secret = body.get("api_secret", "")
@@ -810,7 +882,9 @@ async def api_trader_connect(request: Request):
 
 @app.post("/api/trader/toggle")
 async def api_trader_toggle(request: Request):
-    """자동매매 ON/OFF"""
+    """자동매매 ON/OFF (인증 필요)"""
+    auth = _check_trader_auth(request)
+    if auth: return auth
     body = await request.json()
     auto_trader.auto_trade_enabled = body.get("enabled", False)
     return {"enabled": auto_trader.auto_trade_enabled}
@@ -818,7 +892,9 @@ async def api_trader_toggle(request: Request):
 
 @app.post("/api/trader/config")
 async def api_trader_config(request: Request):
-    """자동매매 설정 변경"""
+    """자동매매 설정 변경 (인증 필요)"""
+    auth = _check_trader_auth(request)
+    if auth: return auth
     body = await request.json()
     for k, v in body.items():
         if k in auto_trader.auto_trade_config:
@@ -828,7 +904,9 @@ async def api_trader_config(request: Request):
 
 @app.post("/api/trader/execute")
 async def api_trader_execute(request: Request):
-    """수동 주문 실행"""
+    """수동 주문 실행 (인증 필요)"""
+    auth = _check_trader_auth(request)
+    if auth: return auth
     body = await request.json()
     if not auto_trader.trader_instance:
         return {"status": "error", "message": "트레이더 미연결"}
@@ -836,28 +914,36 @@ async def api_trader_execute(request: Request):
 
 
 @app.get("/api/trader/positions")
-async def api_trader_positions():
+async def api_trader_positions(request: Request):
+    auth = _check_trader_auth(request)
+    if auth: return auth
     if not auto_trader.trader_instance:
         return {"status": "error", "message": "미연결"}
     return await auto_trader.trader_instance.get_positions()
 
 
 @app.get("/api/trader/balance")
-async def api_trader_balance():
+async def api_trader_balance(request: Request):
+    auth = _check_trader_auth(request)
+    if auth: return auth
     if not auto_trader.trader_instance:
         return {"status": "error", "message": "미연결"}
     return await auto_trader.trader_instance.get_wallet_balance()
 
 
 @app.get("/api/trader/log")
-async def api_trader_log():
+async def api_trader_log(request: Request):
+    auth = _check_trader_auth(request)
+    if auth: return auth
     return {"log": auto_trader.trade_log, "enabled": auto_trader.auto_trade_enabled,
             "config": auto_trader.auto_trade_config}
 
 
 @app.post("/api/trader/signal-trade")
 async def api_signal_trade(request: Request):
-    """매매 신호 기반 자동 주문"""
+    """매매 신호 기반 자동 주문 (인증 필요)"""
+    auth = _check_trader_auth(request)
+    if auth: return auth
     body = await request.json()
     return await execute_signal_trade(
         body.get("direction", ""),
