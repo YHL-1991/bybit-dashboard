@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import hmac
 from pathlib import Path
 
 import uvicorn
@@ -28,16 +29,18 @@ TRADER_TOKEN = os.environ.get("TRADER_TOKEN", "")
 
 
 def _check_trader_auth(request: Request):
-    """trader 엔드포인트 인증. 통과하면 None, 실패하면 JSONResponse 반환."""
+    """trader 엔드포인트 인증. 통과하면 None, 실패하면 JSONResponse 반환.
+    - 헤더 전용(X-Trader-Token). query_param 미지원 (로그/리퍼러/히스토리 누수 방지).
+    - hmac.compare_digest 상수시간 비교 (타이밍 공격 방지)."""
     if not TRADER_TOKEN:
         return JSONResponse(
             {"status": "disabled", "message": "실거래 기능 비활성화됨 (서버에 TRADER_TOKEN 미설정). 보안을 위해 기본 차단."},
             status_code=403,
         )
-    token = request.headers.get("X-Trader-Token", "") or request.query_params.get("token", "")
-    if token != TRADER_TOKEN:
+    token = request.headers.get("X-Trader-Token", "")
+    if not hmac.compare_digest(token, TRADER_TOKEN):
         return JSONResponse(
-            {"status": "unauthorized", "message": "인증 토큰 불일치"},
+            {"status": "unauthorized", "message": "인증 토큰 불일치 (X-Trader-Token 헤더 필요)"},
             status_code=401,
         )
     return None
@@ -510,14 +513,114 @@ async def api_forwardtest_get():
 
 @app.post("/api/forwardtest/log")
 async def api_forwardtest_log(request: Request):
-    """실시간 신호 기록 (종목군별 적중률 추적용)"""
+    """실시간 신호 기록 (종목군별 적중률 추적용).
+    신호 발생 시점에 entry_price/direction/horizon_hours를 함께 저장하면
+    이후 /api/forwardtest/resolve가 N시간 뒤 실제 결과와 페어링한다."""
     try:
         body = await request.json()
         body["ts"] = int(_time.time())
+        body.setdefault("resolved", False)
+        # 미래 검증을 위한 필수 필드 보존 (없으면 페어링 불가 → resolved 처리 안 함)
+        body.setdefault("horizon_hours", 4)
         _append_forwardtest(body)
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/forwardtest/resolve")
+async def api_forwardtest_resolve(request: Request):
+    """신호→결과 페어링. 프론트가 현재가를 보내면, horizon_hours 경과한
+    미해결(resolved=False) 신호를 실제 가격 변동과 대조해 승패/수익률을 기록.
+
+    EV 기준: 신호 방향으로의 실현 수익률(%)을 기록하고, 단순 적중(방향 일치)
+    여부도 함께 저장한다. body 예: {"prices": {"BTCUSDT": 67000.0, ...}}"""
+    try:
+        body = await request.json()
+        prices = body.get("prices", {}) or {}
+        now = int(_time.time())
+        log = _load_forwardtest()
+        resolved_count = 0
+        for e in log:
+            if e.get("resolved"):
+                continue
+            entry_price = e.get("entry_price") or e.get("price")
+            direction = (e.get("direction") or e.get("signal") or "").lower()
+            sym = e.get("symbol") or e.get("sym")
+            horizon_h = float(e.get("horizon_hours", 4) or 4)
+            ts = e.get("ts", now)
+            if not entry_price or not sym or direction not in ("long", "short"):
+                continue
+            # 아직 horizon 미도달이면 보류
+            if now - ts < horizon_h * 3600:
+                continue
+            cur = prices.get(sym)
+            if cur is None:
+                continue  # 현재가 없으면 다음 기회에
+            try:
+                entry_price = float(entry_price)
+                cur = float(cur)
+            except Exception:
+                continue
+            if entry_price <= 0:
+                continue
+            change_pct = (cur - entry_price) / entry_price * 100.0
+            # 신호 방향 기준 실현 수익률
+            realized = change_pct if direction == "long" else -change_pct
+            e["resolved"] = True
+            e["resolve_ts"] = now
+            e["exit_price"] = round(cur, 8)
+            e["change_pct"] = round(change_pct, 4)
+            e["realized_pct"] = round(realized, 4)
+            e["correct"] = realized > 0
+            resolved_count += 1
+        if resolved_count:
+            try:
+                with open(FORWARDTEST_FILE, "w", encoding="utf-8") as f:
+                    json.dump(log, f, ensure_ascii=False)
+            except Exception:
+                pass
+        return {"ok": True, "resolved": resolved_count}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/forwardtest/stats")
+async def api_forwardtest_stats():
+    """페어링된 결과를 종목군(symClass)별로 집계.
+    적중률(hit-rate)뿐 아니라 평균 실현수익률(EV 대용)도 함께 반환.
+    표본이 적으면 신뢰 불가 — n과 함께 노출해 정직하게 판단하도록."""
+    log = _load_forwardtest()
+    buckets = {}
+    for e in log:
+        if not e.get("resolved"):
+            continue
+        cls = e.get("symClass") or "unknown"
+        b = buckets.setdefault(cls, {"n": 0, "wins": 0, "sum_realized": 0.0})
+        b["n"] += 1
+        if e.get("correct"):
+            b["wins"] += 1
+        b["sum_realized"] += float(e.get("realized_pct", 0) or 0)
+    out = {}
+    total_n = total_w = 0
+    total_sum = 0.0
+    for cls, b in buckets.items():
+        n = b["n"]
+        out[cls] = {
+            "n": n,
+            "hit_rate": round(b["wins"] / n * 100, 1) if n else 0,
+            "avg_realized_pct": round(b["sum_realized"] / n, 3) if n else 0,
+        }
+        total_n += n
+        total_w += b["wins"]
+        total_sum += b["sum_realized"]
+    out["_total"] = {
+        "n": total_n,
+        "hit_rate": round(total_w / total_n * 100, 1) if total_n else 0,
+        "avg_realized_pct": round(total_sum / total_n, 3) if total_n else 0,
+        "pending": sum(1 for e in log if not e.get("resolved")),
+    }
+    return out
 
 
 @app.get("/api/backtest")

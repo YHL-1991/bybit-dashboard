@@ -119,20 +119,21 @@
     <div class="grid-2">
         <div class="card">
             <div class="card-title">
-                <span class="dot" style="background:#FF69B4"></span> 다중 시간구간 청산 타겟 (12h ~ 1주일)
+                <span class="dot" style="background:#FF69B4"></span> 주요 고저점 (12h ~ 1주일, 가격 기반)
             </div>
             <div id="multiPeriodLiqContent" style="font-size:12px;">
                 <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:12px;">로딩 중...</div>
             </div>
+            <p class="hint">각 기간 고점/저점 = 가격 되돌림·돌파 참고선. (실제 청산 데이터 아님 — 캔들 고저점 기반)</p>
         </div>
         <div class="card">
             <div class="card-title">
-                <span class="dot" style="background:#58a6ff"></span> 다중 거래소 청산/OI (Binance + Bybit)
+                <span class="dot" style="background:#58a6ff"></span> 다중 거래소 OI·롱숏비율 (Binance 실데이터)
             </div>
             <div id="multiExchangeContent" style="font-size:12px;">
                 <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:12px;">로딩 중...</div>
             </div>
-            <p class="hint">OI 변동률·롱숏비율 통합. L/S 2.5+ = 롱 과열(청산위험), 0.6- = 숏 과열(스퀴즈 가능). 시그널에 자동 반영.</p>
+            <p class="hint">Binance 공개 API의 실제 OI 변동률·글로벌 롱숏비율. L/S 2.5+ = 롱 과열, 0.6- = 숏 과열. (BTC/ETH/메이저만 신뢰도 높음)</p>
         </div>
     </div>
 
@@ -162,7 +163,7 @@
                     Coinglass 메인
                 </a>
             </div>
-            <p class="hint">iframe 임베드는 브라우저 보안 정책상 로그인 세션이 차단됩니다(Coinglass뿐 아니라 대부분 사이트 동일). 위 버튼은 새 탭으로 열려서 로그인 상태 유지됩니다. 핵심 청산 데이터는 위쪽의 "다중 시간구간 청산 타겟" + "다중 거래소 청산/OI" 카드에서 Velox가 자체 계산합니다.</p>
+            <p class="hint">⚠️ 실제 청산 히트맵(누적 청산 데이터)은 위 Coinglass 링크에서 확인하세요. Velox 캔들차트의 청산 오버레이는 <b>실시간 호가창 매물벽 + 레버리지 추정</b>이며, 누적 청산 실측이 아닌 <b>참고용 추정값</b>입니다.</p>
         </div>
     </div>
 
@@ -441,6 +442,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260521a"></script>
+    <script src="/static/app.js?v=20260523a"></script>
 </body>
 </html>

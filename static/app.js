@@ -3836,16 +3836,35 @@ function logForwardTest(result){
     _ftLastLog[sym]={type,ts:now};
     const price=lastKlineData?.[lastKlineData.length-1]?.close||0;
     const symClass=sym==='BTCUSDT'||sym==='ETHUSDT'?'major':isStock(sym)?'stock':'alt';
+    const direction=type==='풀롱'?'long':type==='풀숏'?'short':'';
     fetch('/api/forwardtest/log',{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
             symbol:sym,symClass,type,price,
+            // ↓ 신호→결과 페어링용 (N시간 뒤 실제가와 대조)
+            entry_price:price,direction,horizon_hours:4,
             interval:currentInterval,
             longConds:result.longConds,shortConds:result.shortConds,
             ts:now,
         }),
     }).catch(()=>{});
 }
+
+// ── forward-test 결과 페어링: 보고 있는 종목들의 현재가를 주기적으로 서버에 전달 ──
+// 서버는 horizon(4h) 경과한 미해결 신호를 실제 가격과 대조해 승패/실현수익률 기록.
+const _ftPriceCache={};
+function recordFtPrice(sym,price){if(sym&&price>0)_ftPriceCache[sym]=price;}
+async function resolveForwardTest(){
+    try{
+        if(!Object.keys(_ftPriceCache).length)return;
+        await fetch('/api/forwardtest/resolve',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({prices:_ftPriceCache}),
+        });
+    }catch(e){}
+}
+// 10분마다 페어링 시도 (현재가는 차트 갱신 시 recordFtPrice로 누적)
+setInterval(resolveForwardTest,600000);
 
 function generateFullSignal(d){
     if(d.length<110)return null;
@@ -3874,10 +3893,23 @@ function generateFullSignal(d){
     const _isStockSym=isStock(currentSymbol);
     const TOTAL_MAX=_isStockSym?95:125; // 주식: 가격 TA 기반 95 / 크립토: 125
 
-    // ── 1점 조건 (17개, 총 17점) ──
-    // 1) RSI 반등/하락
-    if(rsi<40&&rsi>rsiPrev){lS+=1;lR.push('RSI반등');}
-    if(rsi>60&&rsi<rsiPrev){sS+=1;sR.push('RSI하락');}
+    // ── 모멘텀 오실레이터 합의 (다중공선성 방지) ──
+    // RSI·W%R·CCI는 거의 같은 과매수/과매도를 측정 → 개별 카운팅 시 같은 정보 3번 중복.
+    // 다수결 합의로 1번만 가점: 3개 모두 일치 = 강함(+3), 2개 = 약함(+1).
+    // (StochRSI는 별도 크로스/패턴 조건에서 평가하므로 합의에서 제외 — 이중카운팅 방지)
+    {
+        let momBull=0,momBear=0;
+        if(rsi<35)momBull++;else if(rsi>65)momBear++;
+        const _wr=calcWilliamsR(d,14);
+        if(_wr!==null){if(_wr<-80)momBull++;else if(_wr>-20)momBear++;}
+        const _cci=calcCCI(d,20);
+        if(_cci!==null){if(_cci<-100)momBull++;else if(_cci>100)momBear++;}
+        if(momBull>=3){lS+=3;lR.push(`모멘텀합의과매도${momBull}/3`);}
+        else if(momBull>=2){lS+=1;lR.push(`모멘텀약과매도${momBull}/3`);}
+        if(momBear>=3){sS+=3;sR.push(`모멘텀합의과매수${momBear}/3`);}
+        else if(momBear>=2){sS+=1;sR.push(`모멘텀약과매수${momBear}/3`);}
+    }
+    // ── 1점 조건 ──
     // 2) 양봉/음봉
     if(last.close>last.open){lS+=1;lR.push('양봉');}
     if(last.close<last.open){sS+=1;sR.push('음봉');}
@@ -3913,12 +3945,7 @@ function generateFullSignal(d){
             if(last.close<last.open){sS+=1;sR.push('거래량폭발↓');}
         }
     }
-    // 21) Williams %R
-    const wrVal=calcWilliamsR(d,14);
-    if(wrVal!==null){if(wrVal<-80){lS+=1;lR.push('W%R과매도');}if(wrVal>-20){sS+=1;sR.push('W%R과매수');}}
-    // 22) CCI
-    const cciVal=calcCCI(d,20);
-    if(cciVal!==null){if(cciVal<-100){lS+=1;lR.push('CCI과매도');}if(cciVal>100){sS+=1;sR.push('CCI과매수');}}
+    // 21~22) Williams %R, CCI → 위 '모멘텀 합의'로 통합 (중복 제거)
     // 29~32) 매크로 (DXY, US10Y, S&P, Gold)
     if(macroCache['DX-Y.NYB']){if(macroCache['DX-Y.NYB'].change<-0.1){lS+=1;lR.push('DXY↓');}if(macroCache['DX-Y.NYB'].change>0.1){sS+=1;sR.push('DXY↑');}}
     if(macroCache['^TNX']){if(macroCache['^TNX'].change<-0.5){lS+=1;lR.push('금리↓');}if(macroCache['^TNX'].change>0.5){sS+=1;sR.push('금리↑');}}
@@ -4542,6 +4569,8 @@ function addFullSignalMarkers(d,existingMarkers){
     _lastUnifiedSignal.stableDirection=stable;
     // forward-test 로깅: 풀롱/풀숏 트리거 발생 시 기록 (과최적화 방지 실측 검증)
     try{logForwardTest(result);}catch(e){}
+    // 현재가 누적 → 페어링(resolve) 시 미해결 신호의 실제 결과 대조에 사용
+    try{recordFtPrice(currentSymbol,lastKlineData?.[lastKlineData.length-1]?.close||0);}catch(e){}
     try{
         const dirEl=document.getElementById('signalDirection');
         const scoreEl=document.getElementById('signalScore');
