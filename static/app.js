@@ -3186,7 +3186,7 @@ async function updateKimchiPremium(){
         const color=premium>2?R:premium>0.5?YL:premium<-1?BL:G;
         el.textContent=(premium>=0?'+':'')+premium.toFixed(2)+'%';
         el.style.color=color;
-        el.title=`업비트: ₩${upbitData.krw.toLocaleString()} | ${refSource}: $${refPrice.toLocaleString(undefined,{maximumFractionDigits:6})} | 환율: ${kp.usd_krw.toFixed(2)}`;
+        el.title=`업비트: ₩${upbitData.krw.toLocaleString()} | ${refSource}: $${refPrice.toLocaleString(undefined,{maximumFractionDigits:6})} | 환율: ${kp.usd_krw.toFixed(2)}(${kp.rate_source||'?'})`;
     }catch(e){document.getElementById('tickKimchi').textContent='-';}
 }
 
@@ -4754,8 +4754,8 @@ async function refreshAll(){
         if(refreshCount%3===0) tasks.push(updateLiquidation(),updateMarketIndicators());
         // 매 10초: 거래량알람 (무거운 API)
         if(refreshCount%10===0) tasks.push(checkAlerts());
-        // 매 10초: 김치프리미엄
-        if(refreshCount%10===0) tasks.push(updateKimchiPremium());
+        // 매 5초: 김치프리미엄 (실시간 forex 반영)
+        if(refreshCount%5===0) tasks.push(updateKimchiPremium());
         // 매 30초: 전문가 컨센서스
         if(refreshCount%30===0) tasks.push(updateExpertConsensus());
         // 매 60초: 온체인 데이터

@@ -683,7 +683,7 @@ async def _get_upbit_krw_markets(client):
 async def api_kimchi_premium():
     """김치프리미엄: 업비트(KRW) vs Bybit(USD) 가격 차이"""
     now = _time.time()
-    if _kimchi_cache["data"] and now - _kimchi_cache["ts"] < 10:
+    if _kimchi_cache["data"] and now - _kimchi_cache["ts"] < 5:
         return _kimchi_cache["data"]
     try:
         async with _httpx.AsyncClient(timeout=10.0) as c:
@@ -705,31 +705,58 @@ async def api_kimchi_premium():
                                  "KRW-ADA","KRW-AVAX","KRW-DOT","KRW-LINK","KRW-SUI",
                                  "KRW-PEPE","KRW-WIF","KRW-ARB","KRW-OP"]
 
-            # 3) 업비트 시세 + USDT-KRW 환율(kimpga 동일) + fallback FX
-            upbit_r, usdt_r, fx_r = await asyncio.gather(
+            # 3) 업비트 시세 + 실시간 환율(forex) 병렬 호출
+            #    ⚠️ 환율은 kimpga와 동일하게 '실시간 원/달러 forex'를 사용한다.
+            #    업비트 USDT-KRW를 환율로 쓰면 안 됨 — USDT 자체에 김프가 끼어 있어
+            #    그걸 환율로 나누면 코인 김프가 0% 근처로 왜곡된다(기존 버그).
+            #    또한 fawaz/frankfurter는 '일 1회' 갱신이라 장중에 멈춰 보였음.
+            #    Dunamu(두나무=업비트 모회사, 실시간 갱신) → frankfurter → fawazahmed 순.
+            upbit_r, dunamu_r, frank_r, fawaz_r, usdt_r = await asyncio.gather(
                 c.get("https://api.upbit.com/v1/ticker", params={"markets": ",".join(valid_markets)}),
-                c.get("https://api.upbit.com/v1/ticker", params={"markets": "KRW-USDT"}),
+                c.get("https://quotation-api-cdn.dunamu.com/v1/forex/recent", params={"codes": "FRX.KRWUSD"}),
+                c.get("https://api.frankfurter.app/latest", params={"from": "USD", "to": "KRW"}),
                 c.get("https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json"),
+                c.get("https://api.upbit.com/v1/ticker", params={"markets": "KRW-USDT"}),
                 return_exceptions=True,
             )
             upbit = upbit_r.json() if hasattr(upbit_r, "status_code") and upbit_r.status_code == 200 else []
-            # 환율 우선순위: 업비트 USDT-KRW (실제 코인시장 환율, kimpga와 일치) → fawazahmed
             usd_krw = None
+            rate_source = None
+            # (a) Dunamu 실시간 forex (kimpga와 동일 기준)
             try:
-                if hasattr(usdt_r, "status_code") and usdt_r.status_code == 200:
-                    usdt_data = usdt_r.json()
-                    if isinstance(usdt_data, list) and usdt_data:
-                        usd_krw = float(usdt_data[0]["trade_price"])
+                if hasattr(dunamu_r, "status_code") and dunamu_r.status_code == 200:
+                    dd = dunamu_r.json()
+                    if isinstance(dd, list) and dd and dd[0].get("basePrice"):
+                        usd_krw = float(dd[0]["basePrice"]); rate_source = "dunamu"
             except Exception:
                 pass
+            # (b) frankfurter (ECB 기준, 영업일 갱신)
             if not usd_krw:
                 try:
-                    fx = fx_r.json() if hasattr(fx_r, "status_code") else {}
-                    usd_krw = fx.get("usd", {}).get("krw", 1400)
+                    if hasattr(frank_r, "status_code") and frank_r.status_code == 200:
+                        kr = frank_r.json().get("rates", {}).get("KRW")
+                        if kr:
+                            usd_krw = float(kr); rate_source = "frankfurter"
                 except Exception:
-                    usd_krw = 1400
+                    pass
+            # (c) fawazahmed (최후 fallback)
+            if not usd_krw:
+                try:
+                    fx = fawaz_r.json() if hasattr(fawaz_r, "status_code") else {}
+                    usd_krw = float(fx.get("usd", {}).get("krw", 1400)); rate_source = "fawaz"
+                except Exception:
+                    usd_krw = 1400; rate_source = "default"
+            # 참고용: 업비트 USDT-KRW (USDT 김프 모니터링용 — 환율로는 쓰지 않음)
+            usdt_krw = None
+            try:
+                if hasattr(usdt_r, "status_code") and usdt_r.status_code == 200:
+                    ud = usdt_r.json()
+                    if isinstance(ud, list) and ud:
+                        usdt_krw = float(ud[0]["trade_price"])
+            except Exception:
+                pass
 
-            result = {"usd_krw": usd_krw, "coins": {}}
+            result = {"usd_krw": usd_krw, "rate_source": rate_source, "usdt_krw": usdt_krw, "coins": {}}
             if isinstance(upbit, list):
                 for t in upbit:
                     coin = t["market"].replace("KRW-", "")
