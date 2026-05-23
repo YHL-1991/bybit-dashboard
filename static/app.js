@@ -3163,30 +3163,50 @@ async function binanceSpotPrice(symbol){
     }catch(e){return null;}
 }
 
+// 실시간 원/달러 환율 (Dunamu=두나무, 업비트 모회사). Railway 서버는 차단되므로
+// 한국 IP인 사용자 브라우저에서 직접 호출 → kimpga와 동일한 실시간 forex 사용.
+let _fxRate=null,_fxRateTs=0;
+async function dunamuForexRate(){
+    const now=Date.now();
+    if(_fxRate&&now-_fxRateTs<30000)return _fxRate; // 30초 캐시
+    try{
+        const r=await fetch('https://quotation-api-cdn.dunamu.com/v1/forex/recent?codes=FRX.KRWUSD');
+        if(!r.ok)return _fxRate;
+        const d=await r.json();
+        const rate=Array.isArray(d)&&d[0]?parseFloat(d[0].basePrice):null;
+        if(rate>0){_fxRate=rate;_fxRateTs=now;}
+    }catch(e){}
+    return _fxRate;
+}
+
 async function updateKimchiPremium(){
     if(isStock(currentSymbol))return;
     try{
-        // kimpga.com 방식: Upbit KRW vs Binance 현물 USD (Bybit 영구선물 X)
-        const [kp,binancePrice,bybitTicker]=await Promise.all([
+        // kimpga.com 방식: Upbit KRW vs Binance 현물 USD, 실시간 forex 환율로 환산
+        const [kp,binancePrice,bybitTicker,clientFx]=await Promise.all([
             fetchJSON('/api/kimchi-premium'),
             binanceSpotPrice(currentSymbol),
             bybitTickers(currentSymbol).catch(()=>null),
+            dunamuForexRate(),
         ]);
         const coin=currentSymbol.replace('USDT','');
         const upbitData=kp.coins?.[coin];
         // Binance 현물 우선, 실패 시 Bybit 영구선물 fallback
         const refPrice=binancePrice||parseFloat(bybitTicker?.lastPrice||0);
         const refSource=binancePrice?'Binance':'Bybit';
+        // 환율: 브라우저에서 받은 Dunamu 실시간 forex 우선, 실패 시 서버값
+        const rate=clientFx||kp.usd_krw;
+        const rateSrc=clientFx?'dunamu':(kp.rate_source||'?');
         const el=document.getElementById('tickKimchi');
-        if(!upbitData||!refPrice||!kp.usd_krw){el.textContent='N/A';return;}
+        if(!upbitData||!refPrice||!rate){el.textContent='N/A';return;}
         // 김프 = (업비트 USD환산 - Binance USD) / Binance USD × 100
-        const upbitUSD=upbitData.krw/kp.usd_krw;
+        const upbitUSD=upbitData.krw/rate;
         const premium=((upbitUSD-refPrice)/refPrice*100);
         lastKimchiPremium=premium;
         const color=premium>2?R:premium>0.5?YL:premium<-1?BL:G;
         el.textContent=(premium>=0?'+':'')+premium.toFixed(2)+'%';
         el.style.color=color;
-        el.title=`업비트: ₩${upbitData.krw.toLocaleString()} | ${refSource}: $${refPrice.toLocaleString(undefined,{maximumFractionDigits:6})} | 환율: ${kp.usd_krw.toFixed(2)}(${kp.rate_source||'?'})`;
+        el.title=`업비트: ₩${upbitData.krw.toLocaleString()} | ${refSource}: $${refPrice.toLocaleString(undefined,{maximumFractionDigits:6})} | 환율: ${rate.toFixed(2)}(${rateSrc})`;
     }catch(e){document.getElementById('tickKimchi').textContent='-';}
 }
 
