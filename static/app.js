@@ -104,80 +104,103 @@ async function updateStockTicker(yahooSym){
     }catch(e){}
 }
 
-/* ───── 청산 히트맵 추정 (liquidation.py → JS 포팅) ───── */
+/* ───── 청산 히트맵 추정 v4: 거래량 프로파일 기반 ─────
+   ⚠️ 실제 집계 청산 데이터가 아님 (무료 공개 API로는 못 받음 — Coinglass/Hyblock은 유료).
+   그러나 기존 v3의 '모든 포지션이 현재가에 진입했다'는 비현실적 가정을 버리고,
+   실제 거래된 캔들의 가격×거래량(=포지션이 실제로 열렸을 법한 곳)에 레버리지 밴드를
+   적용해 청산 군집을 추정한다. 진입 이후 가격이 이미 쓸고 지나간 군집은 제거(스윕 반영).
+   이는 Coinglass/Hyblock의 leverage-band 방법론과 동일한 접근으로, 추정이지만 v3보다
+   훨씬 시장 현실에 근접한다. (확정 청산값이 아니라 '청산이 몰려 있을 확률' 추정임) */
 const LEV_WEIGHTS={3:0.15,5:0.25,10:0.25,25:0.20,50:0.10,100:0.05};
 const LEV_LEVELS=[3,5,10,25,50,100];
 
-// 청산 추정맵 v3: 실데이터(호가창 매물벽) 우선 + 레버리지 가우시안은 배경(약)
-// ⚠️ 주의: 레버리지 가우시안 항은 결정론적 추정(현재가의 함수)이므로 신뢰도 낮음.
-// 실제 시장 정보는 호가창 매물벽(obLong/obShort)이 담당. 둘을 분리 정규화 후 결합.
-function estimateLiquidationLevels(currentPrice,oiValue,bids,asks,rangeP=0.15,bins=100){
+function estimateLiquidationLevels(currentPrice,oiValue,bids,asks,klines,rangeP=0.15,bins=100){
     if(currentPrice<=0)return{price_levels:[],long_liquidations:[],short_liquidations:[],leverage_markers:[],current_price:0,real_data:false};
     const low=currentPrice*(1-rangeP),high=currentPrice*(1+rangeP);
     const priceLevels=[];
     for(let i=0;i<bins;i++)priceLevels.push(low+(high-low)*i/(bins-1));
-    const gaussLong=new Float64Array(bins),gaussShort=new Float64Array(bins);
+    const binW=(high-low)/(bins-1);
+    const longClusters=new Float64Array(bins),shortClusters=new Float64Array(bins);
     const obLong=new Float64Array(bins),obShort=new Float64Array(bins);
     const leverageMarkers=[];
-    const SQRT2PI=Math.sqrt(2*Math.PI);
+    const mm=0.005;
 
-    // ── 1) 레버리지 가우시안 (추정 배경) ──
+    // 현재가 기준 레버리지별 청산 참고선 (지금 진입 시 청산가 — 단순 참고용)
     for(const lev of LEV_LEVELS){
-        const weight=LEV_WEIGHTS[lev];
-        const oiPortion=oiValue*weight;
-        const mm=0.005;
-        const longLiqP=currentPrice*(1-(1/lev)+mm);
-        const shortLiqP=currentPrice*(1+(1/lev)-mm);
-        leverageMarkers.push({leverage:`${lev}x`,long_liq_price:+longLiqP.toFixed(6),short_liq_price:+shortLiqP.toFixed(6)});
-        const sigma=currentPrice*(0.003+0.05/lev);
-        const invSigma=1/sigma;
+        leverageMarkers.push({leverage:`${lev}x`,
+            long_liq_price:+(currentPrice*(1-(1/lev)+mm)).toFixed(6),
+            short_liq_price:+(currentPrice*(1+(1/lev)-mm)).toFixed(6)});
+    }
+
+    // 가격 p 주변 bin들에 가우시안 가중치로 분산 가산
+    const addCluster=(arr,p,wgt)=>{
+        if(p<low||p>high||wgt<=0)return;
+        const sigma=binW*1.5;
         for(let i=0;i<bins;i++){
-            const p=priceLevels[i];
-            if(p<currentPrice){
-                const dist=Math.abs(p-longLiqP);
-                gaussLong[i]+=oiPortion*Math.exp(-0.5*(dist*invSigma)**2)*invSigma/SQRT2PI;
-            }else{
-                const dist=Math.abs(p-shortLiqP);
-                gaussShort[i]+=oiPortion*Math.exp(-0.5*(dist*invSigma)**2)*invSigma/SQRT2PI;
+            const dd=(priceLevels[i]-p)/sigma;
+            if(dd>-4&&dd<4)arr[i]+=wgt*Math.exp(-0.5*dd*dd);
+        }
+    };
+
+    // ── 1) 거래량 프로파일 기반 청산 군집 (실거래 앵커) ──
+    let haveVP=false;
+    if(klines&&klines.length>=20){
+        haveVP=true;
+        const n=klines.length;
+        const nowT=klines[n-1].time;
+        const spanT=(nowT-klines[0].time)||1;
+        // 진입 이후 가격이 청산가를 건드렸는지 판정용 suffix min(low)/max(high)
+        const sufMin=new Float64Array(n),sufMax=new Float64Array(n);
+        sufMin[n-1]=klines[n-1].low;sufMax[n-1]=klines[n-1].high;
+        for(let i=n-2;i>=0;i--){
+            sufMin[i]=Math.min(klines[i+1].low,sufMin[i+1]);
+            sufMax[i]=Math.max(klines[i+1].high,sufMax[i+1]);
+        }
+        for(let i=0;i<n;i++){
+            const c=klines[i];
+            const vol=c.volume;if(!(vol>0))continue;
+            const entry=(c.high+c.low+c.close)/3;
+            const age=(nowT-c.time)/spanT;        // 0=최신 .. 1=가장 오래됨
+            const recency=Math.exp(-1.5*age);      // 오래된 포지션은 정리/롤오버됐을 확률↑ → 가중↓
+            const minLowAfter=sufMin[i],maxHighAfter=sufMax[i];
+            for(const lev of LEV_LEVELS){
+                const w=LEV_WEIGHTS[lev]*recency*vol;
+                const longLiq=entry*(1-(1/lev)+mm);
+                const shortLiq=entry*(1+(1/lev)-mm);
+                // 진입 후 가격이 청산가에 닿지 않은(=아직 살아있는) 포지션만 카운트 (스윕된 군집 제거)
+                if(minLowAfter>longLiq)addCluster(longClusters,longLiq,w);
+                if(maxHighAfter<shortLiq)addCluster(shortClusters,shortLiq,w);
             }
         }
     }
-    // ── 2) 호가창 매물벽 (실데이터) — 더 넓은 분포 + 임계값 완화 ──
-    let realData=false;
+
+    // ── 2) 호가창 매물벽 (실시간 실데이터) ──
+    let haveOB=false;
     if(bids&&asks&&bids.length&&asks.length){
-        realData=true;
+        haveOB=true;
         const allQ=[...bids.map(b=>parseFloat(b[1])),...asks.map(a=>parseFloat(a[1]))];
         const avgQ=allQ.reduce((a,b)=>a+b,0)/allQ.length||1;
-        const band=currentPrice*0.008; // 매물벽 영향 폭
         for(const bid of bids.slice(0,200)){
             const bp=parseFloat(bid[0]),bq=parseFloat(bid[1]);
-            if(bq>avgQ*1.5){ // 평균 1.5배 이상 매물벽만
-                const strength=bq/avgQ;
-                for(let i=0;i<bins;i++){
-                    const d=Math.abs(priceLevels[i]-bp);
-                    if(d<band)obLong[i]+=strength*Math.exp(-0.5*(d/band)**2);
-                }
-            }
+            if(bq>avgQ*1.5)addCluster(obLong,bp,bq/avgQ);
         }
         for(const ask of asks.slice(0,200)){
             const ap=parseFloat(ask[0]),aq=parseFloat(ask[1]);
-            if(aq>avgQ*1.5){
-                const strength=aq/avgQ;
-                for(let i=0;i<bins;i++){
-                    const d=Math.abs(priceLevels[i]-ap);
-                    if(d<band)obShort[i]+=strength*Math.exp(-0.5*(d/band)**2);
-                }
-            }
+            if(aq>avgQ*1.5)addCluster(obShort,ap,aq/avgQ);
         }
     }
-    // ── 3) 각각 정규화 후 결합: 실데이터 70% + 추정 30% ──
-    const norm=(arr)=>{let m=0;for(const v of arr)if(v>m)m=v;return m>0?arr.map(v=>v/m):arr;};
-    const gL=norm(gaussLong),gS=norm(gaussShort),oL=norm(obLong),oS=norm(obShort);
+
+    // ── 3) 각각 정규화 후 결합 (거래량프로파일 0.6 + 호가벽 0.4) ──
+    const norm=(arr)=>{let m=0;for(const v of arr)if(v>m)m=v;return m>0?Array.from(arr,v=>v/m):Array.from(arr);};
+    const vL=norm(longClusters),vS=norm(shortClusters),oL=norm(obLong),oS=norm(obShort);
+    let VP_W=0,OB_W=0;
+    if(haveVP&&haveOB){VP_W=0.6;OB_W=0.4;}
+    else if(haveVP){VP_W=1;}
+    else if(haveOB){OB_W=1;}
     const longLiqs=new Float64Array(bins),shortLiqs=new Float64Array(bins);
-    const OB_W=realData?0.7:0, GA_W=realData?0.3:1.0;
     for(let i=0;i<bins;i++){
-        longLiqs[i]=oL[i]*OB_W+gL[i]*GA_W;
-        shortLiqs[i]=oS[i]*OB_W+gS[i]*GA_W;
+        longLiqs[i]=vL[i]*VP_W+oL[i]*OB_W;
+        shortLiqs[i]=vS[i]*VP_W+oS[i]*OB_W;
     }
     // 최종 정규화 (최대=100)
     let maxV=1;
@@ -188,19 +211,23 @@ function estimateLiquidationLevels(currentPrice,oiValue,bids,asks,rangeP=0.15,bi
         shortArr.push(+(shortLiqs[i]/maxV*100).toFixed(2));
         plArr.push(+priceLevels[i].toFixed(6));
     }
-    return{price_levels:plArr,long_liquidations:longArr,short_liquidations:shortArr,leverage_markers:leverageMarkers,current_price:currentPrice,real_data:realData};
+    return{price_levels:plArr,long_liquidations:longArr,short_liquidations:shortArr,
+        leverage_markers:leverageMarkers,current_price:currentPrice,
+        // 신호용 real_data는 '실시간 호가창 매물벽'이 있을 때만 true (보수적 — 추정 군집으로는 매매신호 안 냄)
+        real_data:haveOB,vp_data:haveVP,method:'volume_profile'};
 }
 
 /* ───── 브라우저에서 청산 데이터 계산 ───── */
 async function fetchLiquidationData(sym){
-    const [ticker,oiList,ob]=await Promise.all([
+    const [ticker,oiList,ob,kl]=await Promise.all([
         bybitTickers(sym),
         bybitOI(sym,'1h',1),
-        bybitOrderbook(sym,200)
+        bybitOrderbook(sym,200),
+        bybitKline(sym,'60',500).catch(()=>[]),  // ~20일 시간봉 = 포지션 진입 분포 추정용
     ]);
     const curPrice=parseFloat(ticker.lastPrice||0);
     const oiVal=oiList.length?parseFloat(oiList[0].openInterest)*curPrice:0;
-    return estimateLiquidationLevels(curPrice,oiVal,ob.b||[],ob.a||[]);
+    return estimateLiquidationLevels(curPrice,oiVal,ob.b||[],ob.a||[],kl||[]);
 }
 
 /* ───── CME 갭 감지 (브라우저 측) ───── */
@@ -3850,20 +3877,57 @@ function logForwardTest(result){
     }).catch(()=>{});
 }
 
-// ── forward-test 결과 페어링: 보고 있는 종목들의 현재가를 주기적으로 서버에 전달 ──
-// 서버는 horizon(4h) 경과한 미해결 신호를 실제 가격과 대조해 승패/실현수익률 기록.
-const _ftPriceCache={};
-function recordFtPrice(sym,price){if(sym&&price>0)_ftPriceCache[sym]=price;}
+// ── forward-test 결과 페어링 (TP/SL 배리어 + 비용 차감) ──
+// 서버는 CloudFront로 Bybit를 못 받으므로, 브라우저가 진입~horizon 구간 kline 경로를
+// 걸어 TP(+2%)/SL(-1%) 중 무엇이 먼저 닿았는지 판정하고 왕복수수료(0.11%)를 차감해 보낸다.
+// 실제 매매 전략과 측정 전략을 일치시킨다(종가 한 점만 보던 갭 해소).
+function recordFtPrice(){}  // (구버전 호환용 no-op)
+const FT_TP_PCT=2.0, FT_SL_PCT=1.0, FT_RT_FEE_PCT=0.11; // 익절%/손절%/왕복수수료%
 async function resolveForwardTest(){
     try{
-        if(!Object.keys(_ftPriceCache).length)return;
-        await fetch('/api/forwardtest/resolve',{
-            method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({prices:_ftPriceCache}),
-        });
+        const r=await fetch('/api/forwardtest').then(x=>x.json()).catch(()=>null);
+        if(!r||!Array.isArray(r.log))return;
+        const nowSec=Date.now()/1000;
+        const pending=r.log.filter(e=>!e.resolved&&e.entry_price>0&&e.symbol&&
+            (e.direction==='long'||e.direction==='short')&&
+            (nowSec-(e.ts||nowSec))>=(e.horizon_hours||4)*3600);
+        if(!pending.length)return;
+        const resolutions=[];
+        for(const e of pending.slice(0,12)){ // 한 사이클 최대 12건 (Bybit 부하 제한)
+            try{
+                const entry=+e.entry_price, dir=e.direction;
+                const horizonSec=(e.horizon_hours||4)*3600;
+                const endT=e.ts+horizonSec;
+                // 5분봉 ~500개(≈41h)로 진입~horizon 구간 커버
+                const kl=await bybitKline(e.symbol,'5',500).catch(()=>[]);
+                const path=kl.filter(c=>c.time>=e.ts&&c.time<=endT);
+                if(!path.length)continue;
+                const tpP=dir==='long'?entry*(1+FT_TP_PCT/100):entry*(1-FT_TP_PCT/100);
+                const slP=dir==='long'?entry*(1-FT_SL_PCT/100):entry*(1+FT_SL_PCT/100);
+                let outcome='timeout', exitP=path[path.length-1].close;
+                for(const c of path){
+                    // 한 캔들 안에 둘 다 닿으면 보수적으로 SL 우선(최악 가정)
+                    const slHit=dir==='long'?c.low<=slP:c.high>=slP;
+                    const tpHit=dir==='long'?c.high>=tpP:c.low<=tpP;
+                    if(slHit){outcome='sl';exitP=slP;break;}
+                    if(tpHit){outcome='tp';exitP=tpP;break;}
+                }
+                const changePct=(exitP-entry)/entry*100;
+                let realized=(dir==='long'?changePct:-changePct)-FT_RT_FEE_PCT; // 비용 차감
+                resolutions.push({ts:e.ts,exit_price:+exitP.toFixed(8),
+                    change_pct:+changePct.toFixed(4),realized_pct:+realized.toFixed(4),
+                    correct:realized>0,outcome});
+            }catch(_){}
+        }
+        if(resolutions.length){
+            await fetch('/api/forwardtest/resolve',{
+                method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({resolutions}),
+            }).catch(()=>{});
+        }
     }catch(e){}
 }
-// 10분마다 페어링 시도 (현재가는 차트 갱신 시 recordFtPrice로 누적)
+// 10분마다 페어링 시도
 setInterval(resolveForwardTest,600000);
 
 function generateFullSignal(d){

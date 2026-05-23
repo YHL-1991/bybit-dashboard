@@ -163,7 +163,7 @@
                     Coinglass 메인
                 </a>
             </div>
-            <p class="hint">⚠️ 실제 청산 히트맵(누적 청산 데이터)은 위 Coinglass 링크에서 확인하세요. Velox 캔들차트의 청산 오버레이는 <b>실시간 호가창 매물벽 + 레버리지 추정</b>이며, 누적 청산 실측이 아닌 <b>참고용 추정값</b>입니다.</p>
+            <p class="hint">⚠️ 실제 누적 청산 데이터는 위 Coinglass 링크에서 확인하세요. Velox 청산 오버레이는 <b>거래량 프로파일 기반 추정</b>입니다 — 실제 거래된 가격×거래량(포지션이 열렸을 법한 곳)에 레버리지 밴드를 적용하고 이미 가격이 쓸고 간 군집은 제거합니다(Coinglass와 같은 leverage-band 방법론). 실시간 호가창 매물벽도 결합합니다. <b>확정 청산 실측이 아닌 '청산이 몰려 있을 확률' 추정값</b>이니 참고용으로만 쓰세요.</p>
         </div>
     </div>
 
@@ -442,6 +442,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260523a"></script>
+    <script src="/static/app.js?v=20260523b"></script>
 </body>
 </html>

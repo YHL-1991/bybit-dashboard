@@ -530,49 +530,44 @@ async def api_forwardtest_log(request: Request):
 
 @app.post("/api/forwardtest/resolve")
 async def api_forwardtest_resolve(request: Request):
-    """신호→결과 페어링. 프론트가 현재가를 보내면, horizon_hours 경과한
-    미해결(resolved=False) 신호를 실제 가격 변동과 대조해 승패/수익률을 기록.
+    """신호→결과 페어링.
 
-    EV 기준: 신호 방향으로의 실현 수익률(%)을 기록하고, 단순 적중(방향 일치)
-    여부도 함께 저장한다. body 예: {"prices": {"BTCUSDT": 67000.0, ...}}"""
+    중요: 서버(Railway)는 CloudFront 차단으로 Bybit kline을 못 받는다. 따라서 실제
+    매매 전략(TP +2% / SL -1% 배리어)과 일치시키려면, Bybit 접근이 가능한 프론트(브라우저)가
+    진입 시점부터 horizon까지의 kline 경로를 걸어 'TP/SL 중 무엇이 먼저 닿았는지' 판정하고
+    수수료/펀딩을 차감한 결과를 보내야 한다.
+
+    body: {"resolutions":[{"ts":<신호ts(초)>,"exit_price":..,"change_pct":..,
+            "realized_pct":<비용차감후>,"correct":bool,"outcome":"tp|sl|timeout"}]}
+    ts로 미해결 신호를 찾아 매칭 후 resolved 처리."""
     try:
         body = await request.json()
-        prices = body.get("prices", {}) or {}
+        resolutions = body.get("resolutions", []) or []
+        by_ts = {}
+        for r in resolutions:
+            try:
+                by_ts[int(r["ts"])] = r
+            except Exception:
+                continue
+        if not by_ts:
+            return {"ok": True, "resolved": 0}
         now = int(_time.time())
         log = _load_forwardtest()
         resolved_count = 0
         for e in log:
             if e.get("resolved"):
                 continue
-            entry_price = e.get("entry_price") or e.get("price")
-            direction = (e.get("direction") or e.get("signal") or "").lower()
-            sym = e.get("symbol") or e.get("sym")
-            horizon_h = float(e.get("horizon_hours", 4) or 4)
-            ts = e.get("ts", now)
-            if not entry_price or not sym or direction not in ("long", "short"):
+            ets = int(e.get("ts", 0) or 0)
+            r = by_ts.get(ets)
+            if not r:
                 continue
-            # 아직 horizon 미도달이면 보류
-            if now - ts < horizon_h * 3600:
-                continue
-            cur = prices.get(sym)
-            if cur is None:
-                continue  # 현재가 없으면 다음 기회에
-            try:
-                entry_price = float(entry_price)
-                cur = float(cur)
-            except Exception:
-                continue
-            if entry_price <= 0:
-                continue
-            change_pct = (cur - entry_price) / entry_price * 100.0
-            # 신호 방향 기준 실현 수익률
-            realized = change_pct if direction == "long" else -change_pct
             e["resolved"] = True
             e["resolve_ts"] = now
-            e["exit_price"] = round(cur, 8)
-            e["change_pct"] = round(change_pct, 4)
-            e["realized_pct"] = round(realized, 4)
-            e["correct"] = realized > 0
+            e["exit_price"] = r.get("exit_price")
+            e["change_pct"] = r.get("change_pct")
+            e["realized_pct"] = r.get("realized_pct")  # 수수료/펀딩 차감 후
+            e["correct"] = bool(r.get("correct"))
+            e["outcome"] = r.get("outcome", "timeout")  # tp/sl/timeout
             resolved_count += 1
         if resolved_count:
             try:
@@ -596,11 +591,15 @@ async def api_forwardtest_stats():
         if not e.get("resolved"):
             continue
         cls = e.get("symClass") or "unknown"
-        b = buckets.setdefault(cls, {"n": 0, "wins": 0, "sum_realized": 0.0})
+        b = buckets.setdefault(cls, {"n": 0, "wins": 0, "sum_realized": 0.0,
+                                     "tp": 0, "sl": 0, "timeout": 0})
         b["n"] += 1
         if e.get("correct"):
             b["wins"] += 1
         b["sum_realized"] += float(e.get("realized_pct", 0) or 0)
+        oc = e.get("outcome")
+        if oc in ("tp", "sl", "timeout"):
+            b[oc] += 1
     out = {}
     total_n = total_w = 0
     total_sum = 0.0
@@ -609,7 +608,8 @@ async def api_forwardtest_stats():
         out[cls] = {
             "n": n,
             "hit_rate": round(b["wins"] / n * 100, 1) if n else 0,
-            "avg_realized_pct": round(b["sum_realized"] / n, 3) if n else 0,
+            "avg_realized_pct": round(b["sum_realized"] / n, 3) if n else 0,  # 수수료/펀딩 차감 후
+            "tp": b["tp"], "sl": b["sl"], "timeout": b["timeout"],
         }
         total_n += n
         total_w += b["wins"]
@@ -619,6 +619,7 @@ async def api_forwardtest_stats():
         "hit_rate": round(total_w / total_n * 100, 1) if total_n else 0,
         "avg_realized_pct": round(total_sum / total_n, 3) if total_n else 0,
         "pending": sum(1 for e in log if not e.get("resolved")),
+        "note": "realized_pct는 TP+2%/SL-1% 배리어 + 왕복수수료 0.11% 차감 기준. 표본 n이 작으면 신뢰 불가.",
     }
     return out
 

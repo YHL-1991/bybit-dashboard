@@ -3,12 +3,24 @@
 - 테스트넷 / 실거래 모드 지원
 - 매매 신호 기반 자동 주문
 - 포지션 관리 + 손절/익절
+
+⚠️ 안전 설계 노트 (3차 전문가 피드백 반영):
+1) 중복발사 방지: 진입 전 기존 포지션 확인 + orderLinkId 멱등키 + 신호당 쿨다운.
+   (서명이 동작하는 순간 가장 위험해지는 부분 — 통제 안 되는 자동 진입 루프 차단)
+2) Bybit V5 서명: POST는 compact JSON 바이트를 그대로 전송하고 그 바이트를 서명,
+   GET은 정렬된 쿼리스트링을 서명. (httpx json= 의 공백 때문에 서명 불일치 나던 버그 수정)
+3) 종목별 tickSize/qtyStep 라운딩: 알트/저가코인 주문 거부·TP/SL 0.00 무효화 방지.
+
+주의: 프로덕션(Railway)에서는 api.bybit.com이 CloudFront로 차단될 수 있어
+서명을 고쳐도 서버측 주문이 안 나갈 수 있음. 실거래 전 반드시 응답 retCode 확인.
 """
 
 import hmac
 import hashlib
 import time
 import json
+import urllib.parse
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 import httpx
 from typing import Optional
 
@@ -17,28 +29,40 @@ MAINNET_URL = "https://api.bybit.com"
 TESTNET_URL = "https://api-testnet.bybit.com"
 
 
+def _round_step(value: float, step: str, mode=ROUND_DOWN) -> str:
+    """value를 step(예 '0.001')의 배수로 라운딩해 문자열로 반환.
+    수량은 내림(ROUND_DOWN), 가격은 반올림(ROUND_HALF_UP) 권장."""
+    try:
+        d = Decimal(str(value))
+        s = Decimal(str(step))
+        if s <= 0:
+            return format(d, 'f')
+        q = (d / s).to_integral_value(rounding=mode) * s
+        # step의 소수 자릿수에 맞춰 정규화
+        return format(q.quantize(s), 'f')
+    except Exception:
+        return format(Decimal(str(value)), 'f')
+
+
 class BybitTrader:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True):
         self.api_key = api_key
         self.api_secret = api_secret
         self.base_url = TESTNET_URL if testnet else MAINNET_URL
         self.testnet = testnet
+        self._instrument_cache = {}
 
-    def _sign(self, params: dict) -> dict:
-        """API 서명 생성"""
+    def _signed_headers(self, sign_payload: str) -> dict:
+        """Bybit V5 서명. sign_payload = GET이면 정렬된 쿼리스트링,
+        POST면 전송할 compact JSON 본문 문자열. 둘 다 '전송되는 바이트'와 일치해야 함."""
         timestamp = str(int(time.time() * 1000))
         recv_window = "5000"
-        param_str = timestamp + self.api_key + recv_window
-
-        if params:
-            param_str += json.dumps(params, separators=(',', ':'))
-
+        to_sign = timestamp + self.api_key + recv_window + (sign_payload or "")
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
-            param_str.encode('utf-8'),
-            hashlib.sha256
+            to_sign.encode('utf-8'),
+            hashlib.sha256,
         ).hexdigest()
-
         return {
             "X-BAPI-API-KEY": self.api_key,
             "X-BAPI-SIGN": signature,
@@ -49,13 +73,39 @@ class BybitTrader:
         }
 
     async def _request(self, method: str, path: str, params: dict = None) -> dict:
-        headers = self._sign(params or {})
-        async with httpx.AsyncClient() as client:
+        params = params or {}
+        async with httpx.AsyncClient(timeout=10) as client:
             if method == "GET":
-                resp = await client.get(f"{self.base_url}{path}", headers=headers, params=params)
+                # 정렬된 쿼리스트링을 만들어 그 문자열을 서명하고, 동일 문자열을 URL로 전송
+                query = urllib.parse.urlencode(sorted(params.items()))
+                headers = self._signed_headers(query)
+                url = f"{self.base_url}{path}"
+                if query:
+                    url = f"{url}?{query}"
+                resp = await client.get(url, headers=headers)
             else:
-                resp = await client.post(f"{self.base_url}{path}", headers=headers, json=params)
+                # compact JSON 바이트를 직접 만들어 그 바이트를 서명 + content=로 전송
+                body = json.dumps(params, separators=(',', ':'))
+                headers = self._signed_headers(body)
+                resp = await client.post(f"{self.base_url}{path}", headers=headers, content=body)
             return resp.json()
+
+    async def get_instrument_info(self, symbol: str) -> Optional[dict]:
+        """종목별 tickSize/qtyStep/minOrderQty 조회 (public, 서명 불필요). 캐시."""
+        if symbol in self._instrument_cache:
+            return self._instrument_cache[symbol]
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"{self.base_url}/v5/market/instruments-info",
+                    params={"category": "linear", "symbol": symbol},
+                )
+                data = resp.json()
+            info = data["result"]["list"][0]
+            self._instrument_cache[symbol] = info
+            return info
+        except Exception:
+            return None
 
     async def get_wallet_balance(self) -> dict:
         """지갑 잔고 조회"""
@@ -66,7 +116,21 @@ class BybitTrader:
         params = {"category": "linear"}
         if symbol:
             params["symbol"] = symbol
+        else:
+            params["settleCoin"] = "USDT"
         return await self._request("GET", "/v5/position/list", params)
+
+    async def has_open_position(self, symbol: str) -> bool:
+        """해당 종목에 열린 포지션이 있는지 확인 (중복 진입 방지용)."""
+        try:
+            res = await self.get_positions(symbol)
+            for p in res.get("result", {}).get("list", []) or []:
+                if abs(float(p.get("size", 0) or 0)) > 0:
+                    return True
+        except Exception:
+            # 조회 실패 시 안전하게 '있다'고 보고 진입 차단
+            return True
+        return False
 
     async def place_order(
         self,
@@ -78,15 +142,16 @@ class BybitTrader:
         take_profit: str = None,
         stop_loss: str = None,
         leverage: str = None,
+        order_link_id: str = None,
     ) -> dict:
         """주문 실행"""
-        # 레버리지 설정
+        # 레버리지 설정 (이미 같은 값이면 Bybit가 retCode 110043 반환 — 무시)
         if leverage:
             await self._request("POST", "/v5/position/set-leverage", {
                 "category": "linear",
                 "symbol": symbol,
-                "buyLeverage": leverage,
-                "sellLeverage": leverage,
+                "buyLeverage": str(leverage),
+                "sellLeverage": str(leverage),
             })
 
         params = {
@@ -96,6 +161,8 @@ class BybitTrader:
             "orderType": order_type,
             "qty": qty,
         }
+        if order_link_id:
+            params["orderLinkId"] = order_link_id  # 멱등키 — 중복 주문 거부됨
         if price and order_type == "Limit":
             params["price"] = price
         if take_profit:
@@ -132,12 +199,14 @@ auto_trade_enabled = False
 auto_trade_config = {
     "symbol": "BTCUSDT",
     "leverage": "10",
-    "qty_usdt": "50",  # 주문당 USDT 금액
-    "tp_pct": 2.0,     # 익절 %
-    "sl_pct": 1.0,     # 손절 %
+    "qty_usdt": "50",   # 주문당 USDT 금액
+    "tp_pct": 2.0,      # 익절 %
+    "sl_pct": 1.0,      # 손절 %
     "min_score": 100,   # 최소 신호 점수
+    "cooldown_sec": 1800,  # 같은 종목 재진입 쿨다운(초) — 중복발사 방지
 }
 trade_log = []
+_last_trade_ts = {}  # symbol -> 마지막 진입 시각(중복발사 방지)
 
 
 def init_trader(api_key: str, api_secret: str, testnet: bool = True) -> BybitTrader:
@@ -147,7 +216,13 @@ def init_trader(api_key: str, api_secret: str, testnet: bool = True) -> BybitTra
 
 
 async def execute_signal_trade(signal_direction: str, score: int, price: float) -> dict:
-    """매매 신호에 따라 자동 주문 실행"""
+    """매매 신호에 따라 자동 주문 실행.
+
+    중복발사 3중 차단:
+      (a) 쿨다운: 같은 종목 cooldown_sec 내 재진입 금지
+      (b) 포지션 체크: 이미 열린 포지션 있으면 진입 안 함
+      (c) orderLinkId 멱등키: Bybit가 동일 키 중복 주문 거부
+    """
     global trade_log
     if not trader_instance or not auto_trade_enabled:
         return {"status": "disabled"}
@@ -156,35 +231,80 @@ async def execute_signal_trade(signal_direction: str, score: int, price: float) 
     if abs(score) < cfg["min_score"]:
         return {"status": "score_too_low", "score": score}
 
-    symbol = cfg["symbol"]
-    qty_usdt = float(cfg["qty_usdt"])
-    qty = str(round(qty_usdt / price, 6))
-    leverage = cfg["leverage"]
+    if signal_direction not in ("LONG", "SHORT"):
+        return {"status": "no_signal"}
 
-    # 익절/손절 가격 계산
+    symbol = cfg["symbol"]
+    now = time.time()
+
+    # (a) 쿨다운 체크
+    cooldown = float(cfg.get("cooldown_sec", 1800) or 0)
+    last = _last_trade_ts.get(symbol, 0)
+    if cooldown > 0 and now - last < cooldown:
+        return {"status": "cooldown", "remain_sec": int(cooldown - (now - last))}
+
+    # (b) 기존 포지션 체크
+    if await trader_instance.has_open_position(symbol):
+        return {"status": "position_exists", "symbol": symbol}
+
+    if price <= 0:
+        return {"status": "bad_price", "price": price}
+
+    # 종목별 라운딩 규칙
+    info = await trader_instance.get_instrument_info(symbol)
+    qty_step = "0.001"
+    min_qty = "0.001"
+    tick_size = "0.01"
+    if info:
+        try:
+            qty_step = info["lotSizeFilter"]["qtyStep"]
+            min_qty = info["lotSizeFilter"]["minOrderQty"]
+            tick_size = info["priceFilter"]["tickSize"]
+        except Exception:
+            pass
+
+    # 수량: 명목금액/현재가 → qtyStep 내림. 최소수량 미달이면 거부.
+    qty_usdt = float(cfg["qty_usdt"])
+    raw_qty = qty_usdt / price
+    qty = _round_step(raw_qty, qty_step, ROUND_DOWN)
+    if Decimal(qty) < Decimal(min_qty):
+        return {
+            "status": "qty_below_min", "symbol": symbol,
+            "computed_qty": qty, "min_qty": min_qty,
+            "hint": f"주문금액({qty_usdt} USDT)이 {symbol} 최소수량({min_qty})에 못 미침. 금액을 올리세요.",
+        }
+
+    # TP/SL: tickSize에 맞춰 반올림 (저가 알트 0.00 무효화 방지)
     tp_pct = cfg["tp_pct"] / 100
     sl_pct = cfg["sl_pct"] / 100
-
     if signal_direction == "LONG":
         side = "Buy"
-        tp = str(round(price * (1 + tp_pct), 2))
-        sl = str(round(price * (1 - sl_pct), 2))
-    elif signal_direction == "SHORT":
+        tp = _round_step(price * (1 + tp_pct), tick_size, ROUND_HALF_UP)
+        sl = _round_step(price * (1 - sl_pct), tick_size, ROUND_HALF_UP)
+    else:  # SHORT
         side = "Sell"
-        tp = str(round(price * (1 - tp_pct), 2))
-        sl = str(round(price * (1 + sl_pct), 2))
-    else:
-        return {"status": "no_signal"}
+        tp = _round_step(price * (1 - tp_pct), tick_size, ROUND_HALF_UP)
+        sl = _round_step(price * (1 + sl_pct), tick_size, ROUND_HALF_UP)
+
+    # (c) orderLinkId 멱등키 — 쿨다운 윈도우 단위로 동일 → 중복 주문 거부
+    window = int(now // max(cooldown, 1))
+    order_link_id = f"velox-{symbol}-{side}-{window}"
 
     try:
         result = await trader_instance.place_order(
             symbol=symbol,
             side=side,
             qty=qty,
-            leverage=leverage,
+            leverage=cfg["leverage"],
             take_profit=tp,
             stop_loss=sl,
+            order_link_id=order_link_id,
         )
+
+        ret_code = result.get("retCode", -1)
+        # 성공(0)일 때만 쿨다운 타임스탬프 갱신
+        if ret_code == 0:
+            _last_trade_ts[symbol] = now
 
         log_entry = {
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -195,6 +315,8 @@ async def execute_signal_trade(signal_direction: str, score: int, price: float) 
             "tp": tp,
             "sl": sl,
             "score": score,
+            "order_link_id": order_link_id,
+            "retCode": ret_code,
             "result": result.get("retMsg", "unknown"),
             "testnet": trader_instance.testnet,
         }
@@ -202,6 +324,7 @@ async def execute_signal_trade(signal_direction: str, score: int, price: float) 
         if len(trade_log) > 100:
             trade_log = trade_log[-100:]
 
-        return {"status": "executed", "order": log_entry, "response": result}
+        status = "executed" if ret_code == 0 else "rejected"
+        return {"status": status, "order": log_entry, "response": result}
     except Exception as e:
         return {"status": "error", "message": str(e)}
