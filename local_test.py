@@ -70,26 +70,36 @@ async def main():
 
     # ── [2] 현재 포지션 조회 ──
     print("\n[2] BTCUSDT 포지션 조회...")
+    # ── 종목 선택 (알트 가능) ──
+    sym_in = input("\n거래할 종목? (엔터=BTCUSDT, 예: ETHUSDT, SOLUSDT, XRPUSDT): ").strip().upper()
+    symbol = sym_in or "BTCUSDT"
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+
     try:
-        pos = await trader.get_positions("BTCUSDT")
+        pos = await trader.get_positions(symbol)
         plist = pos.get("result", {}).get("list", [])
         if plist and float(plist[0].get("size", 0) or 0) != 0:
-            print(f"  보유 포지션: size={plist[0].get('size')}, side={plist[0].get('side')}")
+            print(f"  {symbol} 보유 포지션: size={plist[0].get('size')}, side={plist[0].get('side')}")
         else:
-            print("  보유 포지션 없음.")
+            print(f"  {symbol} 보유 포지션 없음.")
     except Exception as e:
         print(f"  포지션 조회 실패: {e}")
 
     # ── [3] 최소 수량 테스트 주문 (선택) ──
-    ans = input("\n[3] BTCUSDT '최소 수량' 시장가 테스트 주문을 넣을까요? (y/N): ").strip().lower()
+    ans = input(f"\n[3] {symbol} '최소 수량' 시장가 테스트 주문을 넣을까요? (y/N): ").strip().lower()
     if ans != "y":
         print("\n주문 생략. (잔고/포지션 조회가 됐다면 배관의 절반은 검증된 것)")
         return
 
+    # 방향 선택
+    side_in = input("  방향? (1=롱/Buy, 2=숏/Sell, 엔터=롱): ").strip()
+    side = "Sell" if side_in == "2" else "Buy"
+
     # 종목 규격 (최소수량/스텝/틱)
-    info = await trader.get_instrument_info("BTCUSDT")
+    info = await trader.get_instrument_info(symbol)
     if not info:
-        print("  ❌ 종목 정보 조회 실패.")
+        print(f"  ❌ {symbol} 종목 정보 조회 실패 (종목명 확인).")
         return
     qty_step = info["lotSizeFilter"]["qtyStep"]
     min_qty = info["lotSizeFilter"]["minOrderQty"]
@@ -98,23 +108,35 @@ async def main():
     # 현재가 (public, 서명 불필요)
     async with httpx.AsyncClient(timeout=10) as c:
         r = await c.get(f"{base}/v5/market/tickers",
-                        params={"category": "linear", "symbol": "BTCUSDT"})
-        price = float(r.json()["result"]["list"][0]["lastPrice"])
+                        params={"category": "linear", "symbol": symbol})
+        lst = r.json().get("result", {}).get("list", [])
+        if not lst:
+            print(f"  ❌ {symbol} 시세 조회 실패 (상장 안 됐거나 종목명 오류).")
+            return
+        price = float(lst[0]["lastPrice"])
 
     qty = _round_step(float(min_qty), qty_step, ROUND_DOWN)
     if Decimal(qty) < Decimal(min_qty):
         qty = str(min_qty)
-    tp = _round_step(price * 1.02, tick, ROUND_HALF_UP)   # +2%
-    sl = _round_step(price * 0.99, tick, ROUND_HALF_UP)   # -1%
+    # TP/SL: 롱이면 위가 익절·아래가 손절, 숏이면 반대
+    if side == "Buy":
+        tp = _round_step(price * 1.02, tick, ROUND_HALF_UP)   # +2%
+        sl = _round_step(price * 0.99, tick, ROUND_HALF_UP)   # -1%
+    else:
+        tp = _round_step(price * 0.98, tick, ROUND_HALF_UP)   # -2%
+        sl = _round_step(price * 1.01, tick, ROUND_HALF_UP)   # +1%
 
-    print(f"  현재가 {price} | 주문: BUY(롱) {qty} BTCUSDT 시장가 · TP {tp} · SL {sl}")
+    notional = price * float(qty)
+    side_kr = "롱(Buy)" if side == "Buy" else "숏(Sell)"
+    print(f"  현재가 {price} | 주문: {side_kr} {qty} {symbol} 시장가 · TP {tp} · SL {sl}")
+    print(f"  명목가치(notional) ≈ {notional:,.2f} USDT  (이만큼 / 레버리지 = 필요 증거금)")
     confirm = input("  이대로 주문 전송? (y/N): ").strip().lower()
     if confirm != "y":
         print("  주문 취소됨.")
         return
 
     res = await trader.place_order(
-        "BTCUSDT", "Buy", qty,
+        symbol, side, qty,
         take_profit=tp, stop_loss=sl,
         order_link_id=f"velox-localtest-{int(time.time())}",
     )
