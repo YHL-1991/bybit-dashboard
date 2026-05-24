@@ -1962,11 +1962,11 @@ async function updateMarketIndicators(){
         // 풋콜비율 (롱숏비율 기반 추정)
         const ratio={list:await bybitRatio(currentSymbol,'1h',50)};
         const rlist=ratio.list||[];
-        if(rlist.length){
+        if(rlist.length&&isFinite(parseFloat(rlist[0].buyRatio))&&parseFloat(rlist[0].buyRatio)>0){
             const buy=parseFloat(rlist[0].buyRatio);
             const sell=parseFloat(rlist[0].sellRatio);
             lastLongShortRatio={buy,sell}; // 풀롱/풀숏용 캐시
-            const pcr=(sell/buy).toFixed(3);
+            const pcr=(sell/buy).toFixed(3); // buy>0 보장됨 → Infinity/NaN 방지
             const pcEl=document.getElementById('indPutCall');
             pcEl.textContent=pcr;
             pcEl.className='ind-value '+(pcr>1?'bearish':pcr<0.7?'bullish':'neutral');

@@ -17,7 +17,9 @@ WS_URL = "wss://stream.bybit.com/v5/public/linear"
 FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1"
 
 # 공유 httpx 클라이언트 설정
-TIMEOUT = httpx.Timeout(15.0, connect=10.0)
+# 프로덕션(Railway)에서 Bybit는 CloudFront로 차단되므로, 서버측 호출은 어차피 실패한다.
+# 15s씩 매달리지 않도록 fail-fast(총 8s, connect 5s)로 둔다. (정상 응답은 1s 이내)
+TIMEOUT = httpx.Timeout(8.0, connect=5.0)
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json",

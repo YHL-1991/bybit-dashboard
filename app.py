@@ -794,6 +794,15 @@ async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request, "symbols": SYMBOLS, "stocks": STOCKS})
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠️ 아래 Bybit REST 엔드포인트는 프로덕션(Railway)에서 DEAD CODE다.
+#    Railway egress IP가 Bybit CloudFront에 차단되어 서버측 호출은 실패/타임아웃한다.
+#    따라서 프론트엔드(static/app.js)는 이 백엔드 경로를 호출하지 않고,
+#    사용자 브라우저에서 Bybit Public API를 '직접' 호출한다(CORS 허용).
+#    → 이 라우트들은 로컬/개발 환경 디버깅용으로만 남겨둔 것이며,
+#      프론트엔드 데이터 경로와 무관하므로 '백엔드 차단 → 프론트 NaN' 연쇄는 발생하지 않는다.
+#    (검증: grep 결과 프론트엔드에서 /api/orderbook|ratio|kline|tickers 등 호출 0건)
+# ─────────────────────────────────────────────────────────────────────────
 @app.get("/api/orderbook/{symbol}")
 async def api_orderbook(symbol: str):
     try:
