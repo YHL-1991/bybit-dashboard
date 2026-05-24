@@ -97,7 +97,14 @@ class BybitTrader:
                 body = json.dumps(params, separators=(',', ':'))
                 headers = self._signed_headers(body)
                 resp = await client.post(f"{self.base_url}{path}", headers=headers, content=body)
-            return resp.json()
+            try:
+                return resp.json()
+            except Exception:
+                # Bybit가 JSON이 아닌 응답(차단 페이지/HTML/빈 응답)을 준 경우 → 진단 정보 노출
+                snippet = (resp.text or "")[:300].replace("\n", " ")
+                raise RuntimeError(
+                    f"Bybit 응답이 JSON이 아님 (HTTP {resp.status_code}, host={self.base_url}): {snippet!r}"
+                )
 
     async def get_instrument_info(self, symbol: str) -> Optional[dict]:
         """종목별 tickSize/qtyStep/minOrderQty 조회 (public, 서명 불필요). 캐시."""

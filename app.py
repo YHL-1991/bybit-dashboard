@@ -1007,8 +1007,9 @@ async def api_trader_connect(request: Request):
     auth = _check_trader_auth(request)
     if auth: return auth
     body = await request.json()
-    key = body.get("api_key", "")
-    secret = body.get("api_secret", "")
+    # 복사붙여넣기 시 끼는 앞뒤 공백/개행 제거 (서명 깨짐 방지)
+    key = (body.get("api_key", "") or "").strip()
+    secret = (body.get("api_secret", "") or "").strip()
     testnet = body.get("testnet", True)
     if not key or not secret:
         return {"status": "error", "message": "API Key/Secret 필요"}
