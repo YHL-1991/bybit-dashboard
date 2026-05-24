@@ -319,6 +319,9 @@
                 <input id="cfgSL" type="number" value="1" min="0.1" step="0.1" style="width:50px;padding:3px;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:3px;font-size:11px;">
                 <label style="font-size:11px;color:var(--text-secondary);">최소점수</label>
                 <input id="cfgMinScore" type="number" value="100" min="10" style="width:60px;padding:3px;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:3px;font-size:11px;">
+                <label style="font-size:11px;color:var(--text-secondary);display:flex;align-items:center;gap:4px;cursor:pointer;">
+                    <input id="cfgMultiCoin" type="checkbox" onchange="multiCoinAuto=this.checked" style="cursor:pointer;"> 멀티코인(스캐너 풀롱/풀숏 자동)
+                </label>
                 <button id="btnAutoTrade" onclick="toggleAutoTrade()" style="padding:5px 14px;background:var(--red);color:#fff;border:none;border-radius:4px;font-weight:700;font-size:12px;cursor:pointer;">자동매매 OFF</button>
             </div>
             <div id="tradeLog" class="alert-list" style="max-height:120px;">

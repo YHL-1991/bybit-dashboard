@@ -1090,6 +1090,7 @@ async def api_signal_trade(request: Request):
         body.get("direction", ""),
         body.get("score", 0),
         body.get("price", 0),
+        symbol=body.get("symbol"),  # 멀티코인: 프론트가 종목 지정 (없으면 config 종목)
     )
 
 

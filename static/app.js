@@ -5253,22 +5253,42 @@ async function toggleAutoTrade(){
     await fetch('/api/trader/toggle',{method:'POST',headers:traderHeaders(),body:JSON.stringify({enabled:autoTradeOn})});
 }
 
+// 멀티코인 자동매매 ON/OFF (체크박스). true면 스캐너의 풀롱/풀숏 픽 중 1개를 자동 진입.
+let multiCoinAuto=false;
 async function checkAutoTrade(){
     if(!autoTradeOn||!traderConnected)return;
     const now=Date.now();
-    if(now-lastAutoTradeTime<30000)return; // 30초 쿨다운
-    const dir=document.getElementById('signalDirection')?.textContent||'';
-    const sm=document.getElementById('signalScore')?.textContent?.match(/순: ([+-]?\d+)/);
-    const score=sm?parseInt(sm[1]):0;
-    const price=parseFloat(document.getElementById('tickPrice')?.textContent?.replace(/,/g,'')||0);
-    if(!price)return;
-    let direction='';
-    if(dir.includes('LONG')&&score>0)direction='LONG';
-    if(dir.includes('SHORT')&&score<0)direction='SHORT';
-    if(!direction)return;
+    if(now-lastAutoTradeTime<30000)return; // 30초 쿨다운(요청 폭주 방지)
+
+    let direction='', score=0, price=0, symbol=currentSymbol;
+
+    if(multiCoinAuto){
+        // ── 멀티코인: 스캐너(lastTopPicks)에서 가장 강한 풀롱/풀숏 픽 1개 선택 ──
+        // ⚠️ 현재 종목 외 코인은 '간소화 신호'(_evaluateTFSignalSimple) 기준임.
+        const picks=(lastTopPicks?.picks||[]).filter(p=>
+            (p.direction==='풀롱'||p.direction==='풀숏')&&p.price>0);
+        if(!picks.length)return;
+        // 정렬은 이미 confidence/풀신호 우선 → 첫 번째가 최강
+        const top=picks[0];
+        symbol=top.symbol;
+        direction=top.direction==='풀롱'?'LONG':'SHORT';
+        score=Math.max(top.lc,top.sc);
+        price=top.price;
+    }else{
+        // ── 단일코인: 지금 보고 있는 종목의 메인 신호(풀 125점) ──
+        const dir=document.getElementById('signalDirection')?.textContent||'';
+        const sm=document.getElementById('signalScore')?.textContent?.match(/순: ([+-]?\d+)/);
+        const net=sm?parseInt(sm[1]):0;
+        price=parseFloat(document.getElementById('tickPrice')?.textContent?.replace(/,/g,'')||0);
+        if(dir.includes('LONG')&&net>0)direction='LONG';
+        if(dir.includes('SHORT')&&net<0)direction='SHORT';
+        score=Math.abs(net);
+    }
+    if(!direction||!price)return;
     lastAutoTradeTime=now;
     try{
-        const r=await fetch('/api/trader/signal-trade',{method:'POST',headers:traderHeaders(),body:JSON.stringify({direction,score:Math.abs(score),price})});
+        const r=await fetch('/api/trader/signal-trade',{method:'POST',headers:traderHeaders(),
+            body:JSON.stringify({direction,score:Math.abs(score),price,symbol})});
         const d=await r.json();
         if(d.status==='executed')updateTradeLog();
     }catch(e){}

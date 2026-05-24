@@ -148,6 +148,18 @@ class BybitTrader:
             return True
         return False
 
+    async def count_open_positions(self) -> int:
+        """전체(모든 종목) 열린 포지션 수. 멀티코인 '한 번에 하나' 제한용.
+        조회 실패 시 안전하게 큰 값을 반환해 신규 진입을 막는다."""
+        try:
+            res = await self.get_positions()  # settleCoin=USDT → 전 종목
+            return sum(
+                1 for p in (res.get("result", {}).get("list", []) or [])
+                if abs(float(p.get("size", 0) or 0)) > 0
+            )
+        except Exception:
+            return 999
+
     async def place_order(
         self,
         symbol: str,
@@ -220,6 +232,7 @@ auto_trade_config = {
     "sl_pct": 1.0,      # 손절 %
     "min_score": 100,   # 최소 신호 점수
     "cooldown_sec": 1800,  # 같은 종목 재진입 쿨다운(초) — 중복발사 방지
+    "max_positions": 1,  # 전체 동시 보유 포지션 수 상한 (멀티코인 안전장치)
 }
 trade_log = []
 _last_trade_ts = {}  # symbol -> 마지막 진입 시각(중복발사 방지)
@@ -231,13 +244,15 @@ def init_trader(api_key: str, api_secret: str, testnet: bool = True) -> BybitTra
     return trader_instance
 
 
-async def execute_signal_trade(signal_direction: str, score: int, price: float) -> dict:
-    """매매 신호에 따라 자동 주문 실행.
+async def execute_signal_trade(signal_direction: str, score: int, price: float,
+                               symbol: str = None) -> dict:
+    """매매 신호에 따라 자동 주문 실행. (멀티코인: symbol 지정 가능)
 
-    중복발사 3중 차단:
+    중복발사 + 과다진입 차단:
       (a) 쿨다운: 같은 종목 cooldown_sec 내 재진입 금지
-      (b) 포지션 체크: 이미 열린 포지션 있으면 진입 안 함
-      (c) orderLinkId 멱등키: Bybit가 동일 키 중복 주문 거부
+      (b) 전체 포지션 상한: max_positions 초과면 신규 진입 안 함 (소액계좌 보호)
+      (c) 동일 종목 포지션 체크: 이미 열려 있으면 진입 안 함
+      (d) orderLinkId 멱등키: Bybit가 동일 키 중복 주문 거부
     """
     global trade_log
     if not trader_instance or not auto_trade_enabled:
@@ -250,16 +265,23 @@ async def execute_signal_trade(signal_direction: str, score: int, price: float) 
     if signal_direction not in ("LONG", "SHORT"):
         return {"status": "no_signal"}
 
-    symbol = cfg["symbol"]
+    # 멀티코인: 프론트가 보낸 종목 우선, 없으면 config 종목
+    symbol = (symbol or cfg["symbol"]).upper()
     now = time.time()
 
-    # (a) 쿨다운 체크
+    # (a) 쿨다운 체크 (종목별)
     cooldown = float(cfg.get("cooldown_sec", 1800) or 0)
     last = _last_trade_ts.get(symbol, 0)
     if cooldown > 0 and now - last < cooldown:
-        return {"status": "cooldown", "remain_sec": int(cooldown - (now - last))}
+        return {"status": "cooldown", "symbol": symbol, "remain_sec": int(cooldown - (now - last))}
 
-    # (b) 기존 포지션 체크
+    # (b) 전체 포지션 상한 (멀티코인 '한 번에 N개' 제한 — 소액계좌 보호 + 오발사 방지)
+    max_pos = int(cfg.get("max_positions", 1) or 1)
+    open_cnt = await trader_instance.count_open_positions()
+    if open_cnt >= max_pos:
+        return {"status": "max_positions_reached", "open": open_cnt, "max": max_pos}
+
+    # (c) 동일 종목 포지션 체크
     if await trader_instance.has_open_position(symbol):
         return {"status": "position_exists", "symbol": symbol}
 
