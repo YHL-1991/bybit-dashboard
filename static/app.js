@@ -705,6 +705,7 @@ function analyzeTimePatterns(d){
     const hourMap={},dayMap={};
     for(let i=1;i<d.length;i++){
         const c=d[i],p=d[i-1];
+        if(!(p.close>0))continue; // 분모 0 가드 → NaN 방지
         const date=new Date(c.time*1000);
         const hr=date.getHours(); // 로컬 시간 (브라우저 KST 가정)
         const dw=date.getDay();
@@ -738,19 +739,20 @@ function predictPriceRange(d,horizon=6){
     const atr=calcATR(d,14);
     if(!atr)return null;
 
-    // 추세 모멘텀 (최근 10봉 평균 변동률)
+    // 추세 모멘텀 (최근 10봉 평균 변동률) — 분모 0 가드
     const recentChg=[];
-    for(let i=d.length-10;i<d.length;i++){
-        if(i>0)recentChg.push((d[i].close-d[i-1].close)/d[i-1].close);
+    for(let i=Math.max(1,d.length-10);i<d.length;i++){
+        const prevC=d[i-1].close;
+        if(prevC>0)recentChg.push((d[i].close-prevC)/prevC);
     }
-    const avgMomentum=recentChg.reduce((a,b)=>a+b,0)/recentChg.length;
+    const avgMomentum=recentChg.length?recentChg.reduce((a,b)=>a+b,0)/recentChg.length:0;
 
-    // EMA 기울기로 방향 가중
-    const ema20=calcEMA(d,20);
+    // EMA 기울기로 방향 가중 (calcEMA는 '종가 숫자 배열'을 받아 '숫자 배열'을 반환 — 캔들 객체 X)
+    const ema20=calcEMA(d.map(x=>x.close),20);
     let dirBias=0;
     if(ema20.length>=10){
-        const slope=(ema20[ema20.length-1].value-ema20[ema20.length-10].value)/ema20[ema20.length-10].value;
-        dirBias=slope; // 양수=상승, 음수=하락
+        const a=ema20[ema20.length-1],b=ema20[ema20.length-10];
+        if(b>0&&isFinite(a)&&isFinite(b))dirBias=(a-b)/b; // 양수=상승, 음수=하락
     }
 
     // 향후 horizon 봉 예상 중심가 = 현재가 * (1 + (모멘텀+기울기)/2 * horizon * 0.6)
@@ -771,12 +773,15 @@ function predictPriceRange(d,horizon=6){
     }
     upProb=Math.max(20,Math.min(80,upProb));
 
+    // 최종 NaN/Infinity 방어 — 하나라도 비정상이면 예측 무효(null)
+    if(![centerPrice,upper,lower,volBand,projShift].every(isFinite))return null;
+
     return{
         center:centerPrice,upper,lower,
         upProb,downProb:100-upProb,
         currentPrice:price,
         expectedReturn:projShift*100,
-        volatility:volBand/price*100,
+        volatility:price>0?volBand/price*100:0,
         horizon,
     };
 }
@@ -3406,8 +3411,20 @@ function calculateTradeRecommendation(d,signalResult){
         ?supCl.filter(c=>(price-c.price)/price>=minDistPct)
         :resCl.filter(c=>(c.price-price)/price>=minDistPct);
 
-    const entry1=entryPool[0]||(isShort?{price:price+atr,labels:['ATR'],w:1}:{price:price-atr,labels:['ATR'],w:1});
-    const entry2=entryPool[1]||(isShort?{price:price+atr*2,labels:['ATR×2'],w:1}:{price:price-atr*2,labels:['ATR×2'],w:1});
+    // ── 진입가 현실화 (ATR 연동 동적 지지/저항) ──
+    // 문제: entryPool은 '가중치' 순이라, 25% 떨어진 MA200 같은 고가중 레벨이 1순위로 뽑혀
+    //       현재가 0.5424에 진입가 0.4045 같은 비현실적 값이 나왔음.
+    // 해결: 현재가에서 최대 atr*3 이내(현실적 눌림목 범위)의 클러스터만 인정하고,
+    //       그 범위에 강한 S/R이 없으면 ATR 기반 동적 지지선(현재가 ∓ATR×1.5/×2.5)으로 폴백.
+    const maxEntryDist=Math.max(atr*3,price*0.005); // 변동성 기반 최대 진입 거리(최소 0.5%)
+    const entryInBand=entryPool.filter(c=>Math.abs(c.price-price)<=maxEntryDist);
+    const atrE1=isShort?price+atr*1.5:price-atr*1.5;
+    const atrE2=isShort?price+atr*2.5:price-atr*2.5;
+    let _e1=entryInBand[0]||{price:atrE1,labels:['ATR×1.5'],w:1};
+    let _e2=entryInBand[1]||{price:atrE2,labels:['ATR×2.5'],w:1};
+    // 분할 진입: 가까운 쪽을 1차, 먼 쪽을 2차로 정렬
+    if(Math.abs(_e2.price-price)<Math.abs(_e1.price-price)){const t=_e1;_e1=_e2;_e2=t;}
+    const entry1=_e1,entry2=_e2;
     const exit1=exitPool[0]||(isShort?{price:price-atr,labels:['ATR'],w:1}:{price:price+atr,labels:['ATR'],w:1});
     const exit2=exitPool[1]||(isShort?{price:price-atr*2,labels:['ATR×2'],w:1}:{price:price+atr*2,labels:['ATR×2'],w:1});
 
