@@ -5212,23 +5212,32 @@ function renderFullSignalReasonsPanel(){
 /* ═══════════════════════════════════
    자동매매 제어
    ═══════════════════════════════════ */
-let traderConnected=false,autoTradeOn=false,lastAutoTradeTime=0;
+let traderConnected=false,autoTradeOn=false,lastAutoTradeTime=0,traderToken='';
+
+// 모든 /api/trader/* 호출은 X-Trader-Token 헤더 필요 (서버 TRADER_TOKEN과 일치해야 함)
+function traderHeaders(){return{'Content-Type':'application/json','X-Trader-Token':traderToken};}
 
 async function connectTrader(){
     const key=document.getElementById('apiKey').value;
     const secret=document.getElementById('apiSecret').value;
+    traderToken=document.getElementById('traderToken').value.trim();
     const testnet=document.getElementById('tradeMode').value==='testnet';
+    if(!traderToken){alert('Trader Token을 입력하세요 (Railway 환경변수 TRADER_TOKEN과 동일한 값)');return;}
     if(!key||!secret){alert('API Key와 Secret을 입력하세요');return;}
     const st=document.getElementById('traderStatus');
     st.textContent='연결 중...';
     try{
-        const r=await fetch('/api/trader/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:key,api_secret:secret,testnet})});
+        const r=await fetch('/api/trader/connect',{method:'POST',headers:traderHeaders(),body:JSON.stringify({api_key:key,api_secret:secret,testnet})});
         const d=await r.json();
         if(d.status==='connected'){
             traderConnected=true;
             let bal='';try{const coins=d.balance?.result?.list?.[0]?.coin||[];const u=coins.find(c=>c.coin==='USDT');bal=u?` | 잔고: ${parseFloat(u.walletBalance).toFixed(2)} USDT`:'';}catch(e){}
             st.innerHTML=`<span style="color:${G}">연결됨 (${testnet?'테스트넷':'실거래'})${bal}</span>`;
-        }else st.innerHTML=`<span style="color:${R}">실패: ${d.message}</span>`;
+        }else if(d.status==='disabled'){
+            st.innerHTML=`<span style="color:${R}">서버에 TRADER_TOKEN 미설정 — Railway 환경변수부터 설정하세요</span>`;
+        }else if(d.status==='unauthorized'){
+            st.innerHTML=`<span style="color:${R}">토큰 불일치 — Railway TRADER_TOKEN과 입력값이 같은지 확인</span>`;
+        }else st.innerHTML=`<span style="color:${R}">실패: ${d.message||d.status}</span>`;
     }catch(e){st.innerHTML=`<span style="color:${R}">${e.message}</span>`;}
 }
 
@@ -5240,8 +5249,8 @@ async function toggleAutoTrade(){
     // 설정 저장
     const cfg={symbol:currentSymbol,leverage:document.getElementById('cfgLeverage').value,qty_usdt:document.getElementById('cfgQty').value,
         tp_pct:parseFloat(document.getElementById('cfgTP').value),sl_pct:parseFloat(document.getElementById('cfgSL').value),min_score:parseInt(document.getElementById('cfgMinScore').value)};
-    await fetch('/api/trader/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
-    await fetch('/api/trader/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:autoTradeOn})});
+    await fetch('/api/trader/config',{method:'POST',headers:traderHeaders(),body:JSON.stringify(cfg)});
+    await fetch('/api/trader/toggle',{method:'POST',headers:traderHeaders(),body:JSON.stringify({enabled:autoTradeOn})});
 }
 
 async function checkAutoTrade(){
@@ -5259,7 +5268,7 @@ async function checkAutoTrade(){
     if(!direction)return;
     lastAutoTradeTime=now;
     try{
-        const r=await fetch('/api/trader/signal-trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({direction,score:Math.abs(score),price})});
+        const r=await fetch('/api/trader/signal-trade',{method:'POST',headers:traderHeaders(),body:JSON.stringify({direction,score:Math.abs(score),price})});
         const d=await r.json();
         if(d.status==='executed')updateTradeLog();
     }catch(e){}
@@ -5267,7 +5276,8 @@ async function checkAutoTrade(){
 
 async function updateTradeLog(){
     try{
-        const r=await fetchJSON('/api/trader/log');
+        if(!traderConnected)return;
+        const r=await fetch('/api/trader/log',{headers:{'X-Trader-Token':traderToken}}).then(x=>x.json());
         const el=document.getElementById('tradeLog');
         if(!r.log?.length){el.innerHTML='<div style="color:#8b949e;font-size:11px;">매매 기록 없음</div>';return;}
         el.innerHTML=r.log.slice(-10).reverse().map(l=>`<div class="alert-item"><span style="color:${TX};font-size:9px;">${l.testnet?'[테스트]':'[실거래]'}</span><span style="color:${l.side==='Buy'?G:R};font-weight:700;">${l.side==='Buy'?'롱':'숏'}</span><span>${fp(l.price)}</span><span style="color:${G}">TP:${l.tp}</span><span style="color:${R}">SL:${l.sl}</span><span style="font-size:9px;">${l.result}</span></div>`).join('');
