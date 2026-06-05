@@ -5525,6 +5525,62 @@ function drawBacktestEquity(curve){
    코인니스 속보 (실시간 한국어 크립토 뉴스)
    ═══════════════════════════════════ */
 let _coinnessLastIds=new Set();
+// 중요 속보 처리: 사용자가 닫은 ID 기록 + 마지막으로 표시한 ID(애니메이션 트리거용)
+let _coinnessDismissedImportant=new Set();
+let _coinnessLastImportantShown=null;
+let _lastCoinnessItems=[];
+
+// 진짜 큰 속보 판정: API의 isImportant 플래그 + 강한 반응 폭주(보조)
+function _isBigCoinnessNews(it){
+    if(it.isImportant)return true;
+    const total=(it.bullCount||it.bull||0)+(it.bearCount||it.bear||0);
+    // 독자 반응 매우 활발(>=300) + 최근 2시간 내면 큰 뉴스로 간주
+    if(total>=300){
+        const ageH=(Date.now()-new Date(it.publishAt).getTime())/3600000;
+        if(ageH<=2)return true;
+    }
+    return false;
+}
+
+function showImportantCoinnessAlert(items){
+    const bar=document.getElementById('coinnessAlertBar');
+    if(!bar)return;
+    const big=items.filter(it=>_isBigCoinnessNews(it)&&!_coinnessDismissedImportant.has(it.id));
+    if(!big.length){bar.style.display='none';bar.classList.remove('new-arrival');return;}
+    const it=big[0]; // 최신 한 건
+    const ts=new Date(it.publishAt);
+    const hh=String(ts.getHours()).padStart(2,'0');
+    const mm=String(ts.getMinutes()).padStart(2,'0');
+    const codes=(it.originCodes||[]).slice(0,4).join(' ');
+    const moreCount=big.length-1;
+    const bull=it.bullCount||it.bull||0, bear=it.bearCount||it.bear||0;
+    const sentTxt=(bull+bear)>0?`긍정 ${bull} / 부정 ${bear}`:'';
+    bar.style.display='';
+    bar.innerHTML=`
+        <div style="display:flex;align-items:center;gap:14px;font-size:13px;flex-wrap:wrap;">
+            <span style="background:#ff4757;color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:3px;white-space:nowrap;letter-spacing:0.5px;">중요 속보</span>
+            <span style="color:var(--text-secondary);font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums;">${hh}:${mm}</span>
+            <span style="flex:1;min-width:200px;color:var(--text-primary);font-weight:700;line-height:1.3;">${it.title}</span>
+            ${codes?`<span style="color:#FFD700;font-size:11px;font-weight:600;white-space:nowrap;">${codes}</span>`:''}
+            ${sentTxt?`<span style="color:var(--text-secondary);font-size:10px;white-space:nowrap;">${sentTxt}</span>`:''}
+            ${moreCount>0?`<span style="background:rgba(255,255,255,0.1);color:var(--text-primary);font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;">+${moreCount}건 더</span>`:''}
+            <button onclick="dismissCoinnessImportant(${it.id})" title="닫기" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:var(--text-primary);font-size:18px;cursor:pointer;padding:0 10px;line-height:1;border-radius:4px;height:28px;">×</button>
+        </div>
+    `;
+    // 새로 뜬 큰 속보면 한 번 반짝 (animation)
+    if(_coinnessLastImportantShown!==it.id){
+        _coinnessLastImportantShown=it.id;
+        bar.classList.remove('new-arrival');
+        // reflow trigger for restart animation
+        void bar.offsetWidth;
+        bar.classList.add('new-arrival');
+    }
+}
+
+function dismissCoinnessImportant(id){
+    _coinnessDismissedImportant.add(id);
+    showImportantCoinnessAlert(_lastCoinnessItems);
+}
 
 // 코인니스 속보 → BTC 롱/숏 분석
 // 입력: items (속보 배열, 최신 순)
@@ -5578,6 +5634,9 @@ async function updateCoinnessNews(){
         const r=await fetch('/api/coinness').then(x=>x.json());
         if(!r||!Array.isArray(r.list))return;
         const items=r.list.slice(0,20);
+        _lastCoinnessItems=items;
+        // 중요 속보 상단 알림 띄우기 (있으면)
+        showImportantCoinnessAlert(items);
         if(!items.length){el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:8px;">속보 없음</div>';return;}
         // 신규 항목 카운트 (이전 호출 대비)
         let newCount=0;
