@@ -5525,6 +5525,52 @@ function drawBacktestEquity(curve){
    코인니스 속보 (실시간 한국어 크립토 뉴스)
    ═══════════════════════════════════ */
 let _coinnessLastIds=new Set();
+
+// 코인니스 속보 → BTC 롱/숏 분석
+// 입력: items (속보 배열, 최신 순)
+// 방법: 독자 반응(bull/bear 카운트) + 한국어 키워드 매칭 + BTC 관련도 + 최신성 + 중요 가중
+const _COINNESS_BULL_KW=['상승','돌파','호재','강세','반등','신고가','상승세','회복','급등','매집','승인','채택','지지','매수세'];
+const _COINNESS_BEAR_KW=['하락','청산','폭락','약세','급락','신저가','손절','조정','매도세','우려','리스크','거부','경고','매도','해킹'];
+function analyzeCoinnessBTCSentiment(items){
+    if(!items||!items.length)return null;
+    let bullScore=0,bearScore=0,btcRelated=0;
+    const now=Date.now();
+    const analyzed=Math.min(items.length,30);
+    for(let i=0;i<analyzed;i++){
+        const it=items[i];
+        const text=((it.title||'')+' '+(it.content||''));
+        const codes=it.originCodes||[];
+        const isBTC=codes.includes('BTC')||/비트코인|BTC\b/i.test(text);
+        if(isBTC)btcRelated++;
+        // 시간 가중치 (최근 1시간 = 1.0, 그 이후 감쇠)
+        const ageH=(now-new Date(it.publishAt).getTime())/3600000;
+        const recencyW=Math.max(0.3,1.0-ageH*0.08);
+        // 가중치: BTC 1.6배, 중요 2배
+        const w=recencyW*(isBTC?1.6:0.7)*(it.isImportant?2.0:1.0);
+        // 독자 반응
+        bullScore+=(it.bullCount||it.bull||0)*w;
+        bearScore+=(it.bearCount||it.bear||0)*w;
+        // 키워드 매칭 (강하게 가중)
+        let kbull=0,kbear=0;
+        for(const k of _COINNESS_BULL_KW)if(text.includes(k))kbull++;
+        for(const k of _COINNESS_BEAR_KW)if(text.includes(k))kbear++;
+        bullScore+=kbull*w*5;
+        bearScore+=kbear*w*5;
+    }
+    const total=bullScore+bearScore;
+    if(total<5)return{direction:'데이터 부족',bullPct:50,bullScore:0,bearScore:0,btcRelated,analyzed};
+    const bullPct=Math.round(bullScore/total*100);
+    let direction,color;
+    if(bullPct>=62){direction='강한 롱 우세';color='#FFD700';}
+    else if(bullPct>=55){direction='롱 우세';color='#00d26a';}
+    else if(bullPct<=38){direction='강한 숏 우세';color='#FF69B4';}
+    else if(bullPct<=45){direction='숏 우세';color='#ff4757';}
+    else{direction='중립';color='#8b949e';}
+    return{direction,color,bullPct,bearPct:100-bullPct,
+        bullScore:Math.round(bullScore),bearScore:Math.round(bearScore),
+        btcRelated,analyzed};
+}
+
 async function updateCoinnessNews(){
     const el=document.getElementById('coinnessNews');
     if(!el)return;
@@ -5542,14 +5588,41 @@ async function updateCoinnessNews(){
             if(badge){badge.textContent=`+${newCount} NEW`;badge.style.display='inline-block';setTimeout(()=>{badge.style.display='none';},5000);}
         }
         _coinnessLastIds=curIds;
-        el.innerHTML=items.map(it=>{
+
+        // ── BTC 분석 박스 ──
+        const sent=analyzeCoinnessBTCSentiment(items);
+        let analysisHTML='';
+        if(sent){
+            const barL=sent.bullPct, barS=sent.bearPct;
+            analysisHTML=`<div style="background:rgba(255,255,255,0.03);border-left:3px solid ${sent.color};border-radius:4px;padding:8px 10px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <span style="font-size:11px;color:var(--text-secondary);">속보 기반 BTC 신호</span>
+                    <span style="font-size:14px;font-weight:700;color:${sent.color};">${sent.direction}</span>
+                </div>
+                <div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:rgba(255,255,255,0.06);">
+                    <div style="width:${barL}%;background:#00d26a;display:flex;align-items:center;justify-content:center;font-size:9px;color:#000;font-weight:700;">${barL>15?`롱 ${barL}%`:''}</div>
+                    <div style="width:${barS}%;background:#ff4757;display:flex;align-items:center;justify-content:center;font-size:9px;color:#fff;font-weight:700;">${barS>15?`숏 ${barS}%`:''}</div>
+                </div>
+                <div style="font-size:9px;color:var(--text-secondary);margin-top:4px;">
+                    분석 ${sent.analyzed}건 (BTC 관련 ${sent.btcRelated}건) · 롱점수 ${sent.bullScore} / 숏점수 ${sent.bearScore}
+                    <br>※ 독자 반응 + 한국어 키워드 가중. 보조 지표일 뿐 단독 매매 신호 아님.
+                </div>
+            </div>`;
+        }
+
+        // ── 속보 목록 (이모지 제거, 텍스트만) ──
+        const listHTML=items.map(it=>{
             const ts=new Date(it.publishAt);
             const hh=String(ts.getHours()).padStart(2,'0');
             const mm=String(ts.getMinutes()).padStart(2,'0');
             const bull=it.bullCount||it.bull||0, bear=it.bearCount||it.bear||0;
             const total=bull+bear;
-            const sentColor=total>0?(bull>bear?'#00d26a':bear>bull?'#ff4757':'#8b949e'):'#8b949e';
-            const sentTxt=total>0?` 🐂${bull}/${bear}🐻`:'';
+            let sentTxt='중립', sentColor='#8b949e';
+            if(total>0){
+                if(bull>bear){sentTxt=`긍정 ${bull} / 부정 ${bear}`;sentColor='#00d26a';}
+                else if(bear>bull){sentTxt=`긍정 ${bull} / 부정 ${bear}`;sentColor='#ff4757';}
+                else{sentTxt=`긍정 ${bull} / 부정 ${bear}`;}
+            }
             const codes=(it.originCodes||[]).slice(0,4).join(' ');
             const important=it.isImportant?'<span style="background:#ff4757;color:#fff;font-size:8px;padding:1px 4px;border-radius:2px;margin-right:4px;font-weight:700;">중요</span>':'';
             return `<div style="border-bottom:1px solid rgba(255,255,255,0.06);padding:6px 4px;font-size:11px;line-height:1.4;">
@@ -5558,10 +5631,12 @@ async function updateCoinnessNews(){
                     <div style="color:var(--text-secondary);font-size:9px;white-space:nowrap;">${hh}:${mm}</div>
                 </div>
                 <div style="margin-top:2px;color:var(--text-secondary);font-size:9px;">
-                    ${codes?`<span style="color:#FFD700;">${codes}</span> · `:''}<span style="color:${sentColor};">${sentTxt||'중립'}</span>
+                    ${codes?`<span style="color:#FFD700;">${codes}</span> · `:''}<span style="color:${sentColor};">${sentTxt}</span>
                 </div>
             </div>`;
         }).join('');
+
+        el.innerHTML=analysisHTML+listHTML;
     }catch(e){}
 }
 
