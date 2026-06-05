@@ -4812,6 +4812,8 @@ async function refreshAll(){
     }
     // 매크로 데이터는 주식에도 유용 → 항상 갱신
     if(refreshCount%60===0) tasks.push(updateMacroData());
+    // 매 15초: 코인니스 속보 (주식 모드에서도 시장 분위기 참고)
+    if(refreshCount%15===0||refreshCount===2) tasks.push(updateCoinnessNews());
     await Promise.all(tasks);
 }
 
@@ -5338,11 +5340,11 @@ async function runBacktestForSymbol(symbol){
             const pnl=isLong?(exit-entry)/entry*100:(entry-exit)/entry*100;
             result={win:pnl>0,pnl,bars:BACKTEST_HOLD};
         }
-        trades.push({idx:i,type:sig.type,entry,...result});
+        trades.push({idx:i,time:candles[i].time,type:sig.type,entry,...result});
         // 같은 시그널 중복 방지: 다음 진입은 청산 후로 점프
         i+=Math.max(1,result.bars-1);
     }
-    if(!trades.length)return{symbol,trades:0,wins:0,losses:0,winRate:0,avgPnL:0,totalPnL:0,maxDD:0,longCount:0,shortCount:0};
+    if(!trades.length)return{symbol,trades:0,wins:0,losses:0,winRate:0,avgPnL:0,totalPnL:0,maxDD:0,longCount:0,shortCount:0,trades_detail:[]};
     const wins=trades.filter(t=>t.win).length;
     const longCount=trades.filter(t=>t.type==='풀롱').length;
     const shortCount=trades.length-longCount;
@@ -5357,6 +5359,7 @@ async function runBacktestForSymbol(symbol){
         totalPnL:Math.round(totalPnL*10)/10,
         maxDD:Math.round(maxDD*10)/10,
         longCount,shortCount,
+        trades_detail:trades.map(t=>({time:t.time,pnl:t.pnl})),
     };
 }
 
@@ -5375,13 +5378,17 @@ async function runAllBacktests(){
     }
     if(btn){btn.disabled=true;btn.textContent='실행 중...';}
     let done=0;
+    let allTrades=[]; // 전 종목 거래 모아서 자산곡선 생성
     for(const s of symbols){
         try{
             const r=await runBacktestForSymbol(s);
             if(r){
+                if(r.trades_detail&&r.trades_detail.length)allTrades.push(...r.trades_detail);
+                // 저장은 거래 상세 빼고 통계만 (저장 용량 절약)
+                const {trades_detail,...statsOnly}=r;
                 await fetch('/api/backtest/save',{
                     method:'POST',headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify(r),
+                    body:JSON.stringify(statsOnly),
                 });
             }
         }catch(e){console.warn('backtest fail',s,e);}
@@ -5391,6 +5398,16 @@ async function runAllBacktests(){
         if(done%5===0)renderBacktestResults();
         await new Promise(r=>setTimeout(r,150));
     }
+    // 자산 곡선: 시간순 정렬 후 누적 손익 (각 거래 동일 비중 가정, 단순 합산 %)
+    allTrades.sort((a,b)=>a.time-b.time);
+    let eq=0;
+    const curve=allTrades.map(t=>{eq+=t.pnl;return{time:t.time,equity:Math.round(eq*100)/100};});
+    try{
+        await fetch('/api/backtest/save',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({symbol:'_equity',curve}),
+        });
+    }catch(e){}
     if(btn){btn.disabled=false;btn.textContent='전체 백테스팅 실행';}
     if(prog)prog.textContent=`완료: ${done}개`;
     renderBacktestResults();
@@ -5408,7 +5425,10 @@ async function renderBacktestResults(){
     if(!el)return;
     let data={};
     try{data=await fetchJSON('/api/backtest');}catch(e){}
-    const arr=Object.values(data).filter(r=>r&&r.symbol);
+    // '_'로 시작하는 키(_equity 등)는 표에서 제외
+    const arr=Object.values(data).filter(r=>r&&r.symbol&&!String(r.symbol).startsWith('_'));
+    // 자산 곡선 그리기 (있으면)
+    drawBacktestEquity(data['_equity']?.curve);
     if(!arr.length){
         el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:14px;text-align:center;">백테스트 데이터 없음. <b>"전체 백테스팅 실행"</b> 클릭하세요.<br>(1h 캔들 500봉 / TP +2% / SL -1% / 최대 24봉 보유)</div>';
         return;
@@ -5466,12 +5486,91 @@ async function renderBacktestResults(){
     `;
 }
 
+// 자산 곡선 차트 (Chart.js). curve = [{time, equity}]
+let _backtestChartInst=null;
+function drawBacktestEquity(curve){
+    const wrap=document.getElementById('backtestChartWrap');
+    const cv=document.getElementById('backtestChart');
+    if(!wrap||!cv||typeof Chart==='undefined')return;
+    if(!curve||!curve.length){wrap.style.display='none';return;}
+    wrap.style.display='';
+    const labels=curve.map(p=>{
+        const d=new Date(p.time*1000);
+        return `${d.getMonth()+1}/${d.getDate()}`;
+    });
+    const eq=curve.map(p=>p.equity);
+    if(_backtestChartInst){try{_backtestChartInst.destroy();}catch(e){}}
+    _backtestChartInst=new Chart(cv,{
+        type:'line',
+        data:{labels,datasets:[{
+            label:'누적 손익 %',
+            data:eq,
+            borderColor:eq[eq.length-1]>=0?'#00d26a':'#ff4757',
+            backgroundColor:eq[eq.length-1]>=0?'rgba(0,210,106,0.12)':'rgba(255,71,87,0.12)',
+            borderWidth:1.5,pointRadius:0,fill:true,tension:0.1,
+        }]},
+        options:{
+            responsive:true,maintainAspectRatio:false,
+            plugins:{legend:{display:false},
+                tooltip:{callbacks:{label:c=>` ${c.parsed.y>=0?'+':''}${c.parsed.y.toFixed(2)}%`}}},
+            scales:{
+                x:{ticks:{color:'#8b949e',maxTicksLimit:8,font:{size:9}},grid:{color:'rgba(255,255,255,0.05)'}},
+                y:{ticks:{color:'#8b949e',font:{size:9},callback:v=>(v>=0?'+':'')+v+'%'},grid:{color:'rgba(255,255,255,0.05)'}},
+            },
+        },
+    });
+}
+
+/* ═══════════════════════════════════
+   코인니스 속보 (실시간 한국어 크립토 뉴스)
+   ═══════════════════════════════════ */
+let _coinnessLastIds=new Set();
+async function updateCoinnessNews(){
+    const el=document.getElementById('coinnessNews');
+    if(!el)return;
+    try{
+        const r=await fetch('/api/coinness').then(x=>x.json());
+        if(!r||!Array.isArray(r.list))return;
+        const items=r.list.slice(0,20);
+        if(!items.length){el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:8px;">속보 없음</div>';return;}
+        // 신규 항목 카운트 (이전 호출 대비)
+        let newCount=0;
+        const curIds=new Set(items.map(i=>i.id));
+        for(const i of items)if(!_coinnessLastIds.has(i.id))newCount++;
+        if(_coinnessLastIds.size>0&&newCount>0){
+            const badge=document.getElementById('coinnessNew');
+            if(badge){badge.textContent=`+${newCount} NEW`;badge.style.display='inline-block';setTimeout(()=>{badge.style.display='none';},5000);}
+        }
+        _coinnessLastIds=curIds;
+        el.innerHTML=items.map(it=>{
+            const ts=new Date(it.publishAt);
+            const hh=String(ts.getHours()).padStart(2,'0');
+            const mm=String(ts.getMinutes()).padStart(2,'0');
+            const bull=it.bullCount||it.bull||0, bear=it.bearCount||it.bear||0;
+            const total=bull+bear;
+            const sentColor=total>0?(bull>bear?'#00d26a':bear>bull?'#ff4757':'#8b949e'):'#8b949e';
+            const sentTxt=total>0?` 🐂${bull}/${bear}🐻`:'';
+            const codes=(it.originCodes||[]).slice(0,4).join(' ');
+            const important=it.isImportant?'<span style="background:#ff4757;color:#fff;font-size:8px;padding:1px 4px;border-radius:2px;margin-right:4px;font-weight:700;">중요</span>':'';
+            return `<div style="border-bottom:1px solid rgba(255,255,255,0.06);padding:6px 4px;font-size:11px;line-height:1.4;">
+                <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
+                    <div style="flex:1;color:var(--text-primary);font-weight:600;">${important}${it.title}</div>
+                    <div style="color:var(--text-secondary);font-size:9px;white-space:nowrap;">${hh}:${mm}</div>
+                </div>
+                <div style="margin-top:2px;color:var(--text-secondary);font-size:9px;">
+                    ${codes?`<span style="color:#FFD700;">${codes}</span> · `:''}<span style="color:${sentColor};">${sentTxt||'중립'}</span>
+                </div>
+            </div>`;
+        }).join('');
+    }catch(e){}
+}
+
 /* ───── 초기화 ───── */
 (async function(){
     await initTVChart();initRSIChart();initMACDChart();
     await updateTVChart();refreshAll();connectWS();
-    // 초기 로드: 컨센서스, 매크로, 온체인
-    updateExpertConsensus();updateMacroData();updateOnchainData();
+    // 초기 로드: 컨센서스, 매크로, 온체인, 코인니스 속보
+    updateExpertConsensus();updateMacroData();updateOnchainData();updateCoinnessNews();
     // 초기 로드: MTF + 다중구간/거래소 청산 + 종목 스캐너
     updateMultiTimeframeAnalysis();
     setTimeout(()=>{updateMultiPeriodLiquidation();updateMultiExchangeLiquidation();},800);

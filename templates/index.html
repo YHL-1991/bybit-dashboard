@@ -342,6 +342,22 @@
         </div>
     </div>
 
+    <!-- 코인니스 속보 (실시간 한국어 크립토 뉴스) -->
+    <div class="section-full">
+        <div class="card">
+            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+                <span><span class="dot" style="background:#22d3ee"></span> 코인니스 속보 (실시간)
+                    <span id="coinnessNew" style="display:none;background:#ff4757;color:#fff;font-size:9px;padding:2px 6px;border-radius:3px;margin-left:6px;font-weight:700;"></span>
+                </span>
+                <a href="https://coinness.com/" target="_blank" rel="noopener" style="font-size:10px;color:#22d3ee;text-decoration:none;">coinness.com ↗</a>
+            </div>
+            <div id="coinnessNews" style="max-height:380px;overflow-y:auto;">
+                <div style="color:var(--text-secondary);font-size:11px;padding:8px;">로딩 중...</div>
+            </div>
+            <p class="hint">코인니스 한국어 속보를 15초마다 갱신. 🐂=긍정, 🐻=부정 (독자 반응). 관련 코인 티커는 노란색.</p>
+        </div>
+    </div>
+
     <!-- 전문가 컨센서스 -->
     <div class="grid-3">
         <div class="card mini">
@@ -439,13 +455,17 @@
                     <button onclick="renderBacktestResults()" style="padding:5px 12px;background:#1f6feb;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;">새로고침</button>
                 </span>
             </div>
+            <div id="backtestChartWrap" style="display:none;margin-bottom:10px;">
+                <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;">누적 자산 곡선 (전 종목 거래 시간순, 누적 손익 %)</div>
+                <div class="chart-container" style="height:220px;"><canvas id="backtestChart"></canvas></div>
+            </div>
             <div id="backtestResults" style="max-height:600px;overflow-y:auto;">
                 <div style="color:var(--text-secondary);font-size:11px;padding:14px;text-align:center;">백테스트 데이터 로딩 중...</div>
             </div>
-            <p class="hint">전 종목에 풀롱/풀숏 시그널을 1h 캔들 500봉에 적용 | TP +2% / SL -1% / 최대 24봉(=24시간) 보유 | 결과는 서버에 저장</p>
+            <p class="hint">전 종목에 풀롱/풀숏 시그널을 1h 캔들 500봉에 적용 | TP +2% / SL -1% / 최대 24봉(=24시간) 보유 | 결과는 서버에 저장<br>⚠️ 백테스트는 과거 데이터 기준(인샘플)이라 실제(forward) 결과보다 낙관적일 수 있습니다. 진짜 검증은 forward-test입니다.</p>
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260524a"></script>
+    <script src="/static/app.js?v=20260529a"></script>
 </body>
 </html>

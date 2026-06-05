@@ -130,6 +130,7 @@ async def api_stock_chart(symbol: str, range: str = "2y", interval: str = "1h"):
 
 
 _kimchi_cache = {"data": None, "ts": 0}
+_coinness_cache = {"data": None, "ts": 0}
 _etherscan_cache = {"data": None, "ts": 0}
 
 
@@ -772,6 +773,31 @@ async def api_kimchi_premium():
             return result
     except Exception as e:
         return {"error": str(e), "usd_krw": 0, "coins": {}}
+
+
+@app.get("/api/coinness")
+async def api_coinness(limit: int = 20):
+    """코인니스 한국어 속보 (실시간). 10초 캐시.
+    참고: Coinness 공개 API (api.coinness.com/feed/v1/breaking-news)."""
+    now = _time.time()
+    if _coinness_cache["data"] and now - _coinness_cache["ts"] < 10:
+        return _coinness_cache["data"]
+    try:
+        async with _httpx.AsyncClient(timeout=8.0,
+                                      headers={"User-Agent": "Mozilla/5.0",
+                                               "Origin": "https://coinness.com",
+                                               "Referer": "https://coinness.com/"}) as c:
+            r = await c.get("https://api.coinness.com/feed/v1/breaking-news",
+                            params={"lang": "ko", "limit": int(limit)})
+            if r.status_code != 200:
+                return {"error": f"HTTP {r.status_code}", "list": []}
+            items = r.json() if isinstance(r.json(), list) else r.json().get("list", [])
+            result = {"list": items, "ts": int(now)}
+            _coinness_cache["data"] = result
+            _coinness_cache["ts"] = now
+            return result
+    except Exception as e:
+        return {"error": str(e), "list": []}
 
 
 @app.get("/api/debug")
