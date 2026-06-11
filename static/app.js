@@ -3992,7 +3992,8 @@ function generateFullSignal(d){
     const lR=[],sR=[];
     // 주식은 크립토 전용 지표(OI/청산/펀딩/김프/가스/거래소) 부재 → 가격 TA만으로 평가
     const _isStockSym=isStock(currentSymbol);
-    const TOTAL_MAX=_isStockSym?95:125; // 주식: 가격 TA 기반 95 / 크립토: 125
+    // 다중공선성 제거(추세/매크로/볼륨/L-S/OI 합의 통합) 후 만점 재산정 — 약 25점 감소
+    const TOTAL_MAX=_isStockSym?75:100; // 주식: 75 / 크립토: 100 (개선 전 95/125)
 
     // ── 모멘텀 오실레이터 합의 (다중공선성 방지) ──
     // RSI·W%R·CCI는 거의 같은 과매수/과매도를 측정 → 개별 카운팅 시 같은 정보 3번 중복.
@@ -4017,41 +4018,70 @@ function generateFullSignal(d){
     // 3) 이전 봉 반전
     if(prev.close<prev.open&&last.close>last.open){lS+=1;lR.push('반전양봉');}
     if(prev.close>prev.open&&last.close<last.open){sS+=1;sR.push('반전음봉');}
-    // 4) 거래량 증가
-    if(last.volume>prev.volume*1.2){
-        if(last.close>last.open){lS+=1;lR.push('거래량↑양봉');}
-        if(last.close<last.open){sS+=1;sR.push('거래량↑음봉');}
-    }
-    // 6) MA7
-    if(price>m7){lS+=1;lR.push('MA7↑');}
-    if(price<m7){sS+=1;sR.push('MA7↓');}
+    // 6) MA7 → 추세 합의로 통합 (제거)
     // 7) 해머/슈팅스타
     if(lowerWick>body*1.5&&last.close>last.open){lS+=1;lR.push('해머');}
     if(upperWick>body*1.5&&last.close<last.open){sS+=1;sR.push('슈팅스타');}
-    // 13) OBV
+    // ── 볼륨 합의 (거래량 방향 지표 4개 → 합의로 통합) ──
+    // 거래량↑+양봉 / OBV / VWAP / 거래량폭발은 모두 '거래량이 가격을 지지하는가'를 측정
+    // → 같은 정보 중복 카운트 방지 위해 합의 처리.
     const obvSeries=calcOBVSeries(d);
-    if(obvSeries.length>=2){
-        if(obvSeries[obvSeries.length-1]>obvSeries[obvSeries.length-2]&&last.close>last.open){lS+=1;lR.push('OBV↑');}
-        if(obvSeries[obvSeries.length-1]<obvSeries[obvSeries.length-2]&&last.close<last.open){sS+=1;sR.push('OBV↓');}
-    }
-    // 19) VWAP
     const vwap=calcVWAP(d.slice(-50));
-    if(price>vwap*1.002){lS+=1;lR.push('VWAP↑');}
-    if(price<vwap*0.998){sS+=1;sR.push('VWAP↓');}
-    // 20) 거래량 폭발
-    if(d.length>=3){
-        const av2=(d[d.length-2].volume+d[d.length-3].volume)/2;
-        if(av2>0&&last.volume>av2*2){
-            if(last.close>last.open){lS+=1;lR.push('거래량폭발↑');}
-            if(last.close<last.open){sS+=1;sR.push('거래량폭발↓');}
+    {
+        let volBull=0,volBear=0;
+        // (1) 거래량↑ + 캔들 방향
+        if(last.volume>prev.volume*1.2){
+            if(last.close>last.open) volBull++;
+            else if(last.close<last.open) volBear++;
         }
+        // (2) OBV + 캔들 방향
+        if(obvSeries.length>=2){
+            const obvUp=obvSeries[obvSeries.length-1]>obvSeries[obvSeries.length-2];
+            if(obvUp&&last.close>last.open) volBull++;
+            else if(!obvUp&&last.close<last.open) volBear++;
+        }
+        // (3) VWAP 위/아래
+        if(price>vwap*1.002) volBull++;
+        else if(price<vwap*0.998) volBear++;
+        // (4) 거래량 폭발 + 방향
+        if(d.length>=3){
+            const av2=(d[d.length-2].volume+d[d.length-3].volume)/2;
+            if(av2>0&&last.volume>av2*2){
+                if(last.close>last.open) volBull++;
+                else if(last.close<last.open) volBear++;
+            }
+        }
+        if(volBull>=3){lS+=2;lR.push(`볼륨합의↑${volBull}/4`);}
+        else if(volBull>=2){lS+=1;lR.push(`볼륨약↑${volBull}/4`);}
+        if(volBear>=3){sS+=2;sR.push(`볼륨합의↓${volBear}/4`);}
+        else if(volBear>=2){sS+=1;sR.push(`볼륨약↓${volBear}/4`);}
     }
     // 21~22) Williams %R, CCI → 위 '모멘텀 합의'로 통합 (중복 제거)
     // 29~32) 매크로 (DXY, US10Y, S&P, Gold)
-    if(macroCache['DX-Y.NYB']){if(macroCache['DX-Y.NYB'].change<-0.1){lS+=1;lR.push('DXY↓');}if(macroCache['DX-Y.NYB'].change>0.1){sS+=1;sR.push('DXY↑');}}
-    if(macroCache['^TNX']){if(macroCache['^TNX'].change<-0.5){lS+=1;lR.push('금리↓');}if(macroCache['^TNX'].change>0.5){sS+=1;sR.push('금리↑');}}
-    if(macroCache['^GSPC']){if(macroCache['^GSPC'].change>0.3){lS+=1;lR.push('S&P↑');}if(macroCache['^GSPC'].change<-0.3){sS+=1;sR.push('S&P↓');}}
-    if(macroCache['GC=F']){if(macroCache['GC=F'].change>0.5&&last.close>prev.close){lS+=1;lR.push('골드+BTC↑');}if(macroCache['GC=F'].change<-0.5&&last.close<prev.close){sS+=1;sR.push('골드+BTC↓');}}
+    // ── 매크로 합의 (DXY/금리/S&P/골드는 서로 상관관계 큼 → 개별 X, 합의로 통합) ──
+    {
+        let macroBull=0,macroBear=0;
+        if(macroCache['DX-Y.NYB']){
+            if(macroCache['DX-Y.NYB'].change<-0.1) macroBull++;
+            else if(macroCache['DX-Y.NYB'].change>0.1) macroBear++;
+        }
+        if(macroCache['^TNX']){
+            if(macroCache['^TNX'].change<-0.5) macroBull++;
+            else if(macroCache['^TNX'].change>0.5) macroBear++;
+        }
+        if(macroCache['^GSPC']){
+            if(macroCache['^GSPC'].change>0.3) macroBull++;
+            else if(macroCache['^GSPC'].change<-0.3) macroBear++;
+        }
+        if(macroCache['GC=F']){
+            if(macroCache['GC=F'].change>0.5) macroBull++;
+            else if(macroCache['GC=F'].change<-0.5) macroBear++;
+        }
+        if(macroBull>=3){lS+=2;lR.push(`매크로합의↑${macroBull}/4`);}
+        else if(macroBull>=2){lS+=1;lR.push(`매크로약↑${macroBull}/4`);}
+        if(macroBear>=3){sS+=2;sR.push(`매크로합의↓${macroBear}/4`);}
+        else if(macroBear>=2){sS+=1;sR.push(`매크로약↓${macroBear}/4`);}
+    }
     // 33) 센티먼트
     if(lastSentimentData){if(lastSentimentData.up>65){lS+=1;lR.push('센티먼트강세');}if(lastSentimentData.up<35){sS+=1;sR.push('센티먼트약세');}}
     // 34) 전문가 컨센서스
@@ -4066,8 +4096,7 @@ function generateFullSignal(d){
     if(last.low<m20&&last.close>m20){lS+=2;lR.push('MA20지지');}
     if(last.high>m20&&last.close<m20){sS+=2;sR.push('MA20저항');}
     // 10) 추세정렬 MA20>MA100
-    if(m20>m100){lS+=2;lR.push('추세정렬↑');}
-    if(m20<m100){sS+=2;sR.push('추세정렬↓');}
+    // 추세정렬(m20>m100) → 추세 합의로 통합 (제거)
     // 11) 3연봉 반전
     if(d.length>=5){
         const c3=d[d.length-4],c2=d[d.length-3],c1=d[d.length-2];
@@ -4090,14 +4119,8 @@ function generateFullSignal(d){
     // 15) 공포탐욕 극단
     if(lastFearGreedValue<=20){lS+=2;lR.push('극도공포');}
     if(lastFearGreedValue>=80){sS+=2;sR.push('극도탐욕');}
-    // 16) 롱숏비율 극단
-    if(lastLongShortRatio.sell>=0.7){lS+=2;lR.push('매도쏠림→롱');}
-    if(lastLongShortRatio.buy>=0.7){sS+=2;sR.push('매수쏠림→숏');}
-    // 17) OI 급증
-    if(lastOIChange>=5){
-        if(last.close>last.open){lS+=2;lR.push('OI급증+롱');}
-        if(last.close<last.open){sS+=2;sR.push('OI급증+숏');}
-    }
+    // 16) Bybit 롱숏비율 → Binance L/S와 동일 정보 → 제거 (Binance만 사용)
+    // 17) Bybit OI 급증 → Binance OI와 동일 정보 → 제거 (Binance만 사용)
     // 23) 차트 패턴
     const cpats=detectChartPatterns(d);
     let cpL=0,cpS=0;cpats.forEach(p=>{if(p.type==='long')cpL+=p.strength;else cpS+=p.strength;});
@@ -4188,14 +4211,16 @@ function generateFullSignal(d){
     // 큰 시간프레임이 일치할수록 강한 신호
     if(lastMultiTFAnalysis&&lastMultiTFAnalysis.consensus){
         const c=lastMultiTFAnalysis.consensus;
-        if(c.bias==='strong_long'){lS+=15;lR.push(`MTF강한롱(주${lastMultiTFAnalysis.tfs['주봉']?.type||'-'},일${lastMultiTFAnalysis.tfs['일봉']?.type||'-'})`);sS=Math.max(0,sS-8);}
-        else if(c.bias==='long'){lS+=8;lR.push(`MTF롱우세${c.longPct}%`);sS=Math.max(0,sS-3);}
-        else if(c.bias==='strong_short'){sS+=15;sR.push(`MTF강한숏(주${lastMultiTFAnalysis.tfs['주봉']?.type||'-'},일${lastMultiTFAnalysis.tfs['일봉']?.type||'-'})`);lS=Math.max(0,lS-8);}
-        else if(c.bias==='short'){sS+=8;sR.push(`MTF숏우세${c.shortPct}%`);lS=Math.max(0,lS-3);}
+        // MTF 가중치 축소 (15/8 → 8/4): 추세 합의와 부분 중복이라 비중 낮춤
+        if(c.bias==='strong_long'){lS+=8;lR.push(`MTF강한롱(주${lastMultiTFAnalysis.tfs['주봉']?.type||'-'},일${lastMultiTFAnalysis.tfs['일봉']?.type||'-'})`);sS=Math.max(0,sS-4);}
+        else if(c.bias==='long'){lS+=4;lR.push(`MTF롱우세${c.longPct}%`);sS=Math.max(0,sS-2);}
+        else if(c.bias==='strong_short'){sS+=8;sR.push(`MTF강한숏(주${lastMultiTFAnalysis.tfs['주봉']?.type||'-'},일${lastMultiTFAnalysis.tfs['일봉']?.type||'-'})`);lS=Math.max(0,lS-4);}
+        else if(c.bias==='short'){sS+=4;sR.push(`MTF숏우세${c.shortPct}%`);lS=Math.max(0,lS-2);}
         // 주봉 단독 강한 신호 (가장 큰 가중)
         const w=lastMultiTFAnalysis.tfs['주봉'];
-        if(w&&w.type==='풀롱'){lS+=5;lR.push('주봉풀롱');}
-        else if(w&&w.type==='풀숏'){sS+=5;sR.push('주봉풀숏');}
+        // 주봉 풀롱/풀숏: 5 → 3 (추세 합의/MTF와 부분 중복)
+        if(w&&w.type==='풀롱'){lS+=3;lR.push('주봉풀롱');}
+        else if(w&&w.type==='풀숏'){sS+=3;sR.push('주봉풀숏');}
     }
 
     // 🎯 51) 다중 시간구간 청산 (12h~1w) - 가까운 청산 타겟에 따른 가중 ±5점 (주식 제외)
@@ -4230,8 +4255,7 @@ function generateFullSignal(d){
 
     // ── 42) 상위추세 맥락 (MA200) - 2점 + 후처리 부스트 ──
     const htTrend=detectHigherTFTrend(d);
-    if(htTrend==='bull'){lS+=2;lR.push('상위추세↑');}
-    else if(htTrend==='bear'){sS+=2;sR.push('상위추세↓');}
+    // 상위추세 → 추세 합의로 통합 (제거)
 
     // ── 43) 저항/지지 반복 테스트 + 볼륨감소 (맥락별) - 2점 ──
     const grind=detectResistanceGrind(d,htTrend);
@@ -4291,8 +4315,7 @@ function generateFullSignal(d){
     if(ichFS.senkouA.length&&ichFS.senkouB.length){
         const sa=ichFS.senkouA[ichFS.senkouA.length-1].value;
         const sb=ichFS.senkouB[ichFS.senkouB.length-1].value;
-        if(price>Math.max(sa,sb)){lS+=3;lR.push('구름위');}
-        if(price<Math.min(sa,sb)){sS+=3;sR.push('구름아래');}
+        // 구름위/아래 → 추세 합의로 통합 (제거)
     }
     // 36) 하모닉 패턴
     const harm=detectHarmonic(d);
@@ -4300,13 +4323,42 @@ function generateFullSignal(d){
         if(harm.bullish){lS+=3;lR.push(harm.name+'강세');}
         else{sS+=3;sR.push(harm.name+'약세');}
     }
-    // 37) MA 정배열/역배열
+    // ── 추세 합의 (다중공선성 방지) ──
+    // 추세 관련 5개 지표를 합의(consensus) 방식으로 통합. 같은 정보(추세 방향)를 여러 번 카운트하던
+    // 문제 해결: MA7방향 / MA정배열 / m20-m100 / 이치모쿠구름 / 상위추세(htTrend) / BTC추세.
+    // 4개+ 일치=강함(+5), 3개=확인(+3), 2개=약함(+1).
     const ma200f=calcSMA(d,200);
-    if(ma7.length&&ma20.length&&ma100.length&&ma200f.length){
-        const v7=ma7[ma7.length-1].value,v20=ma20[ma20.length-1].value;
-        const v100=ma100[ma100.length-1].value,v200=ma200f[ma200f.length-1].value;
-        if(price>v7&&v7>v20&&v20>v100){lS+=3;lR.push('MA정배열');}
-        if(price<v7&&v7<v20&&v20<v100){sS+=3;sR.push('MA역배열');}
+    {
+        let trendBull=0, trendBear=0;
+        // (1) MA7 방향
+        if(price>m7) trendBull++;
+        else if(price<m7) trendBear++;
+        // (2) MA 정배열 (가장 강한 추세 신호)
+        if(ma7.length&&ma20.length&&ma100.length&&ma200f.length){
+            const v7=ma7[ma7.length-1].value, v20=ma20[ma20.length-1].value;
+            const v100=ma100[ma100.length-1].value, v200=ma200f[ma200f.length-1].value;
+            if(price>v7&&v7>v20&&v20>v100) trendBull++;
+            else if(price<v7&&v7<v20&&v20<v100) trendBear++;
+        }
+        // (3) MA20 vs MA100 (중기 추세)
+        if(m20>m100) trendBull++;
+        else if(m20<m100) trendBear++;
+        // (4) 이치모쿠 구름
+        if(ich&&ich.senkouA.length&&ich.senkouB.length){
+            const sa=ich.senkouA[ich.senkouA.length-1].value, sb=ich.senkouB[ich.senkouB.length-1].value;
+            if(price>Math.max(sa,sb)) trendBull++;
+            else if(price<Math.min(sa,sb)) trendBear++;
+        }
+        // (5) 상위 시간프레임 추세 (htTrend)
+        if(htTrend==='bull') trendBull++;
+        else if(htTrend==='bear') trendBear++;
+        // 합의 점수 부여
+        if(trendBull>=4){lS+=5;lR.push(`추세합의↑${trendBull}/5`);}
+        else if(trendBull>=3){lS+=3;lR.push(`추세확인↑${trendBull}/5`);}
+        else if(trendBull>=2){lS+=1;lR.push(`약추세↑${trendBull}/5`);}
+        if(trendBear>=4){sS+=5;sR.push(`추세합의↓${trendBear}/5`);}
+        else if(trendBear>=3){sS+=3;sR.push(`추세확인↓${trendBear}/5`);}
+        else if(trendBear>=2){sS+=1;sR.push(`약추세↓${trendBear}/5`);}
     }
     // 44) Wyckoff Spring / Upthrust - 3점
     const spring=detectWyckoffSpring(d,20);
@@ -4400,8 +4452,9 @@ function generateFullSignal(d){
 
     // ── 알트는 더 엄격한 임계값 적용 ──
     // TOTAL_MAX=125 기준: 알트 ~48% (60점) / BTC·ETH ~40% (50점)
-    const TRIGGER_MIN=isAlt?60:50;
-    const OPPOSITE_MAX=isAlt?16:13;
+    // 만점이 ~25점 줄어 트리거 임계도 비례 조정 (약 80% 수준 유지)
+    const TRIGGER_MIN=isAlt?48:40; // 이전 60/50
+    const OPPOSITE_MAX=isAlt?13:10; // 이전 16/13
 
     // ── 확인봉 검증 (prev + prev2 봉 방향 체크 강화) ──
     let confirmed=true;
@@ -4472,24 +4525,46 @@ function checkFullSignalAtCandle(d,idx){
     const lW=Math.min(c.open,c.close)-c.low;
     const uW=c.high-Math.max(c.open,c.close);
 
-    let lc=0,sc=0; // 가중합
-    // ── 1점 조건 ──
-    if(rsi<40&&rsi>rsiPrev)lc+=1;if(rsi>60&&rsi<rsiPrev)sc+=1;
+    let lc=0,sc=0; // 가중합 (★ generateFullSignal과 동일한 합의 패턴 적용)
+    // ── 모멘텀 합의 (RSI/W%R/CCI 통합) ──
+    const wrH=calcWilliamsR(slc,14);
+    const cciH=calcCCI(slc,20);
+    {
+        let momB=0,momR=0;
+        if(rsi<35)momB++;else if(rsi>65)momR++;
+        if(wrH!==null){if(wrH<-80)momB++;else if(wrH>-20)momR++;}
+        if(cciH!==null){if(cciH<-100)momB++;else if(cciH>100)momR++;}
+        if(momB>=3)lc+=3;else if(momB>=2)lc+=1;
+        if(momR>=3)sc+=3;else if(momR>=2)sc+=1;
+    }
+    // ── 1점 캔들/거래량 단순 조건 ──
+    if(rsi<40&&rsi>rsiPrev)lc+=1;if(rsi>60&&rsi<rsiPrev)sc+=1;  // RSI 방향성
     if(c.close>c.open)lc+=1;if(c.close<c.open)sc+=1;
     if(prev.close<prev.open&&c.close>c.open)lc+=1;if(prev.close>prev.open&&c.close<c.open)sc+=1;
-    if(c.volume>prev.volume*1.2){if(c.close>c.open)lc+=1;if(c.close<c.open)sc+=1;}
-    if(price>m7)lc+=1;if(price<m7)sc+=1;
     if(lW>body*1.5&&c.close>c.open)lc+=1;if(uW>body*1.5&&c.close<c.open)sc+=1;
-    const wrH=calcWilliamsR(slc,14);if(wrH!==null){if(wrH<-80)lc+=1;if(wrH>-20)sc+=1;}
-    const cciH=calcCCI(slc,20);if(cciH!==null){if(cciH<-100)lc+=1;if(cciH>100)sc+=1;}
+
+    // ── 볼륨 합의 (거래량↑/VWAP/거래량폭발 통합) ──
     const vwap=calcVWAP(d.slice(Math.max(0,idx-49),idx+1));
-    if(price>vwap*1.002)lc+=1;if(price<vwap*0.998)sc+=1;
-    if(idx>=3){const av2=(d[idx-1].volume+d[idx-2].volume)/2;if(av2>0&&c.volume>av2*2){if(c.close>c.open)lc+=1;if(c.close<c.open)sc+=1;}}
+    {
+        let volB=0,volR=0;
+        if(c.volume>prev.volume*1.2){
+            if(c.close>c.open)volB++;else if(c.close<c.open)volR++;
+        }
+        if(price>vwap*1.002)volB++;else if(price<vwap*0.998)volR++;
+        if(idx>=3){
+            const av2=(d[idx-1].volume+d[idx-2].volume)/2;
+            if(av2>0&&c.volume>av2*2){
+                if(c.close>c.open)volB++;else if(c.close<c.open)volR++;
+            }
+        }
+        if(volB>=3)lc+=2;else if(volB>=2)lc+=1;
+        if(volR>=3)sc+=2;else if(volR>=2)sc+=1;
+    }
 
     // ── 2점 조건 ──
     if(macdH>macdHP)lc+=2;if(macdH<macdHP)sc+=2;
-    if(c.low<m20&&c.close>m20)lc+=2;if(c.high>m20&&c.close<m20)sc+=2;
-    if(m20>m100)lc+=2;if(m20<m100)sc+=2;
+    if(c.low<m20&&c.close>m20)lc+=2;if(c.high>m20&&c.close<m20)sc+=2; // MA20 지지/저항 (반전형)
+    // m20>m100 단독 → 추세 합의로 통합 (아래)
     if(idx>=4){const c3=d[idx-3],c2=d[idx-2],c1=d[idx-1];
         if(c3.close<c3.open&&c2.close<c2.open&&c1.close<c1.open&&c.close>c.open)lc+=2;
         if(c3.close>c3.open&&c2.close>c2.open&&c1.close>c1.open&&c.close<c.open)sc+=2;}
@@ -4544,15 +4619,29 @@ function checkFullSignalAtCandle(d,idx){
     }
     const divH=detectRSIDivergence(slc,rsiData);
     divH.forEach(s=>{if(s.type==='bullish_div')lc+=3;if(s.type==='bearish_div')sc+=3;});
-    if(slc.length>=52){const ichH=calcIchimoku(slc);if(ichH.senkouA.length&&ichH.senkouB.length){
-        const saH=ichH.senkouA[ichH.senkouA.length-1].value,sbH=ichH.senkouB[ichH.senkouB.length-1].value;
-        if(price>Math.max(saH,sbH))lc+=3;if(price<Math.min(saH,sbH))sc+=3;}}
     const harmH=detectHarmonic(slc);if(harmH){if(harmH.bullish)lc+=3;else sc+=3;}
-    // MA 정배열
+    // ── 추세 합의 (MA7방향/MA정배열/m20-m100/이치모쿠 구름 통합) ──
     const ma200H=calcSMA(slc,200);
-    if(ma7.length&&ma20.length&&ma100.length&&ma200H.length){
-        const v7=ma7[ma7.length-1].value,v20=ma20[ma20.length-1].value,v100=ma100[ma100.length-1].value;
-        if(price>v7&&v7>v20&&v20>v100)lc+=3;if(price<v7&&v7<v20&&v20<v100)sc+=3;}
+    {
+        let tB=0,tR=0;
+        if(price>m7)tB++;else if(price<m7)tR++;
+        if(ma7.length&&ma20.length&&ma100.length&&ma200H.length){
+            const v7=ma7[ma7.length-1].value, v20=ma20[ma20.length-1].value, v100=ma100[ma100.length-1].value;
+            if(price>v7&&v7>v20&&v20>v100)tB++;
+            else if(price<v7&&v7<v20&&v20<v100)tR++;
+        }
+        if(m20>m100)tB++;else if(m20<m100)tR++;
+        if(slc.length>=52){
+            const ichH=calcIchimoku(slc);
+            if(ichH.senkouA.length&&ichH.senkouB.length){
+                const saH=ichH.senkouA[ichH.senkouA.length-1].value, sbH=ichH.senkouB[ichH.senkouB.length-1].value;
+                if(price>Math.max(saH,sbH))tB++;
+                else if(price<Math.min(saH,sbH))tR++;
+            }
+        }
+        if(tB>=4)lc+=5;else if(tB>=3)lc+=3;else if(tB>=2)lc+=1;
+        if(tR>=4)sc+=5;else if(tR>=3)sc+=3;else if(tR>=2)sc+=1;
+    }
     // ── 고급 패턴: Wyckoff Spring + Flag ──
     const springH=detectWyckoffSpring(slc,20);
     if(springH){
