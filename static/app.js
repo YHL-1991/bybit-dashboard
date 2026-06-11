@@ -2653,10 +2653,11 @@ async function updateMultiExchangeLiquidation(){
     if(isStock(currentSymbol))return;
     const sym=currentSymbol;
     try{
-        // Binance Open Interest 변동률 + Long/Short 비율 직접 가져오기 (공개 API)
-        const [biOI,biRatio]=await Promise.all([
-            fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=1h&limit=24`).then(r=>r.ok?r.json():null).catch(()=>null),
-            fetch(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=1h&limit=24`).then(r=>r.ok?r.json():null).catch(()=>null),
+        // 48h × 1h봉 = 시계열 차트용. topLongShortPositionRatio = 상위 트레이더(고래) 포지션 비율
+        const [biOI,biGls,biTls]=await Promise.all([
+            fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=1h&limit=48`).then(r=>r.ok?r.json():null).catch(()=>null),
+            fetch(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=1h&limit=48`).then(r=>r.ok?r.json():null).catch(()=>null),
+            fetch(`https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${sym}&period=1h&limit=48`).then(r=>r.ok?r.json():null).catch(()=>null),
         ]);
         const result={binance:null,bybit:lastLiquidationData};
         if(biOI&&Array.isArray(biOI)&&biOI.length){
@@ -2664,17 +2665,116 @@ async function updateMultiExchangeLiquidation(){
             const last=parseFloat(biOI[biOI.length-1].sumOpenInterest);
             const oiChange=(last-first)/first*100;
             result.binance={oiChange,oiCurrent:last};
+            // 시계열 저장
+            result.binance.oiSeries=biOI.map(p=>({t:parseInt(p.timestamp),oi:parseFloat(p.sumOpenInterest),oiUSD:parseFloat(p.sumOpenInterestValue)}));
         }
-        if(biRatio&&Array.isArray(biRatio)&&biRatio.length){
-            const last=biRatio[biRatio.length-1];
+        if(biGls&&Array.isArray(biGls)&&biGls.length){
+            const last=biGls[biGls.length-1];
             result.binance=result.binance||{};
             result.binance.longRatio=parseFloat(last.longAccount)*100;
             result.binance.shortRatio=parseFloat(last.shortAccount)*100;
             result.binance.lsRatio=parseFloat(last.longShortRatio);
+            result.binance.glsSeries=biGls.map(p=>({t:parseInt(p.timestamp),ls:parseFloat(p.longShortRatio)}));
+        }
+        if(biTls&&Array.isArray(biTls)&&biTls.length){
+            result.binance=result.binance||{};
+            const last=biTls[biTls.length-1];
+            result.binance.whaleLsRatio=parseFloat(last.longShortRatio);
+            result.binance.tlsSeries=biTls.map(p=>({t:parseInt(p.timestamp),ls:parseFloat(p.longShortRatio)}));
         }
         lastMultiExchangeLiq={data:result,ts:Date.now()};
         renderMultiExchangeCard();
+        drawBinanceWhaleCharts(result.binance);
     }catch(e){console.warn('multi-exchange',e);}
+}
+
+// 바이낸스 고래 심리 차트 (OI 추이 + 개미 vs 고래 L/S 비율)
+let _binanceOIChartInst=null, _binanceLSChartInst=null;
+function drawBinanceWhaleCharts(b){
+    const oiCv=document.getElementById('binanceOIChart');
+    const lsCv=document.getElementById('binanceLSChart');
+    const statusEl=document.getElementById('binanceWhaleStatus');
+    if(!oiCv||!lsCv||typeof Chart==='undefined')return;
+    if(!b||(!b.oiSeries&&!b.glsSeries&&!b.tlsSeries)){
+        if(statusEl)statusEl.textContent='데이터 없음 (BTC/ETH/메이저만 지원)';
+        return;
+    }
+    // 시간 라벨 포맷
+    const fmtTime=ts=>{const d=new Date(ts);return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}h`;};
+
+    // (1) OI 추이 차트
+    if(b.oiSeries&&b.oiSeries.length){
+        const labels=b.oiSeries.map(p=>fmtTime(p.t));
+        const oiVals=b.oiSeries.map(p=>p.oi);
+        // 변화량 색깔: 마지막이 처음보다 높으면 골드(롱누적), 낮으면 핑크(청산)
+        const oiUp=oiVals[oiVals.length-1]>=oiVals[0];
+        const lineColor=oiUp?'#FFD700':'#FF69B4';
+        const fillColor=oiUp?'rgba(255,215,0,0.10)':'rgba(255,105,180,0.10)';
+        if(_binanceOIChartInst){try{_binanceOIChartInst.destroy();}catch(e){}}
+        _binanceOIChartInst=new Chart(oiCv,{
+            type:'line',
+            data:{labels,datasets:[{
+                label:'OI (계약수)',data:oiVals,
+                borderColor:lineColor,backgroundColor:fillColor,
+                borderWidth:1.5,pointRadius:0,fill:true,tension:0.2,
+            }]},
+            options:{
+                responsive:true,maintainAspectRatio:false,
+                plugins:{legend:{display:false},
+                    tooltip:{callbacks:{label:c=>` OI: ${c.parsed.y.toLocaleString()}`}}},
+                scales:{
+                    x:{ticks:{color:'#8b949e',maxTicksLimit:8,font:{size:9}},grid:{color:'rgba(255,255,255,0.04)'}},
+                    y:{ticks:{color:'#8b949e',font:{size:9},callback:v=>(v/1000).toFixed(0)+'K'},grid:{color:'rgba(255,255,255,0.04)'}},
+                },
+            },
+        });
+    }
+
+    // (2) L/S 비율 추이 차트 (개미 vs 고래)
+    if(b.glsSeries&&b.tlsSeries&&b.glsSeries.length&&b.tlsSeries.length){
+        // 두 시리즈의 timestamp가 다를 수 있으니 시간순 정렬 + 같은 길이로
+        const labels=b.glsSeries.map(p=>fmtTime(p.t));
+        const glsVals=b.glsSeries.map(p=>p.ls);
+        const tlsVals=b.tlsSeries.map(p=>p.ls);
+        // 분석 — 마지막 값으로 격차 진단
+        const lastG=glsVals[glsVals.length-1];
+        const lastT=tlsVals[tlsVals.length-1];
+        const gap=lastT-lastG;
+        let diag='';
+        if(Math.abs(gap)<0.15){diag='개미·고래 의견 일치';}
+        else if(gap>0.4){diag='⚠️ 고래 롱 우위 (개미는 보수) → 상승 가능';}
+        else if(gap>0.15){diag='고래가 개미보다 롱 쪽';}
+        else if(gap<-0.4){diag='⚠️ 고래 숏 우위 (개미는 롱) → 컨트래리언 하락 시그널';}
+        else{diag='고래가 개미보다 숏 쪽';}
+        if(statusEl){
+            statusEl.innerHTML=`개미 L/S ${lastG.toFixed(2)} · 고래 L/S ${lastT.toFixed(2)} · <b style="color:${gap>0.15?'#FFD700':gap<-0.15?'#FF69B4':'var(--text-primary)'};">${diag}</b>`;
+        }
+        if(_binanceLSChartInst){try{_binanceLSChartInst.destroy();}catch(e){}}
+        _binanceLSChartInst=new Chart(lsCv,{
+            type:'line',
+            data:{labels,datasets:[
+                {label:'개미 (전체 계좌)',data:glsVals,
+                    borderColor:'#8b949e',backgroundColor:'transparent',
+                    borderWidth:1.5,pointRadius:0,tension:0.2,borderDash:[4,4]},
+                {label:'고래 (상위 트레이더 포지션)',data:tlsVals,
+                    borderColor:'#22d3ee',backgroundColor:'rgba(34,211,238,0.08)',
+                    borderWidth:2,pointRadius:0,fill:true,tension:0.2},
+            ]},
+            options:{
+                responsive:true,maintainAspectRatio:false,
+                plugins:{
+                    legend:{display:true,position:'top',labels:{color:'#e6edf3',font:{size:10},boxWidth:12}},
+                    tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${c.parsed.y.toFixed(2)}`}},
+                },
+                scales:{
+                    x:{ticks:{color:'#8b949e',maxTicksLimit:8,font:{size:9}},grid:{color:'rgba(255,255,255,0.04)'}},
+                    y:{ticks:{color:'#8b949e',font:{size:9}},grid:{color:'rgba(255,255,255,0.04)'},
+                        // 1.0 (중립선) 강조용
+                        afterDataLimits:scale=>{scale.min=Math.min(scale.min,0.5);scale.max=Math.max(scale.max,2);}},
+                },
+            },
+        });
+    }
 }
 
 function renderMultiExchangeCard(){
