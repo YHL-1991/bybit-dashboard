@@ -4001,15 +4001,23 @@ function generateFullSignal(d){
     // (StochRSI는 별도 크로스/패턴 조건에서 평가하므로 합의에서 제외 — 이중카운팅 방지)
     {
         let momBull=0,momBear=0;
-        if(rsi<35)momBull++;else if(rsi>65)momBear++;
+        const mbList=[],msList=[]; // 동의한 지표 이름
+        if(rsi<35){momBull++;mbList.push(`RSI${rsi.toFixed(0)}`);}
+        else if(rsi>65){momBear++;msList.push(`RSI${rsi.toFixed(0)}`);}
         const _wr=calcWilliamsR(d,14);
-        if(_wr!==null){if(_wr<-80)momBull++;else if(_wr>-20)momBear++;}
+        if(_wr!==null){
+            if(_wr<-80){momBull++;mbList.push(`W%R${_wr.toFixed(0)}`);}
+            else if(_wr>-20){momBear++;msList.push(`W%R${_wr.toFixed(0)}`);}
+        }
         const _cci=calcCCI(d,20);
-        if(_cci!==null){if(_cci<-100)momBull++;else if(_cci>100)momBear++;}
-        if(momBull>=3){lS+=3;lR.push(`모멘텀합의과매도${momBull}/3`);}
-        else if(momBull>=2){lS+=1;lR.push(`모멘텀약과매도${momBull}/3`);}
-        if(momBear>=3){sS+=3;sR.push(`모멘텀합의과매수${momBear}/3`);}
-        else if(momBear>=2){sS+=1;sR.push(`모멘텀약과매수${momBear}/3`);}
+        if(_cci!==null){
+            if(_cci<-100){momBull++;mbList.push(`CCI${_cci.toFixed(0)}`);}
+            else if(_cci>100){momBear++;msList.push(`CCI${_cci.toFixed(0)}`);}
+        }
+        if(momBull>=3){lS+=3;lR.push(`모멘텀합의과매도${momBull}/3 [${mbList.join('·')}]`);}
+        else if(momBull>=2){lS+=1;lR.push(`모멘텀약과매도${momBull}/3 [${mbList.join('·')}]`);}
+        if(momBear>=3){sS+=3;sR.push(`모멘텀합의과매수${momBear}/3 [${msList.join('·')}]`);}
+        else if(momBear>=2){sS+=1;sR.push(`모멘텀약과매수${momBear}/3 [${msList.join('·')}]`);}
     }
     // ── 1점 조건 ──
     // 2) 양봉/음봉
@@ -4029,58 +4037,64 @@ function generateFullSignal(d){
     const vwap=calcVWAP(d.slice(-50));
     {
         let volBull=0,volBear=0;
+        const vbList=[],vsList=[];
         // (1) 거래량↑ + 캔들 방향
         if(last.volume>prev.volume*1.2){
-            if(last.close>last.open) volBull++;
-            else if(last.close<last.open) volBear++;
+            if(last.close>last.open){volBull++;vbList.push('거래량↑양봉');}
+            else if(last.close<last.open){volBear++;vsList.push('거래량↑음봉');}
         }
         // (2) OBV + 캔들 방향
         if(obvSeries.length>=2){
             const obvUp=obvSeries[obvSeries.length-1]>obvSeries[obvSeries.length-2];
-            if(obvUp&&last.close>last.open) volBull++;
-            else if(!obvUp&&last.close<last.open) volBear++;
+            if(obvUp&&last.close>last.open){volBull++;vbList.push('OBV↑');}
+            else if(!obvUp&&last.close<last.open){volBear++;vsList.push('OBV↓');}
         }
         // (3) VWAP 위/아래
-        if(price>vwap*1.002) volBull++;
-        else if(price<vwap*0.998) volBear++;
+        if(price>vwap*1.002){volBull++;vbList.push('VWAP↑');}
+        else if(price<vwap*0.998){volBear++;vsList.push('VWAP↓');}
         // (4) 거래량 폭발 + 방향
         if(d.length>=3){
             const av2=(d[d.length-2].volume+d[d.length-3].volume)/2;
             if(av2>0&&last.volume>av2*2){
-                if(last.close>last.open) volBull++;
-                else if(last.close<last.open) volBear++;
+                if(last.close>last.open){volBull++;vbList.push('폭발↑');}
+                else if(last.close<last.open){volBear++;vsList.push('폭발↓');}
             }
         }
-        if(volBull>=3){lS+=2;lR.push(`볼륨합의↑${volBull}/4`);}
-        else if(volBull>=2){lS+=1;lR.push(`볼륨약↑${volBull}/4`);}
-        if(volBear>=3){sS+=2;sR.push(`볼륨합의↓${volBear}/4`);}
-        else if(volBear>=2){sS+=1;sR.push(`볼륨약↓${volBear}/4`);}
+        if(volBull>=3){lS+=2;lR.push(`볼륨합의↑${volBull}/4 [${vbList.join('·')}]`);}
+        else if(volBull>=2){lS+=1;lR.push(`볼륨약↑${volBull}/4 [${vbList.join('·')}]`);}
+        if(volBear>=3){sS+=2;sR.push(`볼륨합의↓${volBear}/4 [${vsList.join('·')}]`);}
+        else if(volBear>=2){sS+=1;sR.push(`볼륨약↓${volBear}/4 [${vsList.join('·')}]`);}
     }
     // 21~22) Williams %R, CCI → 위 '모멘텀 합의'로 통합 (중복 제거)
     // 29~32) 매크로 (DXY, US10Y, S&P, Gold)
     // ── 매크로 합의 (DXY/금리/S&P/골드는 서로 상관관계 큼 → 개별 X, 합의로 통합) ──
     {
         let macroBull=0,macroBear=0;
+        const mbList=[],msList=[];
         if(macroCache['DX-Y.NYB']){
-            if(macroCache['DX-Y.NYB'].change<-0.1) macroBull++;
-            else if(macroCache['DX-Y.NYB'].change>0.1) macroBear++;
+            const v=macroCache['DX-Y.NYB'].change;
+            if(v<-0.1){macroBull++;mbList.push(`DXY${v.toFixed(2)}%`);}
+            else if(v>0.1){macroBear++;msList.push(`DXY+${v.toFixed(2)}%`);}
         }
         if(macroCache['^TNX']){
-            if(macroCache['^TNX'].change<-0.5) macroBull++;
-            else if(macroCache['^TNX'].change>0.5) macroBear++;
+            const v=macroCache['^TNX'].change;
+            if(v<-0.5){macroBull++;mbList.push(`금리${v.toFixed(2)}%`);}
+            else if(v>0.5){macroBear++;msList.push(`금리+${v.toFixed(2)}%`);}
         }
         if(macroCache['^GSPC']){
-            if(macroCache['^GSPC'].change>0.3) macroBull++;
-            else if(macroCache['^GSPC'].change<-0.3) macroBear++;
+            const v=macroCache['^GSPC'].change;
+            if(v>0.3){macroBull++;mbList.push(`S&P+${v.toFixed(2)}%`);}
+            else if(v<-0.3){macroBear++;msList.push(`S&P${v.toFixed(2)}%`);}
         }
         if(macroCache['GC=F']){
-            if(macroCache['GC=F'].change>0.5) macroBull++;
-            else if(macroCache['GC=F'].change<-0.5) macroBear++;
+            const v=macroCache['GC=F'].change;
+            if(v>0.5){macroBull++;mbList.push(`골드+${v.toFixed(2)}%`);}
+            else if(v<-0.5){macroBear++;msList.push(`골드${v.toFixed(2)}%`);}
         }
-        if(macroBull>=3){lS+=2;lR.push(`매크로합의↑${macroBull}/4`);}
-        else if(macroBull>=2){lS+=1;lR.push(`매크로약↑${macroBull}/4`);}
-        if(macroBear>=3){sS+=2;sR.push(`매크로합의↓${macroBear}/4`);}
-        else if(macroBear>=2){sS+=1;sR.push(`매크로약↓${macroBear}/4`);}
+        if(macroBull>=3){lS+=2;lR.push(`매크로합의↑${macroBull}/4 [${mbList.join('·')}]`);}
+        else if(macroBull>=2){lS+=1;lR.push(`매크로약↑${macroBull}/4 [${mbList.join('·')}]`);}
+        if(macroBear>=3){sS+=2;sR.push(`매크로합의↓${macroBear}/4 [${msList.join('·')}]`);}
+        else if(macroBear>=2){sS+=1;sR.push(`매크로약↓${macroBear}/4 [${msList.join('·')}]`);}
     }
     // 33) 센티먼트
     if(lastSentimentData){if(lastSentimentData.up>65){lS+=1;lR.push('센티먼트강세');}if(lastSentimentData.up<35){sS+=1;sR.push('센티먼트약세');}}
@@ -4330,35 +4344,36 @@ function generateFullSignal(d){
     const ma200f=calcSMA(d,200);
     {
         let trendBull=0, trendBear=0;
+        const tbList=[], tsList=[];
         // (1) MA7 방향
-        if(price>m7) trendBull++;
-        else if(price<m7) trendBear++;
+        if(price>m7){trendBull++;tbList.push('MA7↑');}
+        else if(price<m7){trendBear++;tsList.push('MA7↓');}
         // (2) MA 정배열 (가장 강한 추세 신호)
         if(ma7.length&&ma20.length&&ma100.length&&ma200f.length){
             const v7=ma7[ma7.length-1].value, v20=ma20[ma20.length-1].value;
             const v100=ma100[ma100.length-1].value, v200=ma200f[ma200f.length-1].value;
-            if(price>v7&&v7>v20&&v20>v100) trendBull++;
-            else if(price<v7&&v7<v20&&v20<v100) trendBear++;
+            if(price>v7&&v7>v20&&v20>v100){trendBull++;tbList.push('MA정배열');}
+            else if(price<v7&&v7<v20&&v20<v100){trendBear++;tsList.push('MA역배열');}
         }
         // (3) MA20 vs MA100 (중기 추세)
-        if(m20>m100) trendBull++;
-        else if(m20<m100) trendBear++;
+        if(m20>m100){trendBull++;tbList.push('MA20>100');}
+        else if(m20<m100){trendBear++;tsList.push('MA20<100');}
         // (4) 이치모쿠 구름
         if(ich&&ich.senkouA.length&&ich.senkouB.length){
             const sa=ich.senkouA[ich.senkouA.length-1].value, sb=ich.senkouB[ich.senkouB.length-1].value;
-            if(price>Math.max(sa,sb)) trendBull++;
-            else if(price<Math.min(sa,sb)) trendBear++;
+            if(price>Math.max(sa,sb)){trendBull++;tbList.push('구름위');}
+            else if(price<Math.min(sa,sb)){trendBear++;tsList.push('구름아래');}
         }
         // (5) 상위 시간프레임 추세 (htTrend)
-        if(htTrend==='bull') trendBull++;
-        else if(htTrend==='bear') trendBear++;
-        // 합의 점수 부여
-        if(trendBull>=4){lS+=5;lR.push(`추세합의↑${trendBull}/5`);}
-        else if(trendBull>=3){lS+=3;lR.push(`추세확인↑${trendBull}/5`);}
-        else if(trendBull>=2){lS+=1;lR.push(`약추세↑${trendBull}/5`);}
-        if(trendBear>=4){sS+=5;sR.push(`추세합의↓${trendBear}/5`);}
-        else if(trendBear>=3){sS+=3;sR.push(`추세확인↓${trendBear}/5`);}
-        else if(trendBear>=2){sS+=1;sR.push(`약추세↓${trendBear}/5`);}
+        if(htTrend==='bull'){trendBull++;tbList.push('상위추세↑');}
+        else if(htTrend==='bear'){trendBear++;tsList.push('상위추세↓');}
+        // 합의 점수 부여 + 어떤 지표들이 동의했는지 명시
+        if(trendBull>=4){lS+=5;lR.push(`추세합의↑${trendBull}/5 [${tbList.join('·')}]`);}
+        else if(trendBull>=3){lS+=3;lR.push(`추세확인↑${trendBull}/5 [${tbList.join('·')}]`);}
+        else if(trendBull>=2){lS+=1;lR.push(`약추세↑${trendBull}/5 [${tbList.join('·')}]`);}
+        if(trendBear>=4){sS+=5;sR.push(`추세합의↓${trendBear}/5 [${tsList.join('·')}]`);}
+        else if(trendBear>=3){sS+=3;sR.push(`추세확인↓${trendBear}/5 [${tsList.join('·')}]`);}
+        else if(trendBear>=2){sS+=1;sR.push(`약추세↓${trendBear}/5 [${tsList.join('·')}]`);}
     }
     // 44) Wyckoff Spring / Upthrust - 3점
     const spring=detectWyckoffSpring(d,20);
