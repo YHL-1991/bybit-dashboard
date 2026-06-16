@@ -5018,6 +5018,10 @@ async function refreshAll(){
     if(refreshCount%60===0) tasks.push(updateMacroData());
     // 매 15초: 코인니스 속보 (주식 모드에서도 시장 분위기 참고)
     if(refreshCount%15===0||refreshCount===2) tasks.push(updateCoinnessNews());
+    // 매 60초: ETH/BTC 국면 (코인만)
+    if(!stock&&(refreshCount%60===0||refreshCount===5)) tasks.push(updateEthBtcRegime());
+    // 매 30초: 삼각수렴 멀티TF (코인만)
+    if(!stock&&(refreshCount%30===0||refreshCount===6)) tasks.push(updateTriangleConvergence());
     await Promise.all(tasks);
 }
 
@@ -5903,12 +5907,153 @@ async function updateCoinnessNews(){
     }catch(e){}
 }
 
+/* ═══════════════════════════════════
+   ETH/BTC 비율 & 시장 국면 (전태원 관점: 알트시즌 / 도미넌스 프록시)
+   ※ 컨텍스트 표시용. 매매신호 점수에는 미반영.
+   ═══════════════════════════════════ */
+let _ethBtcWeekChart=null, _ethBtcDayChart=null;
+async function binanceKlines(symbol,interval,limit){
+    try{
+        const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+        if(!r.ok)return null;
+        const a=await r.json();
+        return a.map(k=>({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]}));
+    }catch(e){return null;}
+}
+function _drawRatioChart(canvasId,prevInst,rows){
+    const cv=document.getElementById(canvasId);
+    if(!cv||typeof Chart==='undefined'||!rows||!rows.length)return prevInst;
+    const labels=rows.map(p=>{const d=new Date(p.t);return `${d.getMonth()+1}/${d.getDate()}`;});
+    const vals=rows.map(p=>p.c);
+    const up=vals[vals.length-1]>=vals[0];
+    const lineC=up?'#00d26a':'#ff4757';
+    if(prevInst){try{prevInst.destroy();}catch(e){}}
+    return new Chart(cv,{type:'line',
+        data:{labels,datasets:[{data:vals,borderColor:lineC,backgroundColor:up?'rgba(0,210,106,0.08)':'rgba(255,71,87,0.08)',borderWidth:1.5,pointRadius:0,fill:true,tension:0.15}]},
+        options:{responsive:true,maintainAspectRatio:false,
+            plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>' ETH/BTC '+c.parsed.y.toFixed(6)}}},
+            scales:{x:{ticks:{color:'#8b949e',maxTicksLimit:7,font:{size:9}},grid:{color:'rgba(255,255,255,0.04)'}},
+                y:{ticks:{color:'#8b949e',font:{size:9},callback:v=>v.toFixed(4)},grid:{color:'rgba(255,255,255,0.04)'}}}}});
+}
+async function updateEthBtcRegime(){
+    if(isStock(currentSymbol))return;
+    try{
+        const [wk,dy]=await Promise.all([
+            binanceKlines('ETHBTC','1w',60),
+            binanceKlines('ETHBTC','1d',90),
+        ]);
+        if(wk&&wk.length>=2) _ethBtcWeekChart=_drawRatioChart('ethBtcWeekChart',_ethBtcWeekChart,wk);
+        if(dy&&dy.length>=2) _ethBtcDayChart=_drawRatioChart('ethBtcDayChart',_ethBtcDayChart,dy);
+        const regEl=document.getElementById('ethBtcRegime');
+        const roEl=document.getElementById('ethBtcReadout');
+        if(wk&&wk.length>=5){
+            const cur=wk[wk.length-1];      // 진행 중 주봉
+            const prevW=wk[wk.length-2];     // 직전 완료 주봉
+            const ratio=cur.c;
+            const weeklyUp=prevW.c>=prevW.o; // 직전 완료 주봉 방향
+            const ago4=wk[wk.length-5].c;
+            const trend4=ago4>0?(ratio-ago4)/ago4*100:0;
+            let regime,regimeColor;
+            if(trend4>3){regime='알트 우호 (도미넌스↓ 압력)';regimeColor='#00d26a';}
+            else if(trend4<-3){regime='BTC 우위 (도미넌스↑)';regimeColor='#FF69B4';}
+            else{regime='중립 / 횡보';regimeColor='#8b949e';}
+            if(regEl)regEl.innerHTML=`<span style="color:${regimeColor}">${regime}</span>`;
+            const ethFlag=weeklyUp
+                ?`<span style="color:#00d26a;font-weight:700;">직전 주봉 상승 마감 → 전태원 룰: 이더 현물 매수 고려 구간</span>`
+                :`<span style="color:#FF69B4;">직전 주봉 하락 마감 → 이더 진입 보류</span>`;
+            if(roEl)roEl.innerHTML=`현재 ETH/BTC <b>${ratio.toFixed(6)}</b> · 4주 추세 <b style="color:${trend4>=0?'#00d26a':'#ff4757'}">${trend4>=0?'+':''}${trend4.toFixed(1)}%</b><br>${ethFlag}`;
+        }
+    }catch(e){console.warn('ethbtc',e);}
+}
+
+/* ═══════════════════════════════════
+   삼각수렴 멀티TF (프랙탈) + 중간값(중앙선) 회귀 타겟
+   ※ 검증 안 된 가설. 매매신호 점수에는 미반영. 차트 보조 판단용.
+   ═══════════════════════════════════ */
+function detectConvergence(d,lookback=70){
+    if(!d||d.length<30)return null;
+    const slc=d.slice(-lookback);
+    const pv=findPivots(slc,4,4);
+    if(pv.highs.length<2||pv.lows.length<2)return null;
+    const H=pv.highs.slice(-3), L=pv.lows.slice(-3);
+    const hi1=H[0], hi2=H[H.length-1], lo1=L[0], lo2=L[L.length-1];
+    if(hi2.idx===hi1.idx||lo2.idx===lo1.idx)return null;
+    const mU=(hi2.price-hi1.price)/(hi2.idx-hi1.idx);
+    const bU=hi1.price-mU*hi1.idx;
+    const mL=(lo2.price-lo1.price)/(lo2.idx-lo1.idx);
+    const bL=lo1.price-mL*lo1.idx;
+    const lastIdx=slc.length-1;
+    const cur=slc[lastIdx].close;
+    const upperNow=mU*lastIdx+bU;
+    const lowerNow=mL*lastIdx+bL;
+    const converging=mU<mL; // 상단 기울기 < 하단 기울기 = 간격 좁아짐
+    let apexPrice=null, barsToApex=null;
+    if(Math.abs(mU-mL)>1e-12){
+        const apexIdx=(bL-bU)/(mU-mL);
+        apexPrice=mU*apexIdx+bU;
+        barsToApex=Math.round(apexIdx-lastIdx);
+    }
+    const midNow=(upperNow+lowerNow)/2; // 중앙선 = 중간값(되돌림 타겟 가설)
+    let breakout=null;
+    if(cur>upperNow*1.001)breakout='up';
+    else if(cur<lowerNow*0.999)breakout='down';
+    let type='대칭수렴';
+    const aU=Math.abs(mU), aL=Math.abs(mL);
+    if(aU<aL*0.35)type='상승수렴';
+    else if(aL<aU*0.35)type='하강수렴';
+    return {converging,type,apexPrice,barsToApex,midNow,upperNow,lowerNow,cur,breakout};
+}
+async function updateTriangleConvergence(){
+    const el=document.getElementById('triangleContent');
+    if(isStock(currentSymbol)){
+        if(el)el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:10px;">주식 모드에서는 미지원 (코인 전용)</div>';
+        const a=document.getElementById('triangleAlign');if(a)a.innerHTML='';
+        return;
+    }
+    const sym=currentSymbol;
+    const TFs=[['4h','240',120],['1h','60',120],['15m','15',120]];
+    try{
+        const results=[];
+        for(const [label,iv,lim] of TFs){
+            const d=await bybitKline(sym,iv,lim).catch(()=>null);
+            results.push({label,conv:d?detectConvergence(d):null});
+        }
+        const convCount=results.filter(r=>r.conv&&r.conv.converging&&!r.conv.breakout).length;
+        const alignEl=document.getElementById('triangleAlign');
+        if(alignEl){
+            if(convCount>=2)alignEl.innerHTML=`<span style="color:#FFD700">프랙탈 정렬: ${convCount}/3 TF 동시 수렴</span>`;
+            else if(convCount===1)alignEl.innerHTML=`<span style="color:var(--text-secondary)">1/3 TF 수렴</span>`;
+            else alignEl.innerHTML=`<span style="color:var(--text-secondary)">수렴 없음</span>`;
+        }
+        if(!el)return;
+        let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 8px;">TF</th><th style="text-align:left;padding:4px 8px;">상태</th><th style="text-align:right;padding:4px 8px;">중간값(되돌림 타겟)</th><th style="text-align:right;padding:4px 8px;">apex 도달</th></tr></thead><tbody>';
+        for(const r of results){
+            const c=r.conv;
+            let state,stateColor,mid='-',apex='-';
+            if(!c){state='데이터 부족';stateColor='var(--text-secondary)';}
+            else if(c.breakout==='up'){state='상단 이탈 (↑돌파)';stateColor='#00d26a';}
+            else if(c.breakout==='down'){state='하단 이탈 (↓이탈)';stateColor='#FF69B4';}
+            else if(c.converging){state=c.type+' 진행중';stateColor='#FFD700';}
+            else{state='수렴 아님';stateColor='var(--text-secondary)';}
+            if(c){
+                mid=fp(c.midNow);
+                apex=(c.barsToApex!=null&&c.barsToApex>0)?`${c.barsToApex}봉 후`:(c.barsToApex!=null?'지남':'-');
+            }
+            html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);"><td style="padding:5px 8px;font-weight:600;">${r.label}</td><td style="padding:5px 8px;color:${stateColor};">${state}</td><td style="padding:5px 8px;text-align:right;font-variant-numeric:tabular-nums;">${mid}</td><td style="padding:5px 8px;text-align:right;color:var(--text-secondary);">${apex}</td></tr>`;
+        }
+        html+='</tbody></table>';
+        el.innerHTML=html;
+    }catch(e){console.warn('triangle',e);}
+}
+
 /* ───── 초기화 ───── */
 (async function(){
     await initTVChart();initRSIChart();initMACDChart();
     await updateTVChart();refreshAll();connectWS();
     // 초기 로드: 컨센서스, 매크로, 온체인, 코인니스 속보
     updateExpertConsensus();updateMacroData();updateOnchainData();updateCoinnessNews();
+    // 초기 로드: ETH/BTC 국면 + 삼각수렴 멀티TF (코인만)
+    if(!isStock(currentSymbol)){setTimeout(()=>{updateEthBtcRegime();updateTriangleConvergence();},1500);}
     // 초기 로드: MTF + 다중구간/거래소 청산 + 종목 스캐너
     updateMultiTimeframeAnalysis();
     setTimeout(()=>{updateMultiPeriodLiquidation();updateMultiExchangeLiquidation();},800);
