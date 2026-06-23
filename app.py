@@ -3,6 +3,7 @@ import json
 import os
 import hmac
 import hashlib
+import secrets
 import time as _time0
 from pathlib import Path
 
@@ -52,20 +53,52 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 # ─────────────────────────────────────────────────────────────────────────
-# 초대 코드 기반 접근 제어 (invite-only access gate)
-#   - 환경변수 ACCESS_CODES = 콤마구분 초대코드 목록 (예: "alice-7x2k,bob-9m3p")
-#   - 미설정(빈값)이면 게이트 비활성 = 전체 공개 (기존 동작 유지, 락아웃 방지)
-#   - 설정되면: 로그인(/login) 안 한 사람은 URL만으로 못 들어옴
-#   - 인증 성공 시 HMAC 서명 쿠키 발급 (기본 30일 유지)
+# 하이브리드 접근 제어 (공개 랜딩 / 초대 전용 대시보드)
+#   - "/"          : 공개 랜딩 페이지 (마케팅/포트폴리오, 누구나 접근)
+#   - "/dashboard" : 실제 대시보드 (초대 세션 필요)
+#   - "/api","/ws" : 데이터 (초대 세션 필요)
+#   인증 경로 3가지:
+#     1) 매직링크  /invite?token=...  (admin이 발급, 클릭 시 자동 로그인)
+#     2) 초대코드  /login            (ACCESS_CODES 직접 입력)
+#   환경변수:
+#     ACCESS_CODES  콤마구분 초대코드 (미설정 시 게이트 비활성 = 전체 공개)
+#     ADMIN_KEY     /admin 접근 키 (미설정 시 admin 비활성)
+#     TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID  request-access 알림용
+#     SESSION_SECRET  쿠키 서명 비밀 (미설정 시 ACCESS_CODES 기반 파생)
 # ─────────────────────────────────────────────────────────────────────────
 ACCESS_CODES = [c.strip() for c in os.environ.get("ACCESS_CODES", "").split(",") if c.strip()]
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 _SESSION_SECRET = os.environ.get("SESSION_SECRET", "") or (
     "velox-gate-" + hashlib.sha256(("|".join(ACCESS_CODES) or "novar").encode()).hexdigest()[:40]
 )
-_SESSION_TTL = 60 * 60 * 24 * 30  # 30일
+_SESSION_TTL = 60 * 60 * 24 * 30   # 세션 쿠키 30일
+_INVITE_TTL = 60 * 60 * 24 * 14    # 매직링크 토큰 14일 (첫 사용까지)
 _COOKIE_NAME = "velox_session"
-# 게이트를 통과시켜야 하는 공개 경로 (로그인 페이지/정적파일/헬스체크)
-_PUBLIC_PREFIXES = ("/login", "/logout", "/static/", "/favicon", "/healthz")
+# 게이트를 통과시키는(=세션 불필요) 경로. 나머지 중 _GATED_PREFIXES만 보호.
+_GATED_PREFIXES = ("/dashboard", "/api", "/ws")
+
+
+def _data_path(name: str) -> str:
+    return os.path.join(_DATA_DIR, name)
+
+
+def _load_json(name, default):
+    try:
+        p = _data_path(name)
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return default
+
+
+def _save_json(name, data):
+    try:
+        with open(_data_path(name), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def _make_session() -> str:
@@ -87,28 +120,61 @@ def _valid_session(cookie: str) -> bool:
         return False
 
 
+def _set_session_cookie(resp, request):
+    secure = request.url.scheme == "https"  # localhost(http)에서도 동작하도록 https일 때만 Secure
+    resp.set_cookie(_COOKIE_NAME, _make_session(), max_age=_SESSION_TTL,
+                    httponly=True, samesite="lax", secure=secure)
+    return resp
+
+
+def _log_access(kind, request, extra=""):
+    try:
+        log = _load_json("velox_access.json", [])
+        ip = request.headers.get("x-forwarded-for", "") or (request.client.host if request.client else "")
+        log.append({"ts": int(_time0.time()), "kind": kind, "ip": ip.split(",")[0].strip(),
+                    "path": request.url.path, "extra": extra,
+                    "ua": request.headers.get("user-agent", "")[:140]})
+        _save_json("velox_access.json", log[-1000:])
+    except Exception:
+        pass
+
+
+async def _notify_telegram(text: str):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat:
+        return
+    try:
+        async with _httpx.AsyncClient(timeout=8.0) as c:
+            await c.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                         json={"chat_id": chat, "text": text, "disable_web_page_preview": True})
+    except Exception:
+        pass
+
+
 @app.middleware("http")
 async def _access_gate(request: Request, call_next):
-    # 게이트 비활성(ACCESS_CODES 미설정) → 전체 공개
+    # 게이트 비활성(ACCESS_CODES 미설정) → 전체 공개 (개발/락아웃 방지)
     if not ACCESS_CODES:
         return await call_next(request)
     path = request.url.path
-    if any(path.startswith(p) for p in _PUBLIC_PREFIXES):
-        return await call_next(request)
+    if not any(path.startswith(p) for p in _GATED_PREFIXES):
+        return await call_next(request)  # 랜딩/로그인/초대/admin/정적 등은 통과
     if _valid_session(request.cookies.get(_COOKIE_NAME, "")):
         return await call_next(request)
-    # 미인증: API/WS는 401, 그 외(HTML)는 로그인 페이지로
+    # 미인증: API/WS는 401, 대시보드 HTML은 로그인으로
     if path.startswith("/api") or path.startswith("/ws"):
-        return JSONResponse({"error": "unauthorized", "message": "초대 코드 인증 필요"}, status_code=401)
+        return JSONResponse({"error": "unauthorized", "message": "초대 인증 필요"}, status_code=401)
     return RedirectResponse(url="/login", status_code=302)
 
 
+# ── 초대코드 직접 로그인 ──
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     if not ACCESS_CODES:
-        return RedirectResponse(url="/", status_code=302)
+        return RedirectResponse(url="/dashboard", status_code=302)
     if _valid_session(request.cookies.get(_COOKIE_NAME, "")):
-        return RedirectResponse(url="/", status_code=302)
+        return RedirectResponse(url="/dashboard", status_code=302)
     return templates.TemplateResponse("login.html", {"request": request})
 
 
@@ -122,18 +188,115 @@ async def login_submit(request: Request):
     ok = any(hmac.compare_digest(code, c) for c in ACCESS_CODES) if code else False
     if not ok:
         return JSONResponse({"ok": False, "message": "초대 코드가 올바르지 않습니다."}, status_code=401)
-    resp = JSONResponse({"ok": True})
-    secure = request.url.scheme == "https"  # localhost(http)에서도 동작하도록 https일 때만 Secure
-    resp.set_cookie(_COOKIE_NAME, _make_session(), max_age=_SESSION_TTL,
-                    httponly=True, samesite="lax", secure=secure)
-    return resp
+    _log_access("login_code", request)
+    return _set_session_cookie(JSONResponse({"ok": True}), request)
+
+
+# ── 매직링크 초대 (admin이 발급한 토큰 클릭) ──
+@app.get("/invite")
+async def invite_redeem(request: Request, token: str = ""):
+    invites = _load_json("velox_invites.json", {})
+    inv = invites.get(token)
+    now = int(_time0.time())
+    if not inv:
+        return templates.TemplateResponse("login.html",
+            {"request": request, "invite_error": "유효하지 않은 초대 링크입니다."}, status_code=403)
+    if inv.get("revoked"):
+        return templates.TemplateResponse("login.html",
+            {"request": request, "invite_error": "취소된 초대 링크입니다."}, status_code=403)
+    if now - int(inv.get("created", now)) > _INVITE_TTL and not inv.get("used"):
+        return templates.TemplateResponse("login.html",
+            {"request": request, "invite_error": "만료된 초대 링크입니다."}, status_code=403)
+    # 첫 사용 기록 + 세션 발급
+    if not inv.get("used"):
+        inv["used"] = now
+        inv["uses"] = inv.get("uses", 0) + 1
+        invites[token] = inv
+        _save_json("velox_invites.json", invites)
+    _log_access("invite_redeem", request, extra=inv.get("label", ""))
+    return _set_session_cookie(RedirectResponse(url="/dashboard", status_code=302), request)
 
 
 @app.get("/logout")
 async def logout():
-    resp = RedirectResponse(url="/login", status_code=302)
+    resp = RedirectResponse(url="/", status_code=302)
     resp.delete_cookie(_COOKIE_NAME)
     return resp
+
+
+# ── 공개 데모 신청 폼 (랜딩 페이지에서 제출) ──
+@app.post("/request-access")
+async def request_access(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = (body.get("name", "") or "").strip()[:120]
+    email = (body.get("email", "") or "").strip()[:160]
+    company = (body.get("company", "") or "").strip()[:160]
+    use_case = (body.get("use_case", "") or "").strip()[:600]
+    if not email or "@" not in email:
+        return JSONResponse({"ok": False, "message": "유효한 이메일을 입력하세요."}, status_code=400)
+    leads = _load_json("velox_leads.json", [])
+    ip = request.headers.get("x-forwarded-for", "") or (request.client.host if request.client else "")
+    leads.append({"ts": int(_time0.time()), "name": name, "email": email,
+                  "company": company, "use_case": use_case, "status": "new",
+                  "ip": ip.split(",")[0].strip()})
+    _save_json("velox_leads.json", leads[-2000:])
+    await _notify_telegram(
+        f"🔔 Velox 데모 신청\n이름: {name}\n이메일: {email}\n회사: {company}\n용도: {use_case[:300]}")
+    return JSONResponse({"ok": True})
+
+
+# ── 관리자 페이지 (리드 조회 + 매직링크 발급) ──
+def _admin_ok(key: str) -> bool:
+    return bool(ADMIN_KEY) and bool(key) and hmac.compare_digest(key, ADMIN_KEY)
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request, key: str = ""):
+    if not _admin_ok(key):
+        return HTMLResponse("<h3 style='font-family:sans-serif'>403 — admin key 필요</h3>", status_code=403)
+    leads = _load_json("velox_leads.json", [])
+    invites = _load_json("velox_invites.json", {})
+    return templates.TemplateResponse("admin.html", {
+        "request": request, "key": key,
+        "leads": list(reversed(leads)),
+        "invites": [{"token": t, **v} for t, v in sorted(invites.items(), key=lambda kv: kv[1].get("created", 0), reverse=True)],
+    })
+
+
+@app.post("/admin/invite")
+async def admin_invite(request: Request, key: str = ""):
+    if not _admin_ok(key):
+        return JSONResponse({"ok": False, "message": "admin key 필요"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    label = (body.get("label", "") or "").strip()[:120]
+    invites = _load_json("velox_invites.json", {})
+    token = secrets.token_urlsafe(24)
+    invites[token] = {"label": label, "created": int(_time0.time()), "used": 0, "uses": 0, "revoked": False}
+    _save_json("velox_invites.json", invites)
+    base = str(request.base_url).rstrip("/")
+    return JSONResponse({"ok": True, "token": token, "link": f"{base}/invite?token={token}"})
+
+
+@app.post("/admin/revoke")
+async def admin_revoke(request: Request, key: str = ""):
+    if not _admin_ok(key):
+        return JSONResponse({"ok": False, "message": "admin key 필요"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    token = body.get("token", "")
+    invites = _load_json("velox_invites.json", {})
+    if token in invites:
+        invites[token]["revoked"] = True
+        _save_json("velox_invites.json", invites)
+    return JSONResponse({"ok": True})
 
 
 @app.get("/healthz")
@@ -908,7 +1071,15 @@ async def api_debug():
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+async def landing(request: Request):
+    # 공개 랜딩 페이지 (마케팅/포트폴리오). 게이트 무관 항상 공개.
+    _log_access("landing_view", request)
+    return templates.TemplateResponse("landing.html", {"request": request})
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    # 실제 대시보드. ACCESS_CODES 설정 시 미들웨어가 세션 검사.
     return templates.TemplateResponse("index.html", {"request": request, "symbols": SYMBOLS, "stocks": STOCKS})
 
 

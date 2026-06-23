@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Velox · Admin</title>
+    <link rel="stylesheet" href="/static/style.css?v=20260605b">
+    <style>
+        body { padding:24px; max-width:1000px; margin:0 auto; }
+        h1 { font-size:18px; margin-bottom:4px; }
+        .sub { color:var(--text-secondary); font-size:12px; margin-bottom:22px; }
+        .card { background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:18px; margin-bottom:20px; }
+        .card h2 { font-size:14px; margin-bottom:12px; }
+        table { width:100%; border-collapse:collapse; font-size:12px; }
+        th { text-align:left; color:var(--text-secondary); font-size:10px; padding:6px 8px; border-bottom:1px solid var(--border); }
+        td { padding:7px 8px; border-bottom:1px solid rgba(255,255,255,0.05); vertical-align:top; }
+        input { padding:9px 11px; background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border); border-radius:7px; font-size:13px; outline:none; }
+        button { padding:9px 14px; background:var(--yellow); color:#000; border:none; border-radius:7px; font-weight:700; font-size:12px; cursor:pointer; }
+        .mini { padding:4px 9px; font-size:11px; background:#444; color:#fff; }
+        .link-out { font-family:monospace; font-size:11px; color:var(--cyan); word-break:break-all; }
+        .tag { font-size:10px; padding:2px 7px; border-radius:4px; }
+        .tag.new { background:rgba(0,210,106,0.15); color:var(--green); }
+        .tag.used { background:rgba(255,215,0,0.15); color:var(--yellow); }
+        .tag.rev { background:rgba(255,71,87,0.15); color:var(--red); }
+        .empty { color:var(--text-secondary); font-size:12px; padding:10px; }
+    </style>
+</head>
+<body>
+    <h1>Velox Admin</h1>
+    <div class="sub">데모 신청 리드 + 매직링크 초대 발급</div>
+
+    <div class="card">
+        <h2>매직링크 발급</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <input id="lblInput" type="text" placeholder="라벨 (예: alice@acme.com / 채용담당 Bob)" style="flex:1;min-width:220px;">
+            <button onclick="issueInvite()">초대 링크 생성</button>
+        </div>
+        <div id="newLink" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="card">
+        <h2>발급된 초대 ({{ invites|length }})</h2>
+        {% if invites %}
+        <table>
+            <thead><tr><th>라벨</th><th>상태</th><th>생성</th><th>링크</th><th></th></tr></thead>
+            <tbody>
+            {% for inv in invites %}
+                <tr>
+                    <td>{{ inv.label or '-' }}</td>
+                    <td>{% if inv.revoked %}<span class="tag rev">취소됨</span>{% elif inv.used %}<span class="tag used">사용됨 ({{ inv.uses }})</span>{% else %}<span class="tag new">미사용</span>{% endif %}</td>
+                    <td style="color:var(--text-secondary);" data-ts="{{ inv.created }}">{{ inv.created }}</td>
+                    <td class="link-out">/invite?token={{ inv.token }}</td>
+                    <td>{% if not inv.revoked %}<button class="mini" onclick="revoke('{{ inv.token }}')">취소</button>{% endif %}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}<div class="empty">아직 발급된 초대 없음</div>{% endif %}
+    </div>
+
+    <div class="card">
+        <h2>데모 신청 리드 ({{ leads|length }})</h2>
+        {% if leads %}
+        <table>
+            <thead><tr><th>시각</th><th>이름</th><th>이메일</th><th>회사</th><th>용도</th></tr></thead>
+            <tbody>
+            {% for ld in leads %}
+                <tr>
+                    <td style="color:var(--text-secondary);white-space:nowrap;" data-ts="{{ ld.ts }}">{{ ld.ts }}</td>
+                    <td>{{ ld.name or '-' }}</td>
+                    <td>{{ ld.email }}</td>
+                    <td>{{ ld.company or '-' }}</td>
+                    <td>{{ ld.use_case or '-' }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}<div class="empty">아직 신청 없음</div>{% endif %}
+    </div>
+
+    <script>
+        const KEY={{ key|tojson }};
+        // unix초 → 로컬 시각 표시
+        document.querySelectorAll('[data-ts]').forEach(el=>{
+            const ts=parseInt(el.getAttribute('data-ts'))||0;
+            if(ts>0)el.textContent=new Date(ts*1000).toLocaleString();
+        });
+        async function issueInvite(){
+            const label=document.getElementById('lblInput').value.trim();
+            const r=await fetch('/admin/invite?key='+encodeURIComponent(KEY),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label})});
+            const d=await r.json();
+            if(d.ok){
+                document.getElementById('newLink').innerHTML='<div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;">아래 링크를 초대할 사람에게 보내세요:</div><div class="link-out" style="padding:8px;background:var(--bg-primary);border-radius:6px;">'+d.link+'</div>';
+            } else { document.getElementById('newLink').textContent=d.message||'실패'; }
+        }
+        async function revoke(token){
+            if(!confirm('이 초대를 취소할까요?'))return;
+            await fetch('/admin/revoke?key='+encodeURIComponent(KEY),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+            location.reload();
+        }
+    </script>
+</body>
+</html>

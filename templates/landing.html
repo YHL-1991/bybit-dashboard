@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Velox — Real-Time Crypto & Equities Trading Dashboard</title>
+    <meta name="description" content="Velox is a full-stack, real-time trading dashboard unifying multi-exchange derivatives data, on-chain flows, liquidation mapping, and multi-timeframe signals. Invite-only demo.">
+    <link rel="stylesheet" href="/static/style.css?v=20260605b">
+    <style>
+        body { background:var(--bg-primary); color:var(--text-primary); }
+        .lp-wrap { max-width:1040px; margin:0 auto; padding:0 22px; }
+        .lp-nav { display:flex; align-items:center; justify-content:space-between; padding:18px 0; }
+        .lp-nav img { height:46px; }
+        .lp-nav a.code { font-size:12px; color:var(--text-secondary); text-decoration:none; border:1px solid var(--border); padding:7px 14px; border-radius:7px; }
+        .lp-nav a.code:hover { color:var(--text-primary); border-color:var(--yellow); }
+        .hero { text-align:center; padding:54px 0 38px; }
+        .hero h1 { font-size:40px; font-weight:800; line-height:1.15; margin-bottom:16px; letter-spacing:-0.5px; }
+        .hero h1 .grad { background:linear-gradient(92deg,#FFD700,#22d3ee); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+        .hero p { font-size:16px; color:var(--text-secondary); max-width:680px; margin:0 auto 26px; line-height:1.6; }
+        .hero .cta { display:inline-block; background:var(--yellow); color:#000; font-weight:700; font-size:15px; padding:13px 28px; border-radius:9px; text-decoration:none; }
+        .hero .cta:hover { opacity:.9; }
+        .hero .sub { display:block; margin-top:12px; font-size:12px; color:var(--text-secondary); }
+        .badges { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin:22px 0 0; }
+        .badge { font-size:11px; color:var(--text-secondary); border:1px solid var(--border); border-radius:50px; padding:6px 13px; }
+        .section { padding:40px 0; border-top:1px solid var(--border); }
+        .section h2 { font-size:22px; font-weight:700; margin-bottom:6px; text-align:center; }
+        .section .lead { text-align:center; color:var(--text-secondary); font-size:13px; margin-bottom:30px; }
+        .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+        @media(max-width:860px){ .grid{grid-template-columns:1fr;} .hero h1{font-size:30px;} }
+        .feat { background:var(--bg-card); border:1px solid var(--border); border-radius:11px; padding:18px; }
+        .feat .ic { width:34px; height:34px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:17px; margin-bottom:11px; background:rgba(255,215,0,0.08); }
+        .feat h3 { font-size:14px; font-weight:700; margin-bottom:6px; }
+        .feat p { font-size:12px; color:var(--text-secondary); line-height:1.55; }
+        .stack { display:flex; flex-wrap:wrap; gap:9px; justify-content:center; }
+        .chip { font-size:12px; background:var(--bg-card); border:1px solid var(--border); border-radius:7px; padding:8px 14px; color:var(--text-primary); }
+        .form-card { max-width:520px; margin:0 auto; background:var(--bg-card); border:1px solid var(--border); border-radius:13px; padding:26px; }
+        .form-card label { display:block; font-size:12px; color:var(--text-secondary); margin:12px 0 5px; }
+        .form-card input, .form-card textarea { width:100%; box-sizing:border-box; padding:11px 13px; background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border); border-radius:8px; font-size:14px; outline:none; font-family:inherit; }
+        .form-card input:focus, .form-card textarea:focus { border-color:var(--yellow); }
+        .form-card textarea { min-height:74px; resize:vertical; }
+        .form-card button { width:100%; margin-top:18px; padding:13px; background:var(--yellow); color:#000; border:none; border-radius:9px; font-size:15px; font-weight:700; cursor:pointer; }
+        .form-card button:disabled { opacity:.5; cursor:not-allowed; }
+        .form-msg { text-align:center; font-size:13px; margin-top:14px; min-height:18px; }
+        .ok { color:var(--green); } .err { color:var(--red); }
+        .lp-foot { text-align:center; padding:34px 0; color:var(--text-secondary); font-size:11px; line-height:1.7; border-top:1px solid var(--border); }
+        .disc { max-width:760px; margin:14px auto 0; font-size:10.5px; color:var(--text-secondary); opacity:.75; line-height:1.6; }
+    </style>
+</head>
+<body>
+    <div class="lp-wrap">
+        <div class="lp-nav">
+            <img src="/static/logo.png" alt="Velox">
+            <a class="code" href="/login">Have an invite code?</a>
+        </div>
+
+        <div class="hero">
+            <h1>The institutional-grade <span class="grad">trading cockpit</span><br>built by one person.</h1>
+            <p>Velox unifies real-time derivatives data, on-chain flows, liquidation mapping, whale positioning, and multi-timeframe signals into a single dashboard — for crypto perpetuals and global equities. Reviewed by an ex-Jane Street quant.</p>
+            <a class="cta" href="#request">Request Demo Access</a>
+            <span class="sub">Live demo is invite-only. Tell us who you are and we'll send you access.</span>
+            <div class="badges">
+                <span class="badge">FastAPI + WebSocket</span>
+                <span class="badge">Bybit / Binance live data</span>
+                <span class="badge">40+ symbols scanned</span>
+                <span class="badge">Backtesting + forward-test</span>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>What's inside</h2>
+            <div class="lead">A trader's full situational picture, updated by the second.</div>
+            <div class="grid">
+                <div class="feat"><div class="ic">📊</div><h3>Multi-timeframe signal engine</h3><p>Weekly→1h consensus scoring across 30+ indicators, with collinearity-reduced grouping (trend / momentum / volume) so signals reflect independent confirmation, not double-counting.</p></div>
+                <div class="feat"><div class="ic">🐋</div><h3>Whale vs retail positioning</h3><p>Binance OI time-series plus retail (global) vs whale (top-trader) long/short ratios, charted together with an automatic contrarian-divergence read.</p></div>
+                <div class="feat"><div class="ic">🔥</div><h3>Liquidation mapping</h3><p>Volume-profile-based liquidation clustering anchored to where positions actually opened, with already-swept zones removed — honestly labeled as an estimate, not fake data.</p></div>
+                <div class="feat"><div class="ic">🔁</div><h3>ETH/BTC regime & dominance</h3><p>Alt-season vs BTC-season regime from ETH/BTC weekly trend, plus triangle-convergence detection across 4h / 1h / 15m timeframes.</p></div>
+                <div class="feat"><div class="ic">📰</div><h3>Real-time news + sentiment</h3><p>Live Korean crypto breaking-news feed with keyword-weighted BTC bias read and a top-of-page alert for market-moving headlines.</p></div>
+                <div class="feat"><div class="ic">🧪</div><h3>Backtest + forward-test</h3><p>Full-symbol backtesting with an equity curve, plus a forward-test logger that pairs each live signal to its TP/SL outcome — measuring real hit-rate and EV, net of fees.</p></div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Built on</h2>
+            <div class="lead">Solo full-stack build — backend, data pipeline, frontend, deployment.</div>
+            <div class="stack">
+                <span class="chip">Python · FastAPI</span>
+                <span class="chip">WebSocket streaming</span>
+                <span class="chip">Bybit V5 / Binance Futures APIs</span>
+                <span class="chip">Vanilla JS · Chart.js · Lightweight Charts</span>
+                <span class="chip">Yahoo Finance (equities)</span>
+                <span class="chip">Railway deploy + persistent volume</span>
+                <span class="chip">HMAC session auth</span>
+            </div>
+        </div>
+
+        <div class="section" id="request">
+            <h2>Request demo access</h2>
+            <div class="lead">For recruiters, engineering leads, and collaborators. We review every request.</div>
+            <div class="form-card">
+                <form id="reqForm" autocomplete="off">
+                    <label>Name</label>
+                    <input id="f-name" type="text" placeholder="Your name">
+                    <label>Work email *</label>
+                    <input id="f-email" type="email" placeholder="you@company.com">
+                    <label>Company / Team</label>
+                    <input id="f-company" type="text" placeholder="Company or team (optional)">
+                    <label>What brings you here?</label>
+                    <textarea id="f-use" placeholder="Hiring, a project, evaluation, curiosity…"></textarea>
+                    <button id="f-btn" type="submit">Request access</button>
+                </form>
+                <div id="reqMsg" class="form-msg"></div>
+            </div>
+        </div>
+
+        <div class="lp-foot">
+            Velox Trading Dashboard — independent personal project.
+            <div class="disc">
+                Velox is a research and decision-support tool. It does not provide investment advice, signals as recommendations, or any guarantee of results. Market data is sourced from public exchange APIs and may be delayed or estimated where noted. The live demo is private and access is granted at the owner's discretion.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const form=document.getElementById('reqForm');
+        const btn=document.getElementById('f-btn');
+        const msg=document.getElementById('reqMsg');
+        form.addEventListener('submit', async (e)=>{
+            e.preventDefault();
+            const email=document.getElementById('f-email').value.trim();
+            if(!email||!email.includes('@')){ msg.className='form-msg err'; msg.textContent='Please enter a valid email.'; return; }
+            btn.disabled=true; msg.className='form-msg'; msg.textContent='Sending…';
+            try{
+                const r=await fetch('/request-access',{method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({
+                        name:document.getElementById('f-name').value.trim(),
+                        email:email,
+                        company:document.getElementById('f-company').value.trim(),
+                        use_case:document.getElementById('f-use').value.trim(),
+                    })});
+                const d=await r.json().catch(()=>({}));
+                if(r.ok&&d.ok){ form.reset(); msg.className='form-msg ok'; msg.textContent='Thanks — request received. We\'ll be in touch by email.'; }
+                else { msg.className='form-msg err'; msg.textContent=d.message||'Something went wrong. Try again.'; }
+            }catch(_){ msg.className='form-msg err'; msg.textContent='Connection error. Try again.'; }
+            btn.disabled=false;
+        });
+    </script>
+</body>
+</html>

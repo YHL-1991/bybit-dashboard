@@ -5908,7 +5908,7 @@ async function updateCoinnessNews(){
 }
 
 /* ═══════════════════════════════════
-   ETH/BTC 비율 & 시장 국면 (전태원 관점: 알트시즌 / 도미넌스 프록시)
+   ETH/BTC 비율 & 시장 국면 (알트시즌 / 도미넌스 프록시)
    ※ 컨텍스트 표시용. 매매신호 점수에는 미반영.
    ═══════════════════════════════════ */
 let _ethBtcWeekChart=null, _ethBtcDayChart=null;
@@ -5959,7 +5959,7 @@ async function updateEthBtcRegime(){
             else{regime='중립 / 횡보';regimeColor='#8b949e';}
             if(regEl)regEl.innerHTML=`<span style="color:${regimeColor}">${regime}</span>`;
             const ethFlag=weeklyUp
-                ?`<span style="color:#00d26a;font-weight:700;">직전 주봉 상승 마감 → 전태원 룰: 이더 현물 매수 고려 구간</span>`
+                ?`<span style="color:#00d26a;font-weight:700;">직전 주봉 상승 마감: 이더 현물 매수 고려 구간</span>`
                 :`<span style="color:#FF69B4;">직전 주봉 하락 마감 → 이더 진입 보류</span>`;
             if(roEl)roEl.innerHTML=`현재 ETH/BTC <b>${ratio.toFixed(6)}</b> · 4주 추세 <b style="color:${trend4>=0?'#00d26a':'#ff4757'}">${trend4>=0?'+':''}${trend4.toFixed(1)}%</b><br>${ethFlag}`;
         }
