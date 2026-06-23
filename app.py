@@ -2,12 +2,14 @@ import asyncio
 import json
 import os
 import hmac
+import hashlib
+import time as _time0
 from pathlib import Path
 
 import uvicorn
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
@@ -48,6 +50,95 @@ def _check_trader_auth(request: Request):
 BASE_DIR = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
+
+# ─────────────────────────────────────────────────────────────────────────
+# 초대 코드 기반 접근 제어 (invite-only access gate)
+#   - 환경변수 ACCESS_CODES = 콤마구분 초대코드 목록 (예: "alice-7x2k,bob-9m3p")
+#   - 미설정(빈값)이면 게이트 비활성 = 전체 공개 (기존 동작 유지, 락아웃 방지)
+#   - 설정되면: 로그인(/login) 안 한 사람은 URL만으로 못 들어옴
+#   - 인증 성공 시 HMAC 서명 쿠키 발급 (기본 30일 유지)
+# ─────────────────────────────────────────────────────────────────────────
+ACCESS_CODES = [c.strip() for c in os.environ.get("ACCESS_CODES", "").split(",") if c.strip()]
+_SESSION_SECRET = os.environ.get("SESSION_SECRET", "") or (
+    "velox-gate-" + hashlib.sha256(("|".join(ACCESS_CODES) or "novar").encode()).hexdigest()[:40]
+)
+_SESSION_TTL = 60 * 60 * 24 * 30  # 30일
+_COOKIE_NAME = "velox_session"
+# 게이트를 통과시켜야 하는 공개 경로 (로그인 페이지/정적파일/헬스체크)
+_PUBLIC_PREFIXES = ("/login", "/logout", "/static/", "/favicon", "/healthz")
+
+
+def _make_session() -> str:
+    ts = str(int(_time0.time()))
+    sig = hmac.new(_SESSION_SECRET.encode(), ts.encode(), hashlib.sha256).hexdigest()
+    return f"{ts}.{sig}"
+
+
+def _valid_session(cookie: str) -> bool:
+    if not cookie or "." not in cookie:
+        return False
+    ts, sig = cookie.rsplit(".", 1)
+    expected = hmac.new(_SESSION_SECRET.encode(), ts.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return False
+    try:
+        return (_time0.time() - int(ts)) <= _SESSION_TTL
+    except Exception:
+        return False
+
+
+@app.middleware("http")
+async def _access_gate(request: Request, call_next):
+    # 게이트 비활성(ACCESS_CODES 미설정) → 전체 공개
+    if not ACCESS_CODES:
+        return await call_next(request)
+    path = request.url.path
+    if any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        return await call_next(request)
+    if _valid_session(request.cookies.get(_COOKIE_NAME, "")):
+        return await call_next(request)
+    # 미인증: API/WS는 401, 그 외(HTML)는 로그인 페이지로
+    if path.startswith("/api") or path.startswith("/ws"):
+        return JSONResponse({"error": "unauthorized", "message": "초대 코드 인증 필요"}, status_code=401)
+    return RedirectResponse(url="/login", status_code=302)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    if not ACCESS_CODES:
+        return RedirectResponse(url="/", status_code=302)
+    if _valid_session(request.cookies.get(_COOKIE_NAME, "")):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    code = (body.get("code", "") or "").strip()
+    ok = any(hmac.compare_digest(code, c) for c in ACCESS_CODES) if code else False
+    if not ok:
+        return JSONResponse({"ok": False, "message": "초대 코드가 올바르지 않습니다."}, status_code=401)
+    resp = JSONResponse({"ok": True})
+    secure = request.url.scheme == "https"  # localhost(http)에서도 동작하도록 https일 때만 Secure
+    resp.set_cookie(_COOKIE_NAME, _make_session(), max_age=_SESSION_TTL,
+                    httponly=True, samesite="lax", secure=secure)
+    return resp
+
+
+@app.get("/logout")
+async def logout():
+    resp = RedirectResponse(url="/login", status_code=302)
+    resp.delete_cookie(_COOKIE_NAME)
+    return resp
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
 
 # 인기 종목 우선순위 (검색 드롭다운 상단 노출용)
 PRIORITY_SYMBOLS = [
