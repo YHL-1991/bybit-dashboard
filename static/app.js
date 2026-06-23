@@ -5022,6 +5022,8 @@ async function refreshAll(){
     if(!stock&&(refreshCount%60===0||refreshCount===5)) tasks.push(updateEthBtcRegime());
     // 매 30초: 삼각수렴 멀티TF (코인만)
     if(!stock&&(refreshCount%30===0||refreshCount===6)) tasks.push(updateTriangleConvergence());
+    // 매 30초: 통합 펀딩비 (코인만)
+    if(!stock&&(refreshCount%30===0||refreshCount===7)) tasks.push(updateFundingAggregated());
     await Promise.all(tasks);
 }
 
@@ -6003,6 +6005,68 @@ function detectConvergence(d,lookback=70){
     else if(aL<aU*0.35)type='하강수렴';
     return {converging,type,apexPrice,barsToApex,midNow,upperNow,lowerNow,cur,breakout};
 }
+/* ═══════════════════════════════════
+   통합 펀딩비 (Binance / Bybit / OKX, OI 가중)
+   ═══════════════════════════════════ */
+async function updateFundingAggregated(){
+    if(isStock(currentSymbol))return;
+    const el=document.getElementById('fundingAggContent');
+    const valEl=document.getElementById('fundingAggValue');
+    if(!el)return;
+    const sym=currentSymbol;
+    const coin=sym.replace('USDT','');
+    const okxInst=coin+'-USDT-SWAP';
+    try{
+        const [bnF,bnOI,bbT,okF,okOI]=await Promise.all([
+            fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`).then(r=>r.ok?r.json():null).catch(()=>null),
+            fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${sym}`).then(r=>r.ok?r.json():null).catch(()=>null),
+            bybitTickers(sym).catch(()=>null),
+            fetch(`https://www.okx.com/api/v5/public/funding-rate?instId=${okxInst}`).then(r=>r.ok?r.json():null).catch(()=>null),
+            fetch(`https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=${okxInst}`).then(r=>r.ok?r.json():null).catch(()=>null),
+        ]);
+        const rows=[];
+        if(bnF&&bnF.lastFundingRate!=null){
+            rows.push({ex:'Binance',rate:parseFloat(bnF.lastFundingRate)*100,
+                oi:bnOI&&bnOI.openInterest?parseFloat(bnOI.openInterest):0});
+        }
+        if(bbT&&bbT.fundingRate!=null&&bbT.fundingRate!==''){
+            rows.push({ex:'Bybit',rate:parseFloat(bbT.fundingRate)*100,oi:parseFloat(bbT.openInterest||0)});
+        }
+        if(okF&&okF.data&&okF.data[0]&&okF.data[0].fundingRate!==''){
+            rows.push({ex:'OKX',rate:parseFloat(okF.data[0].fundingRate)*100,
+                oi:(okOI&&okOI.data&&okOI.data[0])?parseFloat(okOI.data[0].oiCcy||0):0});
+        }
+        if(!rows.length){el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:10px;">펀딩비 데이터 없음 (해당 종목 미지원 거래소)</div>';if(valEl)valEl.innerHTML='';return;}
+        // OI 가중 통합 (OI 없으면 단순평균)
+        const totOI=rows.reduce((a,b)=>a+(b.oi>0?b.oi:0),0);
+        let agg;
+        if(totOI>0)agg=rows.reduce((a,b)=>a+b.rate*(b.oi>0?b.oi:0),0)/totOI;
+        else agg=rows.reduce((a,b)=>a+b.rate,0)/rows.length;
+        const fmtR=v=>(v>=0?'+':'')+v.toFixed(4)+'%';
+        const colR=v=>v>=0?'#f0b90b':'#22d3ee';
+        // 통합값 헤더
+        const annual=agg*1095;
+        if(valEl)valEl.innerHTML=`<span style="color:${colR(agg)}">통합 ${fmtR(agg)}</span> <span style="color:var(--text-secondary);font-size:10px;font-weight:400;">(연 ${annual>=0?'+':''}${annual.toFixed(1)}%)</span>`;
+        // 컬럼(바) 표시
+        const maxAbs=Math.max(...rows.map(r=>Math.abs(r.rate)),Math.abs(agg),0.0001);
+        let html='<div style="display:flex;flex-direction:column;gap:7px;">';
+        for(const r of rows){
+            const w=Math.min(100,Math.abs(r.rate)/maxAbs*100);
+            const oiTxt=r.oi>0?`OI ${(r.oi>=1000?(r.oi/1000).toFixed(1)+'K':r.oi.toFixed(1))}`:'OI -';
+            html+=`<div style="display:flex;align-items:center;gap:8px;">
+                <span style="width:62px;font-weight:600;">${r.ex}</span>
+                <div style="flex:1;height:16px;background:rgba(255,255,255,0.04);border-radius:3px;position:relative;">
+                    <div style="position:absolute;left:0;top:0;height:100%;width:${w}%;background:${colR(r.rate)};opacity:0.55;border-radius:3px;"></div>
+                </div>
+                <span style="width:78px;text-align:right;font-weight:700;color:${colR(r.rate)};font-variant-numeric:tabular-nums;">${fmtR(r.rate)}</span>
+                <span style="width:72px;text-align:right;font-size:9px;color:var(--text-secondary);">${oiTxt}</span>
+            </div>`;
+        }
+        html+='</div>';
+        el.innerHTML=html;
+    }catch(e){console.warn('funding-agg',e);}
+}
+
 async function updateTriangleConvergence(){
     const el=document.getElementById('triangleContent');
     if(isStock(currentSymbol)){
@@ -6053,7 +6117,7 @@ async function updateTriangleConvergence(){
     // 초기 로드: 컨센서스, 매크로, 온체인, 코인니스 속보
     updateExpertConsensus();updateMacroData();updateOnchainData();updateCoinnessNews();
     // 초기 로드: ETH/BTC 국면 + 삼각수렴 멀티TF (코인만)
-    if(!isStock(currentSymbol)){setTimeout(()=>{updateEthBtcRegime();updateTriangleConvergence();},1500);}
+    if(!isStock(currentSymbol)){setTimeout(()=>{updateEthBtcRegime();updateTriangleConvergence();updateFundingAggregated();},1500);}
     // 초기 로드: MTF + 다중구간/거래소 청산 + 종목 스캐너
     updateMultiTimeframeAnalysis();
     setTimeout(()=>{updateMultiPeriodLiquidation();updateMultiExchangeLiquidation();},800);

@@ -164,6 +164,20 @@
         </div>
     </div>
 
+    <!-- 통합 펀딩비 (Binance/Bybit/OKX, OI 가중) -->
+    <div class="section-full">
+        <div class="card">
+            <div class="card-title">
+                <span class="dot" style="background:#f0b90b"></span> 통합 펀딩비 (Binance / Bybit / OKX · OI 가중 · 8h)
+                <span id="fundingAggValue" style="font-size:13px;margin-left:auto;font-weight:700;"></span>
+            </div>
+            <div id="fundingAggContent" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:12px;">로딩 중...</div>
+            </div>
+            <p class="hint">8시간 기준 펀딩비(%). <b>양수</b> = 롱이 숏에게 지불(롱 과밀, 과열 시 하락 압력), <b>음수</b> = 숏이 롱에게 지불(숏 과밀, 숏스퀴즈 가능). 통합값은 거래소별 OI로 가중평균. 연환산 = 8h율 ×1095.</p>
+        </div>
+    </div>
+
     <!-- ETH/BTC 비율 + 시장 국면 (알트시즌 vs BTC시즌) -->
     <div class="section-full">
         <div class="card">
@@ -533,6 +547,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260617c"></script>
+    <script src="/static/app.js?v=20260617d"></script>
 </body>
 </html>
