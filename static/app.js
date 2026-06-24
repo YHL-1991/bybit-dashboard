@@ -2652,21 +2652,25 @@ let lastMultiExchangeLiq={data:null,ts:0};
 async function updateMultiExchangeLiquidation(){
     if(isStock(currentSymbol))return;
     const sym=currentSymbol;
+    const coin=sym.replace('USDT','');
+    const okxInst=coin+'-USDT-SWAP';
     try{
-        // 48h × 1h봉 = 시계열 차트용. topLongShortPositionRatio = 상위 트레이더(고래) 포지션 비율
-        const [biOI,biGls,biTls]=await Promise.all([
+        // 개미(전체계정) L/S: Binance+OKX+Bybit  /  고래(상위트레이더) L/S: Binance+OKX (Bybit 미공개)
+        const [biOI,biGls,biTls,okGls,okTls,byR]=await Promise.all([
             fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=1h&limit=48`).then(r=>r.ok?r.json():null).catch(()=>null),
             fetch(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=1h&limit=48`).then(r=>r.ok?r.json():null).catch(()=>null),
             fetch(`https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${sym}&period=1h&limit=48`).then(r=>r.ok?r.json():null).catch(()=>null),
+            fetch(`https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=${coin}&period=1H`).then(r=>r.ok?r.json():null).catch(()=>null),
+            fetch(`https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio-contract-top-trader?instId=${okxInst}&period=1H`).then(r=>r.ok?r.json():null).catch(()=>null),
+            fetch(`https://api.bybit.com/v5/market/account-ratio?category=linear&symbol=${sym}&period=1h&limit=48`).then(r=>r.ok?r.json():null).catch(()=>null),
         ]);
         const result={binance:null,bybit:lastLiquidationData};
+        // OI 추이 (Binance) — 테이블/차트용 현재값 유지
         if(biOI&&Array.isArray(biOI)&&biOI.length){
             const first=parseFloat(biOI[0].sumOpenInterest);
             const last=parseFloat(biOI[biOI.length-1].sumOpenInterest);
-            const oiChange=(last-first)/first*100;
-            result.binance={oiChange,oiCurrent:last};
-            // 시계열 저장
-            result.binance.oiSeries=biOI.map(p=>({t:parseInt(p.timestamp),oi:parseFloat(p.sumOpenInterest),oiUSD:parseFloat(p.sumOpenInterestValue)}));
+            result.binance={oiChange:(last-first)/first*100,oiCurrent:last,
+                oiSeries:biOI.map(p=>({t:parseInt(p.timestamp),oi:parseFloat(p.sumOpenInterest)}))};
         }
         if(biGls&&Array.isArray(biGls)&&biGls.length){
             const last=biGls[biGls.length-1];
@@ -2674,28 +2678,45 @@ async function updateMultiExchangeLiquidation(){
             result.binance.longRatio=parseFloat(last.longAccount)*100;
             result.binance.shortRatio=parseFloat(last.shortAccount)*100;
             result.binance.lsRatio=parseFloat(last.longShortRatio);
-            result.binance.glsSeries=biGls.map(p=>({t:parseInt(p.timestamp),ls:parseFloat(p.longShortRatio)}));
         }
         if(biTls&&Array.isArray(biTls)&&biTls.length){
             result.binance=result.binance||{};
-            const last=biTls[biTls.length-1];
-            result.binance.whaleLsRatio=parseFloat(last.longShortRatio);
-            result.binance.tlsSeries=biTls.map(p=>({t:parseInt(p.timestamp),ls:parseFloat(p.longShortRatio)}));
+            result.binance.whaleLsRatio=parseFloat(biTls[biTls.length-1].longShortRatio);
         }
+        // ── 다거래소 L/S 시간버킷 집계 ──
+        const bkt=t=>Math.floor(t/3600000)*3600000;
+        const mapFrom=(arr,gt,gl)=>{const m={};if(arr)for(const x of arr){const t=gt(x),v=gl(x);if(isFinite(t)&&isFinite(v)&&v>0)m[bkt(t)]=v;}return m;};
+        const bnR=mapFrom(Array.isArray(biGls)?biGls:null,p=>parseInt(p.timestamp),p=>parseFloat(p.longShortRatio));
+        const bnW=mapFrom(Array.isArray(biTls)?biTls:null,p=>parseInt(p.timestamp),p=>parseFloat(p.longShortRatio));
+        const okR=mapFrom(okGls&&okGls.data,p=>parseInt(p[0]),p=>parseFloat(p[1]));
+        const okW=mapFrom(okTls&&okTls.data,p=>parseInt(p[0]),p=>parseFloat(p[1]));
+        const byRm=mapFrom(byR&&byR.result&&byR.result.list,p=>parseInt(p.timestamp),p=>parseFloat(p.buyRatio)/parseFloat(p.sellRatio));
+        const baseB=Object.keys(bnR).map(Number).sort((a,b)=>a-b);
+        const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+        const retailSeries=[],whaleSeries=[];
+        let retailN=0,whaleN=0;
+        for(const b of baseB){
+            const rv=[bnR[b],okR[b],byRm[b]].filter(v=>isFinite(v));
+            const wv=[bnW[b],okW[b]].filter(v=>isFinite(v));
+            retailSeries.push({t:b,ls:avg(rv)});
+            whaleSeries.push({t:b,ls:avg(wv)});
+            if(b===baseB[baseB.length-1]){retailN=rv.length;whaleN=wv.length;}
+        }
+        result.agg={retailSeries,whaleSeries,retailN,whaleN};
         lastMultiExchangeLiq={data:result,ts:Date.now()};
         renderMultiExchangeCard();
-        drawBinanceWhaleCharts(result.binance);
+        drawBinanceWhaleCharts(result.binance,result.agg);
     }catch(e){console.warn('multi-exchange',e);}
 }
 
-// 바이낸스 고래 심리 차트 (OI 추이 + 개미 vs 고래 L/S 비율)
+// 다거래소 포지션 심리 차트 (OI 추이 + 개미/고래 L/S 비율)
 let _binanceOIChartInst=null, _binanceLSChartInst=null;
-function drawBinanceWhaleCharts(b){
+function drawBinanceWhaleCharts(b,agg){
     const oiCv=document.getElementById('binanceOIChart');
     const lsCv=document.getElementById('binanceLSChart');
     const statusEl=document.getElementById('binanceWhaleStatus');
     if(!oiCv||!lsCv||typeof Chart==='undefined')return;
-    if(!b||(!b.oiSeries&&!b.glsSeries&&!b.tlsSeries)){
+    if((!b||!b.oiSeries)&&(!agg||!agg.retailSeries||!agg.retailSeries.length)){
         if(statusEl)statusEl.textContent='데이터 없음 (BTC/ETH/메이저만 지원)';
         return;
     }
@@ -2731,34 +2752,33 @@ function drawBinanceWhaleCharts(b){
     }
 
     // (2) L/S 비율 추이 차트 (개미 vs 고래)
-    if(b.glsSeries&&b.tlsSeries&&b.glsSeries.length&&b.tlsSeries.length){
-        // 두 시리즈의 timestamp가 다를 수 있으니 시간순 정렬 + 같은 길이로
-        const labels=b.glsSeries.map(p=>fmtTime(p.t));
-        const glsVals=b.glsSeries.map(p=>p.ls);
-        const tlsVals=b.tlsSeries.map(p=>p.ls);
-        // 분석 — 마지막 값으로 격차 진단
-        const lastG=glsVals[glsVals.length-1];
-        const lastT=tlsVals[tlsVals.length-1];
-        const gap=lastT-lastG;
+    if(agg&&agg.retailSeries&&agg.retailSeries.length&&agg.whaleSeries&&agg.whaleSeries.length){
+        const labels=agg.retailSeries.map(p=>fmtTime(p.t));
+        const glsVals=agg.retailSeries.map(p=>p.ls);
+        const tlsVals=agg.whaleSeries.map(p=>p.ls);
+        // 분석 — 마지막 값(null 아닌)으로 격차 진단
+        const lastG=[...glsVals].reverse().find(v=>v!=null);
+        const lastT=[...tlsVals].reverse().find(v=>v!=null);
+        const gap=(lastG!=null&&lastT!=null)?lastT-lastG:0;
         let diag='';
-        if(Math.abs(gap)<0.15){diag='개미·고래 의견 일치';}
-        else if(gap>0.4){diag='⚠️ 고래 롱 우위 (개미는 보수) → 상승 가능';}
+        if(Math.abs(gap)<0.15){diag='개미/고래 의견 일치';}
+        else if(gap>0.4){diag='고래 롱 우위 (개미는 보수), 상승 가능';}
         else if(gap>0.15){diag='고래가 개미보다 롱 쪽';}
-        else if(gap<-0.4){diag='⚠️ 고래 숏 우위 (개미는 롱) → 컨트래리언 하락 시그널';}
+        else if(gap<-0.4){diag='고래 숏 우위 (개미는 롱), 컨트래리언 하락 시그널';}
         else{diag='고래가 개미보다 숏 쪽';}
         if(statusEl){
-            statusEl.innerHTML=`개미 L/S ${lastG.toFixed(2)} · 고래 L/S ${lastT.toFixed(2)} · <b style="color:${gap>0.15?'#FFD700':gap<-0.15?'#FF69B4':'var(--text-primary)'};">${diag}</b>`;
+            statusEl.innerHTML=`개미 L/S ${lastG!=null?lastG.toFixed(2):'-'} (${agg.retailN}사) / 고래 L/S ${lastT!=null?lastT.toFixed(2):'-'} (${agg.whaleN}사) · <b style="color:${gap>0.15?'#FFD700':gap<-0.15?'#FF69B4':'var(--text-primary)'};">${diag}</b>`;
         }
         if(_binanceLSChartInst){try{_binanceLSChartInst.destroy();}catch(e){}}
         _binanceLSChartInst=new Chart(lsCv,{
             type:'line',
             data:{labels,datasets:[
-                {label:'개미 (전체 계좌)',data:glsVals,
+                {label:`개미 평균 (${agg.retailN}사: Binance·OKX·Bybit)`,data:glsVals,
                     borderColor:'#8b949e',backgroundColor:'transparent',
-                    borderWidth:1.5,pointRadius:0,tension:0.2,borderDash:[4,4]},
-                {label:'고래 (상위 트레이더 포지션)',data:tlsVals,
+                    borderWidth:1.5,pointRadius:0,tension:0.2,borderDash:[4,4],spanGaps:true},
+                {label:`고래 평균 (${agg.whaleN}사: Binance·OKX)`,data:tlsVals,
                     borderColor:'#22d3ee',backgroundColor:'rgba(34,211,238,0.08)',
-                    borderWidth:2,pointRadius:0,fill:true,tension:0.2},
+                    borderWidth:2,pointRadius:0,fill:true,tension:0.2,spanGaps:true},
             ]},
             options:{
                 responsive:true,maintainAspectRatio:false,
