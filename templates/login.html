@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Velox · 초대 전용</title>
+    <title>Velox · Invite Only</title>
     <link rel="stylesheet" href="/static/style.css?v=20260605b">
     <style>
         body { display:flex; align-items:center; justify-content:center; min-height:100vh; }
@@ -34,14 +34,14 @@
 <body>
     <div class="login-card">
         <img src="/static/logo.png" alt="Velox" class="login-logo">
-        <div class="login-title">초대 전용 대시보드</div>
-        <div class="login-sub">접근하려면 발급받은 초대 코드를 입력하세요.<br>코드가 없으면 입장할 수 없습니다.</div>
+        <div class="login-title">Invite-Only Dashboard</div>
+        <div class="login-sub">Enter your invite code to continue.<br>Access is limited to invited users.</div>
         <form id="loginForm" autocomplete="off">
-            <input id="codeInput" class="login-input" type="password" placeholder="초대 코드" autocomplete="off" autofocus>
-            <button id="loginBtn" class="login-btn" type="submit">입장</button>
+            <input id="codeInput" class="login-input" type="password" placeholder="Invite code" autocomplete="off" autofocus>
+            <button id="loginBtn" class="login-btn" type="submit">Enter</button>
         </form>
         <div id="loginErr" class="login-err">{% if invite_error %}{{ invite_error }}{% endif %}</div>
-        <div class="login-foot">Velox Trading Dashboard · 무단 접근 금지</div>
+        <div class="login-foot">Velox Trading Dashboard — Unauthorized access prohibited</div>
     </div>
     <script>
         const form=document.getElementById('loginForm');
@@ -51,17 +51,17 @@
         form.addEventListener('submit', async (e)=>{
             e.preventDefault();
             const code=input.value.trim();
-            if(!code){err.textContent='코드를 입력하세요.';return;}
+            if(!code){err.textContent='Please enter your code.';return;}
             btn.disabled=true; err.textContent='';
             try{
                 const r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
                 if(r.ok){ window.location.href='/dashboard'; }
                 else{
                     const d=await r.json().catch(()=>({}));
-                    err.textContent=d.message||'코드가 올바르지 않습니다.';
+                    err.textContent=d.message||'Invalid invite code.';
                     input.value=''; input.focus();
                 }
-            }catch(_){ err.textContent='연결 오류. 다시 시도하세요.'; }
+            }catch(_){ err.textContent='Connection error. Please try again.'; }
             btn.disabled=false;
         });
     </script>

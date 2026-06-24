@@ -187,7 +187,7 @@ async def login_submit(request: Request):
     code = (body.get("code", "") or "").strip()
     ok = any(hmac.compare_digest(code, c) for c in ACCESS_CODES) if code else False
     if not ok:
-        return JSONResponse({"ok": False, "message": "초대 코드가 올바르지 않습니다."}, status_code=401)
+        return JSONResponse({"ok": False, "message": "Invalid invite code."}, status_code=401)
     _log_access("login_code", request)
     return _set_session_cookie(JSONResponse({"ok": True}), request)
 
@@ -200,13 +200,13 @@ async def invite_redeem(request: Request, token: str = ""):
     now = int(_time0.time())
     if not inv:
         return templates.TemplateResponse("login.html",
-            {"request": request, "invite_error": "유효하지 않은 초대 링크입니다."}, status_code=403)
+            {"request": request, "invite_error": "Invalid invite link."}, status_code=403)
     if inv.get("revoked"):
         return templates.TemplateResponse("login.html",
-            {"request": request, "invite_error": "취소된 초대 링크입니다."}, status_code=403)
+            {"request": request, "invite_error": "This invite link has been revoked."}, status_code=403)
     if now - int(inv.get("created", now)) > _INVITE_TTL and not inv.get("used"):
         return templates.TemplateResponse("login.html",
-            {"request": request, "invite_error": "만료된 초대 링크입니다."}, status_code=403)
+            {"request": request, "invite_error": "This invite link has expired."}, status_code=403)
     # 첫 사용 기록 + 세션 발급
     if not inv.get("used"):
         inv["used"] = now
