@@ -5031,8 +5031,6 @@ async function refreshAll(){
         tasks.push(updateMultiPeriodLiquidation());
         // 매 30초: 다중 거래소 청산 (외부 API 부담)
         if(refreshCount%30===0||refreshCount===3) tasks.push(updateMultiExchangeLiquidation());
-        // 매 50초: 실시간 종목 픽 스캔 (~40개 종목, inflight 락이 자연 throttle)
-        if(refreshCount%50===0||refreshCount===4) tasks.push(scanTopPicks());
     }
     // 매크로 데이터는 주식에도 유용 → 항상 갱신
     if(refreshCount%60===0) tasks.push(updateMacroData());
@@ -6235,7 +6233,7 @@ async function scanSmartMoneyDivergence(){
             if(mode==='whalelead')return r.whale>=1.2&&(r.whale-r.retail)>=0.4;       // 고래 압도적 롱
             if(mode==='lowcapdrop')return r.whale>=1.1&&r.whale>r.retail;             // 저시총 급락 + 고래 net롱(개미보다↑)
             if(mode==='short')return r.retail>=1.0&&(r.retail-r.whale)>=0.25;          // 개미 롱 + 고래 상대적 숏
-            return r.whale>=1.05&&r.retail<=0.95;                                      // 반등: 고래 롱 + 개미 숏
+            return r.whale>=1.0&&(r.whale-r.retail)>=0.3;                              // 반등: 고래가 개미보다 훨씬 롱(갭≥0.3)
         });
         const longSide=mode!=='short';
         setups.forEach(r=>{
@@ -6335,8 +6333,6 @@ async function updateTriangleConvergence(){
     // 초기 로드: MTF + 다중구간/거래소 청산 + 종목 스캐너
     updateMultiTimeframeAnalysis();
     setTimeout(()=>{updateMultiPeriodLiquidation();updateMultiExchangeLiquidation();},800);
-    // 종목 스캐너는 5초 후 시작 (다른 초기 로드 부담 줄임)
-    setTimeout(()=>scanTopPicks(),5000);
     // 백테스트 결과 표시
     renderBacktestResults();
     refreshInterval=setInterval(()=>{refreshAll();checkAutoTrade();},1000);
