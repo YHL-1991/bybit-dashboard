@@ -6164,7 +6164,7 @@ async function scanSmartMoneyDivergence(){
         const cands=all.filter(x=>{
             if(!x.symbol.endsWith('USDT')||parseFloat(x.quoteVolume)<=2e7)return false;
             const ch=parseFloat(x.priceChangePercent);
-            return mode==='short'?ch>2.5:ch<-1.5;
+            return mode==='short'?ch>1.5:ch<-1.5;
         }).sort((a,b)=>mode==='short'
             ?parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent)
             :parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent))
@@ -6189,7 +6189,8 @@ async function scanSmartMoneyDivergence(){
         // 선별: 반등=고래 롱(≥1.1)+개미 숏(≤0.9) / 하락=개미 롱(≥1.1)+고래 숏(≤0.9)
         const setups=rows.filter(r=>{
             if(r.whale==null||r.retail==null)return false;
-            return mode==='short'?(r.retail>=1.05&&r.whale<=0.95):(r.whale>=1.05&&r.retail<=0.95);
+            // short: 개미 net롱(≥1.0) + 고래가 개미보다 0.25↑ 숏 쪽 (갭 기반, 후보 풀이 작아 완화)
+            return mode==='short'?(r.retail>=1.0&&(r.retail-r.whale)>=0.25):(r.whale>=1.05&&r.retail<=0.95);
         });
         setups.forEach(r=>{r.gap=mode==='short'?(r.retail-r.whale):(r.whale-r.retail);r.score=r.gap*10+Math.min(Math.abs(r.chg),25);});
         setups.sort((a,b)=>b.score-a.score);
