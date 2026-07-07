@@ -6195,10 +6195,10 @@ async function scanSmartMoneyDivergence(){
         }).sort((a,b)=>isDown
             ?parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent)
             :parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent))
-            .slice(0,mode==='lowcapdrop'?55:45);
+            .slice(0,120);
         const rows=[];
-        for(let i=0;i<cands.length;i+=4){
-            const batch=cands.slice(i,i+4);
+        for(let i=0;i<cands.length;i+=3){
+            const batch=cands.slice(i,i+3);
             const res=await Promise.all(batch.map(async c=>{
                 const sym=c.symbol, coin=sym.replace('USDT',''), okx=coin+'-USDT-SWAP';
                 const [bnw,bnr,bnoi,bnf,okw,okr,byr]=await Promise.all([
@@ -6224,8 +6224,8 @@ async function scanSmartMoneyDivergence(){
                 return {sym,chg:parseFloat(c.priceChangePercent),vol:parseFloat(c.quoteVolume),whale,retail,whaleN:wv.length,retailN:rv.length,oi,oiUp,funding,mcap:mcapOf(coin)};
             }));
             rows.push(...res);
-            if(prog)prog.textContent=`${Math.min(i+4,cands.length)}/${cands.length}`;
-            await new Promise(r=>setTimeout(r,200));
+            if(prog)prog.textContent=`${Math.min(i+3,cands.length)}/${cands.length}`;
+            await new Promise(r=>setTimeout(r,250));
         }
         // 선별
         const setups=rows.filter(r=>{
@@ -6248,33 +6248,60 @@ async function scanSmartMoneyDivergence(){
         });
         setups.sort((a,b)=>b.score-a.score);
         if(prog)prog.textContent=`${setups.length}건 발견`;
-        const _desc={whalelead:'가격↑ + 고래 ≫ 개미',lowcapdrop:'저시총 급락 + 고래 롱',short:'가격↑ + 개미 롱 + 고래 숏',long:'가격↓ + 고래 롱 + 개미 숏'}[mode];
+        const _desc={whalelead:'가격↑ + 고래 ≫ 개미',lowcapdrop:'저시총 급락 + 고래 롱',short:'가격↑ + 개미 롱 + 고래 숏',long:'가격↓ + 고래 ≫ 개미'}[mode];
         if(!setups.length){el.innerHTML=`<div style="color:var(--text-secondary);font-size:11px;padding:12px;text-align:center;">조건 충족 종목 없음 (${_desc}). 시장 상황에 따라 0건일 수 있습니다.</div>`;return;}
-        const top=setups.slice(0,15);
-        const fmtBig=v=>v==null?'-':(v>=1e9?(v/1e9).toFixed(1)+'B':v>=1e6?(v/1e6).toFixed(0)+'M':(v/1e3).toFixed(0)+'K');
-        let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 6px;">종목</th><th style="text-align:right;padding:4px 6px;">24h</th><th style="text-align:right;padding:4px 6px;">시총</th><th style="text-align:right;padding:4px 6px;">OI</th><th style="text-align:right;padding:4px 6px;">펀딩</th><th style="text-align:right;padding:4px 6px;">고래</th><th style="text-align:right;padding:4px 6px;">개미</th><th style="text-align:right;padding:4px 6px;">갭</th></tr></thead><tbody>';
-        for(const r of top){
-            const gapC=r.gap>=1?'#00d26a':r.gap>=0.5?'#FFD700':'var(--text-primary)';
-            const oiArrow=r.oiUp===true?'<span style="color:#00d26a;">▲</span>':r.oiUp===false?'<span style="color:#ff4757;">▼</span>':'';
-            // 펀딩 색: 롱측이면 음수 유리(초록), 숏측이면 양수 유리(초록)
-            let fC='var(--text-secondary)',fT='-';
-            if(r.funding!=null){fT=(r.funding>=0?'+':'')+r.funding.toFixed(3)+'%';const good=longSide?r.funding<=0:r.funding>0.02;fC=good?'#00d26a':(longSide?(r.funding>0.04?'#ff4757':'var(--text-secondary)'):(r.funding<0?'#ff4757':'var(--text-secondary)'));}
-            html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
-                <td style="padding:6px;cursor:pointer;color:#58a6ff;font-weight:600;" onclick="goToSymbol('${r.sym}')">${r.sym.replace('USDT','')}</td>
-                <td style="padding:6px;text-align:right;color:${r.chg>=0?'#00d26a':'#ff4757'};font-weight:600;">${r.chg>=0?'+':''}${r.chg.toFixed(1)}%</td>
-                <td style="padding:6px;text-align:right;color:var(--text-secondary);">${r.mcap!=null?fmtBig(r.mcap):'?'}</td>
-                <td style="padding:6px;text-align:right;color:var(--text-secondary);">${fmtBig(r.oi)}${oiArrow}</td>
-                <td style="padding:6px;text-align:right;color:${fC};">${fT}</td>
-                <td style="padding:6px;text-align:right;color:#FFD700;">${r.whale.toFixed(2)}</td>
-                <td style="padding:6px;text-align:right;color:#22d3ee;">${r.retail.toFixed(2)}</td>
-                <td style="padding:6px;text-align:right;color:${gapC};font-weight:700;">+${r.gap.toFixed(2)}</td>
-            </tr>`;
-        }
-        html+='</tbody></table>';
-        html+=`<div style="font-size:9px;color:var(--text-secondary);text-align:right;margin-top:6px;">${cands.length}개 스캔 → ${setups.length}건 선별 · L/S 개미3사·고래2사 / OI·펀딩(8h) 반영 · ${new Date().toLocaleTimeString()}</div>`;
-        el.innerHTML=html;
+        // 페이지네이션용 저장 후 렌더
+        _smSetups=setups; _smSideLong=longSide; _smScanned=cands.length; _smPage=0;
+        renderSmScanPage();
     }catch(e){console.warn('sm-scan',e);if(el)el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;">스캔 오류</div>';}
     finally{_smScanning=false;if(btn){btn.disabled=false;btn.textContent='스캔';}}
+}
+
+// 스캐너 결과 페이지 렌더 (15개/페이지 + 1,2,3,... 페이지 네비)
+let _smSetups=[], _smPage=0, _smSideLong=true, _smScanned=0;
+function renderSmScanPage(p){
+    const el=document.getElementById('smDivContent');
+    if(!el)return;
+    if(p!=null)_smPage=p;
+    const per=15, total=_smSetups.length, pages=Math.max(1,Math.ceil(total/per));
+    if(_smPage>=pages)_smPage=pages-1; if(_smPage<0)_smPage=0;
+    const slice=_smSetups.slice(_smPage*per,(_smPage+1)*per);
+    const fmtBig=v=>v==null?'-':(v>=1e9?(v/1e9).toFixed(1)+'B':v>=1e6?(v/1e6).toFixed(0)+'M':(v/1e3).toFixed(0)+'K');
+    const longSide=_smSideLong;
+    let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 6px;">#</th><th style="text-align:left;padding:4px 6px;">종목</th><th style="text-align:right;padding:4px 6px;">24h</th><th style="text-align:right;padding:4px 6px;">시총</th><th style="text-align:right;padding:4px 6px;">OI</th><th style="text-align:right;padding:4px 6px;">펀딩</th><th style="text-align:right;padding:4px 6px;">고래</th><th style="text-align:right;padding:4px 6px;">개미</th><th style="text-align:right;padding:4px 6px;">갭</th></tr></thead><tbody>';
+    slice.forEach((r,idx)=>{
+        const rank=_smPage*per+idx+1;
+        const gapC=r.gap>=1?'#00d26a':r.gap>=0.5?'#FFD700':'var(--text-primary)';
+        const oiArrow=r.oiUp===true?'<span style="color:#00d26a;">▲</span>':r.oiUp===false?'<span style="color:#ff4757;">▼</span>':'';
+        let fC='var(--text-secondary)',fT='-';
+        if(r.funding!=null){fT=(r.funding>=0?'+':'')+r.funding.toFixed(3)+'%';const good=longSide?r.funding<=0:r.funding>0.02;fC=good?'#00d26a':(longSide?(r.funding>0.04?'#ff4757':'var(--text-secondary)'):(r.funding<0?'#ff4757':'var(--text-secondary)'));}
+        html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+            <td style="padding:6px;color:var(--text-secondary);font-size:9px;">${rank}</td>
+            <td style="padding:6px;cursor:pointer;color:#58a6ff;font-weight:600;" onclick="goToSymbol('${r.sym}')">${r.sym.replace('USDT','')}</td>
+            <td style="padding:6px;text-align:right;color:${r.chg>=0?'#00d26a':'#ff4757'};font-weight:600;">${r.chg>=0?'+':''}${r.chg.toFixed(1)}%</td>
+            <td style="padding:6px;text-align:right;color:var(--text-secondary);">${r.mcap!=null?fmtBig(r.mcap):'?'}</td>
+            <td style="padding:6px;text-align:right;color:var(--text-secondary);">${fmtBig(r.oi)}${oiArrow}</td>
+            <td style="padding:6px;text-align:right;color:${fC};">${fT}</td>
+            <td style="padding:6px;text-align:right;color:#FFD700;">${r.whale.toFixed(2)}</td>
+            <td style="padding:6px;text-align:right;color:#22d3ee;">${r.retail.toFixed(2)}</td>
+            <td style="padding:6px;text-align:right;color:${gapC};font-weight:700;">+${r.gap.toFixed(2)}</td>
+        </tr>`;
+    });
+    html+='</tbody></table>';
+    // 페이지 네비
+    if(pages>1){
+        html+='<div style="display:flex;gap:4px;justify-content:center;flex-wrap:wrap;margin-top:8px;">';
+        const btnCss='padding:3px 9px;border:1px solid var(--border);border-radius:4px;font-size:11px;cursor:pointer;background:var(--bg-primary);color:var(--text-primary);';
+        if(_smPage>0)html+=`<span style="${btnCss}" onclick="renderSmScanPage(${_smPage-1})">‹</span>`;
+        for(let i=0;i<pages;i++){
+            const on=i===_smPage;
+            html+=`<span style="${btnCss}${on?'background:#a855f7;color:#fff;font-weight:700;border-color:#a855f7;':''}" onclick="renderSmScanPage(${i})">${i+1}</span>`;
+        }
+        if(_smPage<pages-1)html+=`<span style="${btnCss}" onclick="renderSmScanPage(${_smPage+1})">›</span>`;
+        html+='</div>';
+    }
+    html+=`<div style="font-size:9px;color:var(--text-secondary);text-align:right;margin-top:6px;">${_smScanned}개 스캔 → ${total}건 선별 (${pages}페이지) · L/S 개미3사·고래2사 / OI·펀딩(8h) 반영 · ${new Date().toLocaleTimeString()}</div>`;
+    el.innerHTML=html;
 }
 
 async function updateTriangleConvergence(){
