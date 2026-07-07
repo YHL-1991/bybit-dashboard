@@ -6168,23 +6168,35 @@ async function scanSmartMoneyDivergence(){
         }).sort((a,b)=>mode==='short'
             ?parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent)
             :parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent))
-            .slice(0,80);
+            .slice(0,45);
         const rows=[];
-        for(let i=0;i<cands.length;i+=5){
-            const batch=cands.slice(i,i+5);
+        for(let i=0;i<cands.length;i+=4){
+            const batch=cands.slice(i,i+4);
             const res=await Promise.all(batch.map(async c=>{
-                const sym=c.symbol;
-                const [tw,rt]=await Promise.all([
+                const sym=c.symbol, coin=sym.replace('USDT',''), okx=coin+'-USDT-SWAP';
+                // 개미 3사(BN·OKX·Bybit) / 고래 2사(BN·OKX) + OI(BN)
+                const [bnw,bnr,bnoi,okw,okr,byr]=await Promise.all([
                     fetch(`https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${sym}&period=1h&limit=1`).then(r=>r.ok?r.json():null).catch(()=>null),
                     fetch(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=1h&limit=1`).then(r=>r.ok?r.json():null).catch(()=>null),
+                    fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${sym}`).then(r=>r.ok?r.json():null).catch(()=>null),
+                    fetch(`https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio-contract-top-trader?instId=${okx}&period=1H`).then(r=>r.ok?r.json():null).catch(()=>null),
+                    fetch(`https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=${coin}&period=1H`).then(r=>r.ok?r.json():null).catch(()=>null),
+                    fetch(`https://api.bybit.com/v5/market/account-ratio?category=linear&symbol=${sym}&period=1h&limit=1`).then(r=>r.ok?r.json():null).catch(()=>null),
                 ]);
-                const whale=(tw&&tw[0])?parseFloat(tw[0].longShortRatio):null;
-                const retail=(rt&&rt[0])?parseFloat(rt[0].longShortRatio):null;
-                return {sym,chg:parseFloat(c.priceChangePercent),vol:parseFloat(c.quoteVolume),whale,retail};
+                const wv=[],rv=[];
+                if(bnw&&bnw[0])wv.push(parseFloat(bnw[0].longShortRatio));
+                if(okw&&okw.data&&okw.data[0])wv.push(parseFloat(okw.data[0][1]));
+                if(bnr&&bnr[0])rv.push(parseFloat(bnr[0].longShortRatio));
+                if(okr&&okr.data&&okr.data[0])rv.push(parseFloat(okr.data[0][1]));
+                if(byr&&byr.result&&byr.result.list&&byr.result.list[0]){const b=byr.result.list[0];const q=parseFloat(b.buyRatio)/parseFloat(b.sellRatio);if(isFinite(q))rv.push(q);}
+                const whale=wv.length?wv.reduce((a,b)=>a+b,0)/wv.length:null;
+                const retail=rv.length?rv.reduce((a,b)=>a+b,0)/rv.length:null;
+                const oi=(bnoi&&bnoi.openInterest)?parseFloat(bnoi.openInterest)*parseFloat(c.lastPrice):null;
+                return {sym,chg:parseFloat(c.priceChangePercent),vol:parseFloat(c.quoteVolume),whale,retail,whaleN:wv.length,retailN:rv.length,oi};
             }));
             rows.push(...res);
-            if(prog)prog.textContent=`${Math.min(i+5,cands.length)}/${cands.length}`;
-            await new Promise(r=>setTimeout(r,170));
+            if(prog)prog.textContent=`${Math.min(i+4,cands.length)}/${cands.length}`;
+            await new Promise(r=>setTimeout(r,200));
         }
         // 선별: 반등=고래 롱(≥1.1)+개미 숏(≤0.9) / 하락=개미 롱(≥1.1)+고래 숏(≤0.9)
         const setups=rows.filter(r=>{
@@ -6197,17 +6209,19 @@ async function scanSmartMoneyDivergence(){
         if(prog)prog.textContent=`${setups.length}건 발견`;
         if(!setups.length){el.innerHTML=`<div style="color:var(--text-secondary);font-size:11px;padding:12px;text-align:center;">조건 충족 종목 없음 (${mode==='short'?'가격↑+개미 롱+고래 숏':'가격↓+고래 롱+개미 숏'}). 시장 상황에 따라 0건일 수 있습니다.</div>`;return;}
         const top=setups.slice(0,15);
-        let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 8px;">종목</th><th style="text-align:right;padding:4px 8px;">24h</th><th style="text-align:right;padding:4px 8px;">고래 L/S</th><th style="text-align:right;padding:4px 8px;">개미 L/S</th><th style="text-align:right;padding:4px 8px;">갭</th><th style="text-align:right;padding:4px 8px;">거래대금</th></tr></thead><tbody>';
+        const fmtBig=v=>v==null?'-':(v>=1e9?(v/1e9).toFixed(1)+'B':v>=1e6?(v/1e6).toFixed(0)+'M':(v/1e3).toFixed(0)+'K');
+        let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 8px;">종목</th><th style="text-align:right;padding:4px 8px;">24h</th><th style="text-align:right;padding:4px 8px;">OI</th><th style="text-align:right;padding:4px 8px;">고래(2사)</th><th style="text-align:right;padding:4px 8px;">개미(3사)</th><th style="text-align:right;padding:4px 8px;">갭</th><th style="text-align:right;padding:4px 8px;">거래대금</th></tr></thead><tbody>';
         for(const r of top){
             const gapC=r.gap>=1?'#00d26a':r.gap>=0.5?'#FFD700':'var(--text-primary)';
-            const vol=r.vol>=1e9?(r.vol/1e9).toFixed(1)+'B':(r.vol/1e6).toFixed(0)+'M';
+            const nS='<span style="font-size:8px;color:var(--text-secondary);">';
             html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
                 <td style="padding:6px 8px;cursor:pointer;color:#58a6ff;font-weight:600;" onclick="goToSymbol('${r.sym}')">${r.sym.replace('USDT','')}</td>
                 <td style="padding:6px 8px;text-align:right;color:${r.chg>=0?'#00d26a':'#ff4757'};font-weight:600;">${r.chg>=0?'+':''}${r.chg.toFixed(1)}%</td>
-                <td style="padding:6px 8px;text-align:right;color:#FFD700;">${r.whale.toFixed(2)}</td>
-                <td style="padding:6px 8px;text-align:right;color:#22d3ee;">${r.retail.toFixed(2)}</td>
+                <td style="padding:6px 8px;text-align:right;color:var(--text-secondary);">${fmtBig(r.oi)}</td>
+                <td style="padding:6px 8px;text-align:right;color:#FFD700;">${r.whale.toFixed(2)} ${nS}${r.whaleN}사</span></td>
+                <td style="padding:6px 8px;text-align:right;color:#22d3ee;">${r.retail.toFixed(2)} ${nS}${r.retailN}사</span></td>
                 <td style="padding:6px 8px;text-align:right;color:${gapC};font-weight:700;">+${r.gap.toFixed(2)}</td>
-                <td style="padding:6px 8px;text-align:right;color:var(--text-secondary);">${vol}</td>
+                <td style="padding:6px 8px;text-align:right;color:var(--text-secondary);">${fmtBig(r.vol)}</td>
             </tr>`;
         }
         html+='</tbody></table>';
