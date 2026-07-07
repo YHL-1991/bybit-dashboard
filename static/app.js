@@ -6160,15 +6160,15 @@ async function scanSmartMoneyDivergence(){
     try{
         const all=await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr').then(r=>r.ok?r.json():null).catch(()=>null);
         if(!all||!Array.isArray(all)){if(el)el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;">티커 조회 실패 (Binance)</div>';return;}
-        // 후보 필터: 반등=하락종목(-2%↓), 하락=급등종목(+4%↑)
+        // 후보 필터: 반등=하락종목(-1.5%↓), 하락=급등종목(+2.5%↑)
         const cands=all.filter(x=>{
-            if(!x.symbol.endsWith('USDT')||parseFloat(x.quoteVolume)<=3e7)return false;
+            if(!x.symbol.endsWith('USDT')||parseFloat(x.quoteVolume)<=2e7)return false;
             const ch=parseFloat(x.priceChangePercent);
-            return mode==='short'?ch>4:ch<-2;
+            return mode==='short'?ch>2.5:ch<-1.5;
         }).sort((a,b)=>mode==='short'
             ?parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent)
             :parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent))
-            .slice(0,55);
+            .slice(0,80);
         const rows=[];
         for(let i=0;i<cands.length;i+=5){
             const batch=cands.slice(i,i+5);
@@ -6189,7 +6189,7 @@ async function scanSmartMoneyDivergence(){
         // 선별: 반등=고래 롱(≥1.1)+개미 숏(≤0.9) / 하락=개미 롱(≥1.1)+고래 숏(≤0.9)
         const setups=rows.filter(r=>{
             if(r.whale==null||r.retail==null)return false;
-            return mode==='short'?(r.retail>=1.1&&r.whale<=0.9):(r.whale>=1.1&&r.retail<=0.9);
+            return mode==='short'?(r.retail>=1.05&&r.whale<=0.95):(r.whale>=1.05&&r.retail<=0.95);
         });
         setups.forEach(r=>{r.gap=mode==='short'?(r.retail-r.whale):(r.whale-r.retail);r.score=r.gap*10+Math.min(Math.abs(r.chg),25);});
         setups.sort((a,b)=>b.score-a.score);
