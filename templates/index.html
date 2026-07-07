@@ -60,6 +60,23 @@
     <div id="coinnessAlertBar" style="display:none;background:linear-gradient(90deg,rgba(255,71,87,0.25),rgba(255,71,87,0.08));border-bottom:2px solid #ff4757;padding:10px 20px;"></div>
     <div id="alertBanner" class="alert-banner" style="display:none;"></div>
 
+    <!-- 스마트머니 다이버전스 스캐너 (가격↓ + 고래 롱 + 개미 숏) -->
+    <div class="section-full">
+        <div class="card" style="border-color:#a855f7;">
+            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+                <span><span class="dot" style="background:#a855f7"></span> 스마트머니 다이버전스 스캐너 (가격 하락 + 고래 롱 + 개미 숏)</span>
+                <span style="display:flex;gap:8px;align-items:center;">
+                    <span id="smScanProgress" style="font-size:10px;color:var(--text-secondary);"></span>
+                    <button id="smScanBtn" onclick="scanSmartMoneyDivergence()" style="padding:5px 12px;background:#a855f7;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">스캔</button>
+                </span>
+            </div>
+            <div id="smDivContent" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:14px;">"스캔"을 눌러 전 종목을 훑습니다 (~10초).</div>
+            </div>
+            <p class="hint">Binance 전종목에서 <b>24h 하락 + 고래(상위트레이더) L/S ≥ 1.1(롱) + 개미(전체계정) L/S ≤ 0.9(숏)</b>를 선별. 갭(고래−개미)이 클수록 스마트/개미 심리 괴리 큼. <b>컨트래리언 가설</b>(고래 방향 = 반등 가능)일 뿐 매매신호 아님. 고래도 틀릴 수 있고 상위트레이더 비율은 근사치입니다.</p>
+        </div>
+    </div>
+
     <!-- 매수/매도 추천 가격 (상단) -->
     <div class="section-full">
         <div id="tradeRecPanel" class="signal-panel" style="background:linear-gradient(135deg,rgba(255,215,0,0.05),rgba(255,105,180,0.05));border:1px solid var(--border);"></div>
@@ -177,23 +194,6 @@
             <div style="font-size:11px;color:var(--text-secondary);margin:12px 4px 4px;">통합 펀딩비 추이 (3사 평균, 8h 정산 이력)</div>
             <div class="chart-container" style="height:170px;"><canvas id="fundingHistChart"></canvas></div>
             <p class="hint">8시간 기준 펀딩비(%). <b>양수</b> = 롱이 숏에게 지불(롱 과밀, 과열 시 하락 압력), <b>음수</b> = 숏이 롱에게 지불(숏 과밀, 숏스퀴즈 가능). 상단 통합값은 OI 가중, 추이 그래프는 3사 단순평균(8시간 정산 시점별). 연환산 = 8h율 ×1095.</p>
-        </div>
-    </div>
-
-    <!-- 스마트머니 다이버전스 스캐너 (가격↓ + 고래 롱 + 개미 숏) -->
-    <div class="section-full">
-        <div class="card">
-            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
-                <span><span class="dot" style="background:#a855f7"></span> 스마트머니 다이버전스 스캐너 (가격 하락 + 고래 롱 + 개미 숏)</span>
-                <span style="display:flex;gap:8px;align-items:center;">
-                    <span id="smScanProgress" style="font-size:10px;color:var(--text-secondary);"></span>
-                    <button id="smScanBtn" onclick="scanSmartMoneyDivergence()" style="padding:5px 12px;background:#a855f7;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">스캔</button>
-                </span>
-            </div>
-            <div id="smDivContent" style="font-size:12px;">
-                <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:14px;">"스캔"을 눌러 전 종목을 훑습니다 (~10초).</div>
-            </div>
-            <p class="hint">Binance 전종목에서 <b>24h 하락 + 고래(상위트레이더) L/S ≥ 1.1(롱) + 개미(전체계정) L/S ≤ 0.9(숏)</b>를 선별. 갭(고래−개미)이 클수록 스마트/개미 심리 괴리 큼. <b>컨트래리언 가설</b>(고래 방향 = 반등 가능)일 뿐 매매신호 아님. 고래도 틀릴 수 있고 상위트레이더 비율은 근사치입니다.</p>
         </div>
     </div>
 
@@ -566,6 +566,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260701a"></script>
+    <script src="/static/app.js?v=20260701b"></script>
 </body>
 </html>
