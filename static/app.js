@@ -6155,13 +6155,19 @@ async function scanSmartMoneyDivergence(){
     const btn=document.getElementById('smScanBtn');
     const el=document.getElementById('smDivContent');
     const prog=document.getElementById('smScanProgress');
+    const mode=(document.getElementById('smMode')||{}).value||'long';
     if(btn){btn.disabled=true;btn.textContent='스캔 중...';}
     try{
         const all=await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr').then(r=>r.ok?r.json():null).catch(()=>null);
         if(!all||!Array.isArray(all)){if(el)el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;">티커 조회 실패 (Binance)</div>';return;}
-        // 후보: USDT 선물, 거래대금 3천만$+, 24h -2% 이하(하락)
-        const cands=all.filter(x=>x.symbol.endsWith('USDT')&&parseFloat(x.quoteVolume)>3e7&&parseFloat(x.priceChangePercent)<-2)
-            .sort((a,b)=>parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent))
+        // 후보 필터: 반등=하락종목(-2%↓), 하락=급등종목(+4%↑)
+        const cands=all.filter(x=>{
+            if(!x.symbol.endsWith('USDT')||parseFloat(x.quoteVolume)<=3e7)return false;
+            const ch=parseFloat(x.priceChangePercent);
+            return mode==='short'?ch>4:ch<-2;
+        }).sort((a,b)=>mode==='short'
+            ?parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent)
+            :parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent))
             .slice(0,55);
         const rows=[];
         for(let i=0;i<cands.length;i+=5){
@@ -6180,12 +6186,15 @@ async function scanSmartMoneyDivergence(){
             if(prog)prog.textContent=`${Math.min(i+5,cands.length)}/${cands.length}`;
             await new Promise(r=>setTimeout(r,170));
         }
-        // 선별: 고래 롱(≥1.1) + 개미 숏(≤0.9)
-        const setups=rows.filter(r=>r.whale!=null&&r.retail!=null&&r.whale>=1.1&&r.retail<=0.9);
-        setups.forEach(r=>{r.gap=r.whale-r.retail;r.score=r.gap*10+Math.min(Math.abs(r.chg),25);});
+        // 선별: 반등=고래 롱(≥1.1)+개미 숏(≤0.9) / 하락=개미 롱(≥1.1)+고래 숏(≤0.9)
+        const setups=rows.filter(r=>{
+            if(r.whale==null||r.retail==null)return false;
+            return mode==='short'?(r.retail>=1.1&&r.whale<=0.9):(r.whale>=1.1&&r.retail<=0.9);
+        });
+        setups.forEach(r=>{r.gap=mode==='short'?(r.retail-r.whale):(r.whale-r.retail);r.score=r.gap*10+Math.min(Math.abs(r.chg),25);});
         setups.sort((a,b)=>b.score-a.score);
         if(prog)prog.textContent=`${setups.length}건 발견`;
-        if(!setups.length){el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;text-align:center;">조건 충족 종목 없음 (가격↓+고래 롱+개미 숏). 시장 상황에 따라 0건일 수 있습니다.</div>';return;}
+        if(!setups.length){el.innerHTML=`<div style="color:var(--text-secondary);font-size:11px;padding:12px;text-align:center;">조건 충족 종목 없음 (${mode==='short'?'가격↑+개미 롱+고래 숏':'가격↓+고래 롱+개미 숏'}). 시장 상황에 따라 0건일 수 있습니다.</div>`;return;}
         const top=setups.slice(0,15);
         let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 8px;">종목</th><th style="text-align:right;padding:4px 8px;">24h</th><th style="text-align:right;padding:4px 8px;">고래 L/S</th><th style="text-align:right;padding:4px 8px;">개미 L/S</th><th style="text-align:right;padding:4px 8px;">갭</th><th style="text-align:right;padding:4px 8px;">거래대금</th></tr></thead><tbody>';
         for(const r of top){
@@ -6193,7 +6202,7 @@ async function scanSmartMoneyDivergence(){
             const vol=r.vol>=1e9?(r.vol/1e9).toFixed(1)+'B':(r.vol/1e6).toFixed(0)+'M';
             html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
                 <td style="padding:6px 8px;cursor:pointer;color:#58a6ff;font-weight:600;" onclick="goToSymbol('${r.sym}')">${r.sym.replace('USDT','')}</td>
-                <td style="padding:6px 8px;text-align:right;color:#ff4757;font-weight:600;">${r.chg.toFixed(1)}%</td>
+                <td style="padding:6px 8px;text-align:right;color:${r.chg>=0?'#00d26a':'#ff4757'};font-weight:600;">${r.chg>=0?'+':''}${r.chg.toFixed(1)}%</td>
                 <td style="padding:6px 8px;text-align:right;color:#FFD700;">${r.whale.toFixed(2)}</td>
                 <td style="padding:6px 8px;text-align:right;color:#22d3ee;">${r.retail.toFixed(2)}</td>
                 <td style="padding:6px 8px;text-align:right;color:${gapC};font-weight:700;">+${r.gap.toFixed(2)}</td>

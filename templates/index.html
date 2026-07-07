@@ -64,8 +64,12 @@
     <div class="section-full">
         <div class="card" style="border-color:#a855f7;">
             <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
-                <span><span class="dot" style="background:#a855f7"></span> 스마트머니 다이버전스 스캐너 (가격 하락 + 고래 롱 + 개미 숏)</span>
+                <span><span class="dot" style="background:#a855f7"></span> 스마트머니 다이버전스 스캐너</span>
                 <span style="display:flex;gap:8px;align-items:center;">
+                    <select id="smMode" onchange="scanSmartMoneyDivergence()" class="symbol-select" style="font-size:11px;padding:4px 8px;">
+                        <option value="long">반등 후보 (가격↓ · 고래 롱 · 개미 숏)</option>
+                        <option value="short">하락 후보 (가격↑ · 개미 롱 · 고래 숏)</option>
+                    </select>
                     <span id="smScanProgress" style="font-size:10px;color:var(--text-secondary);"></span>
                     <button id="smScanBtn" onclick="scanSmartMoneyDivergence()" style="padding:5px 12px;background:#a855f7;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">스캔</button>
                 </span>
@@ -73,7 +77,7 @@
             <div id="smDivContent" style="font-size:12px;">
                 <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:14px;">"스캔"을 눌러 전 종목을 훑습니다 (~10초).</div>
             </div>
-            <p class="hint">Binance 전종목에서 <b>24h 하락 + 고래(상위트레이더) L/S ≥ 1.1(롱) + 개미(전체계정) L/S ≤ 0.9(숏)</b>를 선별. 갭(고래−개미)이 클수록 스마트/개미 심리 괴리 큼. <b>컨트래리언 가설</b>(고래 방향 = 반등 가능)일 뿐 매매신호 아님. 고래도 틀릴 수 있고 상위트레이더 비율은 근사치입니다.</p>
+            <p class="hint"><b>반등 후보</b> = 24h 하락 + 고래 L/S ≥ 1.1(롱) + 개미 L/S ≤ 0.9(숏). <b>하락 후보</b> = 24h 급등 + 개미 L/S ≥ 1.1(롱) + 고래 L/S ≤ 0.9(숏). 갭이 클수록 스마트/개미 심리 괴리 큼. <b>컨트래리언 가설</b>(고래 방향으로 갈 가능성)일 뿐 매매신호 아님. 고래도 틀릴 수 있고 상위트레이더 비율은 근사치입니다.</p>
         </div>
     </div>
 
@@ -566,6 +570,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260701b"></script>
+    <script src="/static/app.js?v=20260701c"></script>
 </body>
 </html>
