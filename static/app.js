@@ -6132,6 +6132,81 @@ async function updateFundingHistory(){
     }catch(e){console.warn('funding-hist',e);}
 }
 
+// 임의 심볼로 차트 전환 (드롭다운에 없으면 옵션 추가)
+function goToSymbol(sym){
+    const sel=document.getElementById('symbolSelect');
+    if(!sel)return;
+    if(!Array.from(sel.options).some(o=>o.value===sym)){
+        const og=sel.querySelector('optgroup[label="코인 선물"]')||sel;
+        const opt=document.createElement('option');opt.value=sym;opt.textContent=sym;og.appendChild(opt);
+    }
+    sel.value=sym;sel.dispatchEvent(new Event('change',{bubbles:true}));
+    window.scrollTo({top:0,behavior:'smooth'});
+}
+
+/* ═══════════════════════════════════
+   스마트머니 다이버전스 스캐너
+   가격 하락 + 고래(상위트레이더) 롱 + 개미(전체계정) 숏 = 컨트래리언 반등 가설
+   ═══════════════════════════════════ */
+let _smScanning=false;
+async function scanSmartMoneyDivergence(){
+    if(_smScanning)return;
+    _smScanning=true;
+    const btn=document.getElementById('smScanBtn');
+    const el=document.getElementById('smDivContent');
+    const prog=document.getElementById('smScanProgress');
+    if(btn){btn.disabled=true;btn.textContent='스캔 중...';}
+    try{
+        const all=await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr').then(r=>r.ok?r.json():null).catch(()=>null);
+        if(!all||!Array.isArray(all)){if(el)el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;">티커 조회 실패 (Binance)</div>';return;}
+        // 후보: USDT 선물, 거래대금 3천만$+, 24h -2% 이하(하락)
+        const cands=all.filter(x=>x.symbol.endsWith('USDT')&&parseFloat(x.quoteVolume)>3e7&&parseFloat(x.priceChangePercent)<-2)
+            .sort((a,b)=>parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent))
+            .slice(0,55);
+        const rows=[];
+        for(let i=0;i<cands.length;i+=5){
+            const batch=cands.slice(i,i+5);
+            const res=await Promise.all(batch.map(async c=>{
+                const sym=c.symbol;
+                const [tw,rt]=await Promise.all([
+                    fetch(`https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${sym}&period=1h&limit=1`).then(r=>r.ok?r.json():null).catch(()=>null),
+                    fetch(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=1h&limit=1`).then(r=>r.ok?r.json():null).catch(()=>null),
+                ]);
+                const whale=(tw&&tw[0])?parseFloat(tw[0].longShortRatio):null;
+                const retail=(rt&&rt[0])?parseFloat(rt[0].longShortRatio):null;
+                return {sym,chg:parseFloat(c.priceChangePercent),vol:parseFloat(c.quoteVolume),whale,retail};
+            }));
+            rows.push(...res);
+            if(prog)prog.textContent=`${Math.min(i+5,cands.length)}/${cands.length}`;
+            await new Promise(r=>setTimeout(r,170));
+        }
+        // 선별: 고래 롱(≥1.1) + 개미 숏(≤0.9)
+        const setups=rows.filter(r=>r.whale!=null&&r.retail!=null&&r.whale>=1.1&&r.retail<=0.9);
+        setups.forEach(r=>{r.gap=r.whale-r.retail;r.score=r.gap*10+Math.min(Math.abs(r.chg),25);});
+        setups.sort((a,b)=>b.score-a.score);
+        if(prog)prog.textContent=`${setups.length}건 발견`;
+        if(!setups.length){el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;text-align:center;">조건 충족 종목 없음 (가격↓+고래 롱+개미 숏). 시장 상황에 따라 0건일 수 있습니다.</div>';return;}
+        const top=setups.slice(0,15);
+        let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 8px;">종목</th><th style="text-align:right;padding:4px 8px;">24h</th><th style="text-align:right;padding:4px 8px;">고래 L/S</th><th style="text-align:right;padding:4px 8px;">개미 L/S</th><th style="text-align:right;padding:4px 8px;">갭</th><th style="text-align:right;padding:4px 8px;">거래대금</th></tr></thead><tbody>';
+        for(const r of top){
+            const gapC=r.gap>=1?'#00d26a':r.gap>=0.5?'#FFD700':'var(--text-primary)';
+            const vol=r.vol>=1e9?(r.vol/1e9).toFixed(1)+'B':(r.vol/1e6).toFixed(0)+'M';
+            html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                <td style="padding:6px 8px;cursor:pointer;color:#58a6ff;font-weight:600;" onclick="goToSymbol('${r.sym}')">${r.sym.replace('USDT','')}</td>
+                <td style="padding:6px 8px;text-align:right;color:#ff4757;font-weight:600;">${r.chg.toFixed(1)}%</td>
+                <td style="padding:6px 8px;text-align:right;color:#FFD700;">${r.whale.toFixed(2)}</td>
+                <td style="padding:6px 8px;text-align:right;color:#22d3ee;">${r.retail.toFixed(2)}</td>
+                <td style="padding:6px 8px;text-align:right;color:${gapC};font-weight:700;">+${r.gap.toFixed(2)}</td>
+                <td style="padding:6px 8px;text-align:right;color:var(--text-secondary);">${vol}</td>
+            </tr>`;
+        }
+        html+='</tbody></table>';
+        html+=`<div style="font-size:9px;color:var(--text-secondary);text-align:right;margin-top:6px;">${cands.length}개 스캔 → ${setups.length}건 선별 · ${new Date().toLocaleTimeString()}</div>`;
+        el.innerHTML=html;
+    }catch(e){console.warn('sm-scan',e);if(el)el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;">스캔 오류</div>';}
+    finally{_smScanning=false;if(btn){btn.disabled=false;btn.textContent='스캔';}}
+}
+
 async function updateTriangleConvergence(){
     const el=document.getElementById('triangleContent');
     if(isStock(currentSymbol)){
@@ -6183,6 +6258,8 @@ async function updateTriangleConvergence(){
     updateExpertConsensus();updateMacroData();updateOnchainData();updateCoinnessNews();
     // 초기 로드: ETH/BTC 국면 + 삼각수렴 멀티TF (코인만)
     if(!isStock(currentSymbol)){setTimeout(()=>{updateEthBtcRegime();updateTriangleConvergence();updateFundingAggregated();updateFundingHistory();},1500);}
+    // 스마트머니 스캐너: 무거우니 12초 뒤 1회 자동 실행 (이후는 버튼)
+    if(!isStock(currentSymbol)){setTimeout(()=>{try{scanSmartMoneyDivergence();}catch(e){}},12000);}
     // 초기 로드: MTF + 다중구간/거래소 청산 + 종목 스캐너
     updateMultiTimeframeAnalysis();
     setTimeout(()=>{updateMultiPeriodLiquidation();updateMultiExchangeLiquidation();},800);
