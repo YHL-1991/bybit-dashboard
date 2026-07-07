@@ -67,6 +67,7 @@
                 <span><span class="dot" style="background:#a855f7"></span> 스마트머니 다이버전스 스캐너</span>
                 <span style="display:flex;gap:8px;align-items:center;">
                     <select id="smMode" onchange="scanSmartMoneyDivergence()" class="symbol-select" style="font-size:11px;padding:4px 8px;">
+                        <option value="lowcapdrop">저시총 급락 + 고래 롱 (롱 후보)</option>
                         <option value="whalelead">고래 주도 급등 (가격↑ · 고래 ≫ 개미)</option>
                         <option value="long">반등 후보 (가격↓ · 고래 롱 · 개미 숏)</option>
                         <option value="short">하락 후보 (가격↑ · 개미 롱 · 고래 숏)</option>
@@ -78,7 +79,7 @@
             <div id="smDivContent" style="font-size:12px;">
                 <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:14px;">"스캔"을 눌러 전 종목을 훑습니다 (~10초).</div>
             </div>
-            <p class="hint">L/S는 <b>개미 3사 평균(Binance·OKX·Bybit)</b> vs <b>고래 2사 평균(Binance·OKX)</b>, OI는 Binance 미체결약정. <b>고래 주도 급등</b> = 24h 급등(+2%↑) + 고래 ≥ 1.2 + 고래−개미 갭 ≥ 0.4 (고래가 개미보다 압도적 롱, 예: OPG). <b>반등 후보</b> = 24h 하락 + 고래 롱 + 개미 숏. <b>하락 후보</b> = 24h 급등 + 개미 롱 + 고래 숏. 갭 클수록 괴리 큼(상단부터 강함). 고래주도는 <b>모멘텀(추종)</b>, 반등/하락은 <b>컨트래리언</b> 가설일 뿐 매매신호 아님. 고래도 틀립니다.</p>
+            <p class="hint">L/S는 <b>개미 3사(Binance·OKX·Bybit)</b> vs <b>고래 2사(Binance·OKX)</b> 평균. <b>시총</b>=CoinGecko, <b>OI</b>=Binance(▲증가/▼감소), <b>펀딩</b>=8h율(롱측은 음수·숏측은 양수가 유리, 초록). <b>저시총 급락+고래롱</b> = 시총 낮고 24h -4%↓ + 고래 net롱. <b>고래 주도 급등</b> = 급등+고래≫개미(예: OPG). <b>반등</b> = 하락+고래롱+개미숏. <b>하락</b> = 급등+개미롱+고래숏. OI 증가·펀딩 유리하면 점수 가점. <b>가설일 뿐 매매신호 아님</b>, 고래도 틀립니다.</p>
         </div>
     </div>
 
@@ -571,6 +572,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260701g"></script>
+    <script src="/static/app.js?v=20260701h"></script>
 </body>
 </html>

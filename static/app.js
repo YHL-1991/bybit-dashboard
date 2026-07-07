@@ -6148,6 +6148,22 @@ function goToSymbol(sym){
    스마트머니 다이버전스 스캐너
    가격 하락 + 고래(상위트레이더) 롱 + 개미(전체계정) 숏 = 컨트래리언 반등 가설
    ═══════════════════════════════════ */
+// CoinGecko 시가총액 맵 (심볼→시총). 상위 1000, 30분 캐시.
+let _mcapMap=null,_mcapTs=0;
+async function loadMarketCaps(){
+    if(_mcapMap&&Date.now()-_mcapTs<1800000)return _mcapMap;
+    const m={};
+    for(let p=1;p<=4;p++){
+        try{
+            const d=await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=${p}`).then(r=>r.ok?r.json():null).catch(()=>null);
+            if(Array.isArray(d))for(const x of d){const s=(x.symbol||'').toUpperCase();const mc=x.market_cap||0;if(s&&mc>0&&(m[s]==null||mc>m[s]))m[s]=mc;}
+        }catch(e){}
+        await new Promise(r=>setTimeout(r,350));
+    }
+    if(Object.keys(m).length){_mcapMap=m;_mcapTs=Date.now();}
+    return _mcapMap||{};
+}
+
 let _smScanning=false;
 async function scanSmartMoneyDivergence(){
     if(_smScanning)return;
@@ -6155,31 +6171,43 @@ async function scanSmartMoneyDivergence(){
     const btn=document.getElementById('smScanBtn');
     const el=document.getElementById('smDivContent');
     const prog=document.getElementById('smScanProgress');
-    const mode=(document.getElementById('smMode')||{}).value||'long';
+    const mode=(document.getElementById('smMode')||{}).value||'whalelead';
     if(btn){btn.disabled=true;btn.textContent='스캔 중...';}
     try{
-        const all=await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr').then(r=>r.ok?r.json():null).catch(()=>null);
+        if(prog)prog.textContent='시총 로딩...';
+        const [all,mcaps]=await Promise.all([
+            fetch('https://fapi.binance.com/fapi/v1/ticker/24hr').then(r=>r.ok?r.json():null).catch(()=>null),
+            loadMarketCaps(),
+        ]);
         if(!all||!Array.isArray(all)){if(el)el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;">티커 조회 실패 (Binance)</div>';return;}
-        // 후보 필터: 반등=하락(-1.5%↓), 하락/고래주도=급등(↑)
-        const cands=all.filter(x=>{
-            if(!x.symbol.endsWith('USDT')||parseFloat(x.quoteVolume)<=2e7)return false;
-            const ch=parseFloat(x.priceChangePercent);
+        const mcapOf=coin=>{let mc=mcaps[coin];if(mc==null)mc=mcaps[coin.replace(/^[0-9]+/,'')];return mc==null?null:mc;};
+        // 후보 필터
+        const isDown=mode==='long'||mode==='lowcapdrop';
+        let cands=all.filter(x=>{
+            if(!x.symbol.endsWith('USDT'))return false;
+            const vol=parseFloat(x.quoteVolume), ch=parseFloat(x.priceChangePercent);
+            if(mode==='lowcapdrop'){
+                if(vol<=1e7||ch>=-4)return false;               // 많이 하락(-4%↓), 소형이라 거래대금 문턱 낮춤
+                const mc=mcapOf(x.symbol.replace('USDT',''));
+                return mc==null||mc<1.5e8;                        // 저시총(<1.5억$) 또는 미확인(초소형)
+            }
+            if(vol<=2e7)return false;
             if(mode==='long')return ch<-1.5;
-            return ch>(mode==='whalelead'?2:1.5);
-        }).sort((a,b)=>mode==='long'
+            return ch>(mode==='whalelead'?2:1.5);                  // 급등
+        }).sort((a,b)=>isDown
             ?parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent)
             :parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent))
-            .slice(0,45);
+            .slice(0,mode==='lowcapdrop'?55:45);
         const rows=[];
         for(let i=0;i<cands.length;i+=4){
             const batch=cands.slice(i,i+4);
             const res=await Promise.all(batch.map(async c=>{
                 const sym=c.symbol, coin=sym.replace('USDT',''), okx=coin+'-USDT-SWAP';
-                // 개미 3사(BN·OKX·Bybit) / 고래 2사(BN·OKX) + OI(BN)
-                const [bnw,bnr,bnoi,okw,okr,byr]=await Promise.all([
+                const [bnw,bnr,bnoi,bnf,okw,okr,byr]=await Promise.all([
                     fetch(`https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${sym}&period=1h&limit=1`).then(r=>r.ok?r.json():null).catch(()=>null),
                     fetch(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=1h&limit=1`).then(r=>r.ok?r.json():null).catch(()=>null),
-                    fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${sym}`).then(r=>r.ok?r.json():null).catch(()=>null),
+                    fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=1h&limit=2`).then(r=>r.ok?r.json():null).catch(()=>null),
+                    fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`).then(r=>r.ok?r.json():null).catch(()=>null),
                     fetch(`https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio-contract-top-trader?instId=${okx}&period=1H`).then(r=>r.ok?r.json():null).catch(()=>null),
                     fetch(`https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=${coin}&period=1H`).then(r=>r.ok?r.json():null).catch(()=>null),
                     fetch(`https://api.bybit.com/v5/market/account-ratio?category=linear&symbol=${sym}&period=1h&limit=1`).then(r=>r.ok?r.json():null).catch(()=>null),
@@ -6192,43 +6220,60 @@ async function scanSmartMoneyDivergence(){
                 if(byr&&byr.result&&byr.result.list&&byr.result.list[0]){const b=byr.result.list[0];const q=parseFloat(b.buyRatio)/parseFloat(b.sellRatio);if(isFinite(q))rv.push(q);}
                 const whale=wv.length?wv.reduce((a,b)=>a+b,0)/wv.length:null;
                 const retail=rv.length?rv.reduce((a,b)=>a+b,0)/rv.length:null;
-                const oi=(bnoi&&bnoi.openInterest)?parseFloat(bnoi.openInterest)*parseFloat(c.lastPrice):null;
-                return {sym,chg:parseFloat(c.priceChangePercent),vol:parseFloat(c.quoteVolume),whale,retail,whaleN:wv.length,retailN:rv.length,oi};
+                let oi=null,oiUp=null;
+                if(Array.isArray(bnoi)&&bnoi.length){oi=parseFloat(bnoi[bnoi.length-1].sumOpenInterestValue);if(bnoi.length>=2)oiUp=parseFloat(bnoi[bnoi.length-1].sumOpenInterest)>parseFloat(bnoi[0].sumOpenInterest);}
+                const funding=(bnf&&bnf.lastFundingRate!=null)?parseFloat(bnf.lastFundingRate)*100:null; // 8h %
+                return {sym,chg:parseFloat(c.priceChangePercent),vol:parseFloat(c.quoteVolume),whale,retail,whaleN:wv.length,retailN:rv.length,oi,oiUp,funding,mcap:mcapOf(coin)};
             }));
             rows.push(...res);
             if(prog)prog.textContent=`${Math.min(i+4,cands.length)}/${cands.length}`;
             await new Promise(r=>setTimeout(r,200));
         }
-        // 선별: 반등=고래 롱(≥1.1)+개미 숏(≤0.9) / 하락=개미 롱(≥1.1)+고래 숏(≤0.9)
+        // 선별
         const setups=rows.filter(r=>{
             if(r.whale==null||r.retail==null)return false;
-            if(mode==='whalelead')return r.whale>=1.2&&(r.whale-r.retail)>=0.4;   // 고래 압도적 롱 (개미보다 훨씬 높음)
-            if(mode==='short')return r.retail>=1.0&&(r.retail-r.whale)>=0.25;      // 개미 net롱 + 고래 상대적 숏
-            return r.whale>=1.05&&r.retail<=0.95;                                  // 반등: 고래 롱 + 개미 숏
+            if(mode==='whalelead')return r.whale>=1.2&&(r.whale-r.retail)>=0.4;       // 고래 압도적 롱
+            if(mode==='lowcapdrop')return r.whale>=1.1&&r.whale>r.retail;             // 저시총 급락 + 고래 net롱(개미보다↑)
+            if(mode==='short')return r.retail>=1.0&&(r.retail-r.whale)>=0.25;          // 개미 롱 + 고래 상대적 숏
+            return r.whale>=1.05&&r.retail<=0.95;                                      // 반등: 고래 롱 + 개미 숏
         });
-        setups.forEach(r=>{r.gap=mode==='short'?(r.retail-r.whale):(r.whale-r.retail);r.score=r.gap*10+Math.min(Math.abs(r.chg),25);});
+        const longSide=mode!=='short';
+        setups.forEach(r=>{
+            r.gap=(mode==='short')?(r.retail-r.whale):(r.whale-r.retail);
+            let s=(mode==='lowcapdrop')?(Math.min(Math.abs(r.chg),40)*1.2+r.gap*6):(r.gap*10+Math.min(Math.abs(r.chg),25));
+            if(r.oiUp===true)s+=3;                                    // OI 증가 = 신규자금 유입 확인
+            if(r.funding!=null){
+                if(longSide){ if(r.funding<=0)s+=3; else if(r.funding>0.04)s-=4; }   // 롱: 펀딩 낮을수록 유리
+                else{ if(r.funding>0.04)s+=4; else if(r.funding<0)s-=2; }            // 숏: 롱과열(펀딩↑)일수록 유리
+            }
+            r.score=s;
+        });
         setups.sort((a,b)=>b.score-a.score);
         if(prog)prog.textContent=`${setups.length}건 발견`;
-        const _desc=mode==='whalelead'?'가격↑ + 고래 ≫ 개미':mode==='short'?'가격↑ + 개미 롱 + 고래 숏':'가격↓ + 고래 롱 + 개미 숏';
+        const _desc={whalelead:'가격↑ + 고래 ≫ 개미',lowcapdrop:'저시총 급락 + 고래 롱',short:'가격↑ + 개미 롱 + 고래 숏',long:'가격↓ + 고래 롱 + 개미 숏'}[mode];
         if(!setups.length){el.innerHTML=`<div style="color:var(--text-secondary);font-size:11px;padding:12px;text-align:center;">조건 충족 종목 없음 (${_desc}). 시장 상황에 따라 0건일 수 있습니다.</div>`;return;}
         const top=setups.slice(0,15);
         const fmtBig=v=>v==null?'-':(v>=1e9?(v/1e9).toFixed(1)+'B':v>=1e6?(v/1e6).toFixed(0)+'M':(v/1e3).toFixed(0)+'K');
-        let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 8px;">종목</th><th style="text-align:right;padding:4px 8px;">24h</th><th style="text-align:right;padding:4px 8px;">OI</th><th style="text-align:right;padding:4px 8px;">고래(2사)</th><th style="text-align:right;padding:4px 8px;">개미(3사)</th><th style="text-align:right;padding:4px 8px;">갭</th><th style="text-align:right;padding:4px 8px;">거래대금</th></tr></thead><tbody>';
+        let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 6px;">종목</th><th style="text-align:right;padding:4px 6px;">24h</th><th style="text-align:right;padding:4px 6px;">시총</th><th style="text-align:right;padding:4px 6px;">OI</th><th style="text-align:right;padding:4px 6px;">펀딩</th><th style="text-align:right;padding:4px 6px;">고래</th><th style="text-align:right;padding:4px 6px;">개미</th><th style="text-align:right;padding:4px 6px;">갭</th></tr></thead><tbody>';
         for(const r of top){
             const gapC=r.gap>=1?'#00d26a':r.gap>=0.5?'#FFD700':'var(--text-primary)';
-            const nS='<span style="font-size:8px;color:var(--text-secondary);">';
+            const oiArrow=r.oiUp===true?'<span style="color:#00d26a;">▲</span>':r.oiUp===false?'<span style="color:#ff4757;">▼</span>':'';
+            // 펀딩 색: 롱측이면 음수 유리(초록), 숏측이면 양수 유리(초록)
+            let fC='var(--text-secondary)',fT='-';
+            if(r.funding!=null){fT=(r.funding>=0?'+':'')+r.funding.toFixed(3)+'%';const good=longSide?r.funding<=0:r.funding>0.02;fC=good?'#00d26a':(longSide?(r.funding>0.04?'#ff4757':'var(--text-secondary)'):(r.funding<0?'#ff4757':'var(--text-secondary)'));}
             html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
-                <td style="padding:6px 8px;cursor:pointer;color:#58a6ff;font-weight:600;" onclick="goToSymbol('${r.sym}')">${r.sym.replace('USDT','')}</td>
-                <td style="padding:6px 8px;text-align:right;color:${r.chg>=0?'#00d26a':'#ff4757'};font-weight:600;">${r.chg>=0?'+':''}${r.chg.toFixed(1)}%</td>
-                <td style="padding:6px 8px;text-align:right;color:var(--text-secondary);">${fmtBig(r.oi)}</td>
-                <td style="padding:6px 8px;text-align:right;color:#FFD700;">${r.whale.toFixed(2)} ${nS}${r.whaleN}사</span></td>
-                <td style="padding:6px 8px;text-align:right;color:#22d3ee;">${r.retail.toFixed(2)} ${nS}${r.retailN}사</span></td>
-                <td style="padding:6px 8px;text-align:right;color:${gapC};font-weight:700;">+${r.gap.toFixed(2)}</td>
-                <td style="padding:6px 8px;text-align:right;color:var(--text-secondary);">${fmtBig(r.vol)}</td>
+                <td style="padding:6px;cursor:pointer;color:#58a6ff;font-weight:600;" onclick="goToSymbol('${r.sym}')">${r.sym.replace('USDT','')}</td>
+                <td style="padding:6px;text-align:right;color:${r.chg>=0?'#00d26a':'#ff4757'};font-weight:600;">${r.chg>=0?'+':''}${r.chg.toFixed(1)}%</td>
+                <td style="padding:6px;text-align:right;color:var(--text-secondary);">${r.mcap!=null?fmtBig(r.mcap):'?'}</td>
+                <td style="padding:6px;text-align:right;color:var(--text-secondary);">${fmtBig(r.oi)}${oiArrow}</td>
+                <td style="padding:6px;text-align:right;color:${fC};">${fT}</td>
+                <td style="padding:6px;text-align:right;color:#FFD700;">${r.whale.toFixed(2)}</td>
+                <td style="padding:6px;text-align:right;color:#22d3ee;">${r.retail.toFixed(2)}</td>
+                <td style="padding:6px;text-align:right;color:${gapC};font-weight:700;">+${r.gap.toFixed(2)}</td>
             </tr>`;
         }
         html+='</tbody></table>';
-        html+=`<div style="font-size:9px;color:var(--text-secondary);text-align:right;margin-top:6px;">${cands.length}개 스캔 → ${setups.length}건 선별 · ${new Date().toLocaleTimeString()}</div>`;
+        html+=`<div style="font-size:9px;color:var(--text-secondary);text-align:right;margin-top:6px;">${cands.length}개 스캔 → ${setups.length}건 선별 · L/S 개미3사·고래2사 / OI·펀딩(8h) 반영 · ${new Date().toLocaleTimeString()}</div>`;
         el.innerHTML=html;
     }catch(e){console.warn('sm-scan',e);if(el)el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;">스캔 오류</div>';}
     finally{_smScanning=false;if(btn){btn.disabled=false;btn.textContent='스캔';}}
