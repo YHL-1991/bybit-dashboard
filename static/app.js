@@ -6160,14 +6160,15 @@ async function scanSmartMoneyDivergence(){
     try{
         const all=await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr').then(r=>r.ok?r.json():null).catch(()=>null);
         if(!all||!Array.isArray(all)){if(el)el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;">티커 조회 실패 (Binance)</div>';return;}
-        // 후보 필터: 반등=하락종목(-1.5%↓), 하락=급등종목(+2.5%↑)
+        // 후보 필터: 반등=하락(-1.5%↓), 하락/고래주도=급등(↑)
         const cands=all.filter(x=>{
             if(!x.symbol.endsWith('USDT')||parseFloat(x.quoteVolume)<=2e7)return false;
             const ch=parseFloat(x.priceChangePercent);
-            return mode==='short'?ch>1.5:ch<-1.5;
-        }).sort((a,b)=>mode==='short'
-            ?parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent)
-            :parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent))
+            if(mode==='long')return ch<-1.5;
+            return ch>(mode==='whalelead'?2:1.5);
+        }).sort((a,b)=>mode==='long'
+            ?parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent)
+            :parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent))
             .slice(0,45);
         const rows=[];
         for(let i=0;i<cands.length;i+=4){
@@ -6201,13 +6202,15 @@ async function scanSmartMoneyDivergence(){
         // 선별: 반등=고래 롱(≥1.1)+개미 숏(≤0.9) / 하락=개미 롱(≥1.1)+고래 숏(≤0.9)
         const setups=rows.filter(r=>{
             if(r.whale==null||r.retail==null)return false;
-            // short: 개미 net롱(≥1.0) + 고래가 개미보다 0.25↑ 숏 쪽 (갭 기반, 후보 풀이 작아 완화)
-            return mode==='short'?(r.retail>=1.0&&(r.retail-r.whale)>=0.25):(r.whale>=1.05&&r.retail<=0.95);
+            if(mode==='whalelead')return r.whale>=1.2&&(r.whale-r.retail)>=0.4;   // 고래 압도적 롱 (개미보다 훨씬 높음)
+            if(mode==='short')return r.retail>=1.0&&(r.retail-r.whale)>=0.25;      // 개미 net롱 + 고래 상대적 숏
+            return r.whale>=1.05&&r.retail<=0.95;                                  // 반등: 고래 롱 + 개미 숏
         });
         setups.forEach(r=>{r.gap=mode==='short'?(r.retail-r.whale):(r.whale-r.retail);r.score=r.gap*10+Math.min(Math.abs(r.chg),25);});
         setups.sort((a,b)=>b.score-a.score);
         if(prog)prog.textContent=`${setups.length}건 발견`;
-        if(!setups.length){el.innerHTML=`<div style="color:var(--text-secondary);font-size:11px;padding:12px;text-align:center;">조건 충족 종목 없음 (${mode==='short'?'가격↑+개미 롱+고래 숏':'가격↓+고래 롱+개미 숏'}). 시장 상황에 따라 0건일 수 있습니다.</div>`;return;}
+        const _desc=mode==='whalelead'?'가격↑ + 고래 ≫ 개미':mode==='short'?'가격↑ + 개미 롱 + 고래 숏':'가격↓ + 고래 롱 + 개미 숏';
+        if(!setups.length){el.innerHTML=`<div style="color:var(--text-secondary);font-size:11px;padding:12px;text-align:center;">조건 충족 종목 없음 (${_desc}). 시장 상황에 따라 0건일 수 있습니다.</div>`;return;}
         const top=setups.slice(0,15);
         const fmtBig=v=>v==null?'-':(v>=1e9?(v/1e9).toFixed(1)+'B':v>=1e6?(v/1e6).toFixed(0)+'M':(v/1e3).toFixed(0)+'K');
         let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 8px;">종목</th><th style="text-align:right;padding:4px 8px;">24h</th><th style="text-align:right;padding:4px 8px;">OI</th><th style="text-align:right;padding:4px 8px;">고래(2사)</th><th style="text-align:right;padding:4px 8px;">개미(3사)</th><th style="text-align:right;padding:4px 8px;">갭</th><th style="text-align:right;padding:4px 8px;">거래대금</th></tr></thead><tbody>';
