@@ -6199,7 +6199,7 @@ async function scanSmartMoneyDivergence(){
             if(!x.symbol.endsWith('USDT')||parseFloat(x.quoteVolume)<=2e7)return false;
             const ch=parseFloat(x.priceChangePercent);
             if(mode==='whalelead')return ch>1;
-            return Q.dir==='up'?ch>1.5:ch<-1.5;
+            return Q.dir==='up'?ch>0.5:ch<-0.5;   // 8분면은 '방향'만 필요 → 문턱 완화(더 많이 스캔)
         }).sort((a,b)=>dirUp
             ?parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent)
             :parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent))
