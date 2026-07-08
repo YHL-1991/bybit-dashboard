@@ -67,10 +67,15 @@
                 <span><span class="dot" style="background:#a855f7"></span> 스마트머니 다이버전스 스캐너</span>
                 <span style="display:flex;gap:8px;align-items:center;">
                     <select id="smMode" onchange="scanSmartMoneyDivergence()" class="symbol-select" style="font-size:11px;padding:4px 8px;">
-                        <option value="lowcapdrop">저시총 급락 + 고래 롱 (롱 후보)</option>
                         <option value="whalelead">고래 주도 급등 (가격↑ · 고래 ≫ 개미)</option>
-                        <option value="long">반등 후보 (가격↓ · 고래 ≫ 개미)</option>
-                        <option value="short">하락 후보 (가격↑ · 개미 롱 · 고래 숏)</option>
+                        <option value="q1">1. ★강한 롱 (가격↑ · OI↑ · 고래롱우위)</option>
+                        <option value="q2">2. 불트랩 숏주의 (가격↑ · OI↑ · 고래숏우위)</option>
+                        <option value="q3">3. 약한 롱 확인 (가격↑ · OI↓ · 고래롱우위)</option>
+                        <option value="q4">4. 숏 반전확인 (가격↑ · OI↓ · 고래숏우위)</option>
+                        <option value="q5">5. ★강한 숏 (가격↓ · OI↑ · 고래숏우위)</option>
+                        <option value="q6">6. 베어트랩 롱주의 (가격↓ · OI↑ · 고래롱우위)</option>
+                        <option value="q7">7. 롱 바닥확인 (가격↓ · OI↓ · 고래롱우위)</option>
+                        <option value="q8">8. 중립/약한 숏 (가격↓ · OI↓ · 고래숏우위)</option>
                     </select>
                     <span id="smScanProgress" style="font-size:10px;color:var(--text-secondary);"></span>
                     <button id="smScanBtn" onclick="scanSmartMoneyDivergence()" style="padding:5px 12px;background:#a855f7;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">스캔</button>
@@ -79,7 +84,7 @@
             <div id="smDivContent" style="font-size:12px;">
                 <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:14px;">"스캔"을 눌러 전 종목을 훑습니다 (~10초).</div>
             </div>
-            <p class="hint">L/S는 <b>개미 3사(Binance·OKX·Bybit)</b> vs <b>고래 2사(Binance·OKX)</b> 평균. <b>시총</b>=CoinGecko, <b>OI</b>=Binance(▲증가/▼감소), <b>펀딩</b>=8h율(롱측은 음수·숏측은 양수가 유리, 초록). <b>저시총 급락+고래롱</b> = 시총 낮고 24h -4%↓ + 고래 net롱. <b>고래 주도 급등</b> = 급등(+1%↑)+고래≫개미+OI 감소 제외(예: OPG). <b>반등</b> = 24h 하락 + 고래가 개미보다 훨씬 롱(갭≥0.3). <b>하락</b> = 급등+개미롱+고래숏. OI 증가·펀딩 유리하면 점수 가점. <b>가설일 뿐 매매신호 아님</b>, 고래도 틀립니다.</p>
+            <p class="hint"><b>OI×가격×(고래vs개미) 8분면 분류.</b> OI×가격=돈의 흐름(신규진입/청산), 고래/개미=돈의 주인. L/S는 개미 3사(Bin·OKX·Bybit) vs 고래 2사(Bin·OKX) 평균, OI=Binance(▲증가/▼감소), 펀딩=8h율. <b>가격↑+OI↑</b>=신규진입(고래롱=강한롱1 / 고래숏=불트랩2). <b>가격↑+OI↓</b>=숏커버(고래롱=약한롱3 / 고래숏=숏4). <b>가격↓+OI↑</b>=신규숏(고래숏=강한숏5 / 고래롱=베어트랩6). <b>가격↓+OI↓</b>=청산소진(고래롱=롱바닥7 / 고래숏=중립8). <b>가설일 뿐 매매신호 아님</b> — 급등에 숏/급락에 롱은 스퀴즈 위험, 반전 확인 후 진입.</p>
         </div>
     </div>
 
@@ -559,6 +564,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260701k"></script>
+    <script src="/static/app.js?v=20260701l"></script>
 </body>
 </html>
