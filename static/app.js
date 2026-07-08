@@ -6191,7 +6191,7 @@ async function scanSmartMoneyDivergence(){
             }
             if(vol<=2e7)return false;
             if(mode==='long')return ch<-1.5;
-            return ch>(mode==='whalelead'?2:1.5);                  // 급등
+            return ch>(mode==='whalelead'?1:1.5);                  // 급등 (고래주도는 문턱 완화)
         }).sort((a,b)=>isDown
             ?parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent)
             :parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent))
@@ -6230,7 +6230,7 @@ async function scanSmartMoneyDivergence(){
         // 선별
         const setups=rows.filter(r=>{
             if(r.whale==null||r.retail==null)return false;
-            if(mode==='whalelead')return r.whale>=1.2&&(r.whale-r.retail)>=0.4;       // 고래 압도적 롱
+            if(mode==='whalelead')return r.whale>=1.2&&(r.whale-r.retail)>=0.4&&r.oiUp!==false;  // 고래 압도적 롱 + OI 감소 제외
             if(mode==='lowcapdrop')return r.whale>=1.1&&r.whale>r.retail;             // 저시총 급락 + 고래 net롱(개미보다↑)
             if(mode==='short')return r.retail>=1.0&&(r.retail-r.whale)>=0.25;          // 개미 롱 + 고래 상대적 숏
             return r.whale>=1.0&&(r.whale-r.retail)>=0.3;                              // 반등: 고래가 개미보다 훨씬 롱(갭≥0.3)
