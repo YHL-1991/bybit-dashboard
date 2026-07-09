@@ -326,6 +326,7 @@ SYMBOLS = list(FALLBACK_SYMBOLS)
 
 STOCKS = [
     ("STK:174900.KQ", "앱클론 (KOSDAQ:174900)"),
+    ("STK:456160.KQ", "지투지바이오 (KOSDAQ:456160)"),
     ("STK:TSLA", "테슬라 (NASDAQ:TSLA)"),
     ("STK:SPCX", "스페이스X (NASDAQ:SPCX)"),
     ("STK:005930.KS", "삼성전자 (KRX:005930)"),
