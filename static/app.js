@@ -231,7 +231,11 @@ async function fetchLiquidationData(sym){
 }
 
 /* ───── CME 갭 감지 (브라우저 측) ───── */
+// CME에 실제 상장된 코인만 CME갭이 의미가 있다. 나머지는 주말 가격 드리프트를 오라벨하는 가짜 신호.
+const CME_LISTED=new Set(['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']);
+function isCMEListed(sym){return CME_LISTED.has((sym||'').toUpperCase());}
 async function fetchCMEGaps(sym){
+    if(!isCMEListed(sym))return [];   // CME 미상장 코인은 CME갭 계산 자체가 무의미
     const kline=await bybitKline(sym,'60',500);
     const fridayCloses={},sundayOpens={};
     for(const c of kline){
@@ -953,6 +957,7 @@ async function updateCMEGaps(){
         cmeGapLines.forEach(s=>{try{tvChartObj.removeSeries(s);}catch(e){}});
         cmeGapLines=[];
         const el=document.getElementById('cmeGapInfo');
+        if(!isCMEListed(currentSymbol)){el.innerHTML='<span style="opacity:.6;">CME 갭: 해당 없음 (CME 미상장 코인 — BTC/ETH/SOL/XRP만 유효)</span>';return;}
         if(!gaps.length){el.innerHTML='CME 갭: 감지된 갭 없음';return;}
 
         const recent=gaps.slice(-5); // 최근 5개만

@@ -1151,6 +1151,10 @@ async def api_kline(symbol: str, interval: str = "60", limit: int = 500):
 async def api_cme_gaps(symbol: str):
     """CME 갭 감지: 시간봉에서 금요일 21:00 UTC 종가 vs 일요일 22:00 UTC 시가"""
     from datetime import datetime, timezone
+    # CME에 실제 상장된 코인만 CME갭이 의미가 있다. 나머지는 미상장이므로 빈 결과 반환.
+    CME_LISTED = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}
+    if symbol.upper() not in CME_LISTED:
+        return []  # CME 미상장 코인은 CME갭 계산 자체가 무의미
     data = await bybit_api.get_kline(symbol, interval="60", limit=500)
     candles = []
     for c in reversed(data):
