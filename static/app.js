@@ -1256,108 +1256,149 @@ function detectChartPatterns(d){
     return patterns;
 }
 
+/* ── 다중공선성 제어 스코어링 ──
+   문제: RSI / CCI / W%R 은 같은 가격 시계열에서 나온 유계 모멘텀 오실레이터라 상관계수가 높다(추세장 0.8+).
+         더블톱 / RSI 하락다이버전스 / 고점 유동성스윕도 "고점에서의 반전" 하나를 세 방식으로 잰 것이다.
+         이걸 전부 단순 합산하면 '단일 사실'이 3~4배로 뻥튀기돼 확신이 과대평가된다.
+   해결: (1) 독립적인 정보원끼리 그룹화
+         (2) 그룹 내부는 합산이 아니라 체감가중(1.0 / 0.4 / 0.2 / 0.1) - 상관된 증거는 추가 크레딧을 줄인다
+         (3) 그룹 내 롱/숏 모순은 상쇄 (더블톱 + 더블바텀 동시발화 같은 비일관성)
+         (4) 그룹별 상한(cap)
+         (5) 그룹 간에만 합산 (그룹끼리는 상대적으로 독립) */
+const SIG_GROUPS={
+    trend:   {label:'추세/구조',   cap:100},
+    momentum:{label:'모멘텀',      cap:55},
+    reversal:{label:'반전',        cap:90},
+    volume:  {label:'거래량',      cap:25},
+    level:   {label:'레벨/불균형', cap:40},
+};
+const PATTERN_GROUP={
+    '더블 바텀':'reversal','더블 톱':'reversal','V-반전 (강세)':'reversal',
+    'HH & HL (상승 구조)':'trend','LH & LL (하락 구조)':'trend',
+    '상승 삼각형':'trend','하강 삼각형':'trend','불 플래그':'trend','베어 플래그':'trend',
+    '저항선 돌파':'trend','지지선 붕괴':'trend',
+    '상승 MA 눌림목':'trend','하락 MA 되돌림':'trend',
+};
+// 그룹 내부: 강한 순으로 체감가중 적용 후, 롱/숏 모순분 상쇄
+function collapseSignalGroup(items){
+    const W=[1,0.4,0.2,0.1];
+    const dim=arr=>arr.slice().sort((a,b)=>b-a).reduce((s,w,i)=>s+w*(W[i]!==undefined?W[i]:0.05),0);
+    let l=dim(items.filter(i=>i.side==='long').map(i=>i.w));
+    let s=dim(items.filter(i=>i.side==='short').map(i=>i.w));
+    const m=Math.min(l,s); // 같은 그룹 안에서 롱/숏이 동시에 켜지면 그만큼 상쇄
+    return {l:l-m, s:s-m, conflict:m>0.5};
+}
+
 function generateTradeSignal(d){
     if(d.length<30)return;
     const price=d[d.length-1].close;
-    let longScore=0,shortScore=0;
-    const reasons=[];
+    const sigs=[]; // {group, side, w, label}
+    const add=(group,side,w,label)=>sigs.push({group,side,w,label});
 
-    // 1) 차트 패턴 신호
+    // 1) 차트 패턴 신호 (패턴별로 소속 그룹이 다르다)
     const patterns=detectChartPatterns(d);
     patterns.forEach(p=>{
-        if(p.type==='long')longScore+=p.strength;
-        else shortScore+=p.strength;
-        reasons.push(`${p.type==='long'?'[L]':'[S]'} ${p.name}`);
+        add(PATTERN_GROUP[p.name]||'trend', p.type==='long'?'long':'short', p.strength, p.name);
     });
 
-    // 2) RSI 신호
+    // 2) RSI  [모멘텀]
     const rsi=calcRSI(d,14);
     if(rsi.length){
         const rv=rsi[rsi.length-1].value;
-        if(rv<30){longScore+=40;reasons.push('RSI 과매도('+rv.toFixed(0)+')');}
-        else if(rv<40){longScore+=15;reasons.push('RSI 약세구간('+rv.toFixed(0)+')');}
-        else if(rv>70){shortScore+=40;reasons.push('RSI 과매수('+rv.toFixed(0)+')');}
-        else if(rv>60){shortScore+=15;reasons.push('RSI 강세과열('+rv.toFixed(0)+')');}
+        if(rv<30)add('momentum','long',40,'RSI 과매도('+rv.toFixed(0)+')');
+        else if(rv<40)add('momentum','long',15,'RSI 약세구간('+rv.toFixed(0)+')');
+        else if(rv>70)add('momentum','short',40,'RSI 과매수('+rv.toFixed(0)+')');
+        else if(rv>60)add('momentum','short',15,'RSI 강세과열('+rv.toFixed(0)+')');
     }
 
-    // 3) MACD 신호
+    // 3) MACD  [모멘텀] - EMA 파생이라 MA배열과도 상관있지만 교차 이벤트는 별개 정보로 인정
     const macd=calcMACD(d);
     if(macd.hist.length>=2){
         const h1=macd.hist[macd.hist.length-2].value;
         const h2=macd.hist[macd.hist.length-1].value;
-        if(h1<0&&h2>0){longScore+=50;reasons.push('MACD 골든크로스');}
-        if(h1>0&&h2<0){shortScore+=50;reasons.push('MACD 데드크로스');}
-        if(h2>0&&h2>h1){longScore+=10;reasons.push('MACD 히스토그램↑');}
-        if(h2<0&&h2<h1){shortScore+=10;reasons.push('MACD 히스토그램↓');}
+        if(h1<0&&h2>0)add('momentum','long',50,'MACD 골든크로스');
+        else if(h1>0&&h2<0)add('momentum','short',50,'MACD 데드크로스');
+        else if(h2>0&&h2>h1)add('momentum','long',10,'MACD 히스토그램 상승');
+        else if(h2<0&&h2<h1)add('momentum','short',10,'MACD 히스토그램 하락');
     }
 
-    // 4) MA 배열 신호
+    // 4) MA 배열  [추세/구조]
     const ma7=calcSMA(d,7),ma20=calcSMA(d,20),ma100=calcSMA(d,100);
     if(ma7.length&&ma20.length&&ma100.length){
         const m7=ma7[ma7.length-1].value,m20=ma20[ma20.length-1].value,m100=ma100[ma100.length-1].value;
-        if(price>m7&&m7>m20&&m20>m100){longScore+=30;reasons.push('MA 정배열');}
-        if(price<m7&&m7<m20&&m20<m100){shortScore+=30;reasons.push('MA 역배열');}
-        if(price>m7&&price<m20){reasons.push('⚪ MA7 위, MA20 아래');}
+        if(price>m7&&m7>m20&&m20>m100)add('trend','long',30,'MA 정배열');
+        if(price<m7&&m7<m20&&m20<m100)add('trend','short',30,'MA 역배열');
     }
 
-    // 5) 거래량 확인
+    // 5) 거래량  [거래량] - 유일하게 가격 파생이 아닌 독립 정보원
     if(d.length>=20){
         const avgVol=d.slice(-20,-1).reduce((s,c)=>s+c.volume,0)/19;
         const lastVol=d[d.length-1].volume;
         if(lastVol>avgVol*1.5){
-            if(d[d.length-1].close>d[d.length-1].open){longScore+=20;reasons.push('거래량 급증+양봉');}
-            else{shortScore+=20;reasons.push('거래량 급증+음봉');}
+            if(d[d.length-1].close>d[d.length-1].open)add('volume','long',20,'거래량 급증+양봉');
+            else add('volume','short',20,'거래량 급증+음봉');
         }
     }
 
-    // 6) CCI
+    // 6) CCI  [모멘텀] - RSI와 고상관. 그룹 내 체감가중으로 중복 카운트 억제됨
     const cci=calcCCI(d,20);
     if(cci!==null){
-        if(cci<-100){longScore+=15;reasons.push('CCI 과매도');}
-        if(cci>100){shortScore+=15;reasons.push('CCI 과매수');}
+        if(cci<-100)add('momentum','long',15,'CCI 과매도');
+        if(cci>100)add('momentum','short',15,'CCI 과매수');
     }
 
-    // 7) Williams %R
+    // 7) Williams %R  [모멘텀] - RSI/CCI와 고상관. 위와 동일하게 억제됨
     const wr=calcWilliamsR(d,14);
     if(wr!==null){
-        if(wr<-80){longScore+=15;reasons.push('W%R 과매도');}
-        if(wr>-20){shortScore+=15;reasons.push('W%R 과매수');}
+        if(wr<-80)add('momentum','long',15,'W%R 과매도');
+        if(wr>-20)add('momentum','short',15,'W%R 과매수');
     }
 
-    // 8) RSI 다이버전스 (코인의 바이블 기법)
+    // 8) RSI 다이버전스  [반전]
     const rsiDiv=detectRSIDivergence(d,rsi);
     rsiDiv.forEach(s=>{
-        if(s.type==='bullish_div'){longScore+=s.strength;reasons.push('RSI 상승다이버전스');}
-        if(s.type==='bearish_div'){shortScore+=s.strength;reasons.push('RSI 하락다이버전스');}
+        if(s.type==='bullish_div')add('reversal','long',s.strength,'RSI 상승다이버전스');
+        if(s.type==='bearish_div')add('reversal','short',s.strength,'RSI 하락다이버전스');
     });
 
-    // 9) 유동성 스윕 (비트코인 일루미나티 기법)
+    // 9) 유동성 스윕  [반전] - 더블톱/바텀과 사실상 같은 사건인 경우가 많다
     const sweeps=detectLiquiditySweep(d,20);
     if(sweeps.length){
         const last=sweeps[sweeps.length-1];
-        if(last.type==='bullish_sweep'&&d[d.length-1].time-last.time<86400*3){
-            longScore+=50;reasons.push('저점 유동성스윕(반전)');}
-        if(last.type==='bearish_sweep'&&d[d.length-1].time-last.time<86400*3){
-            shortScore+=50;reasons.push('고점 유동성스윕(반전)');}
+        if(last.type==='bullish_sweep'&&d[d.length-1].time-last.time<86400*3)add('reversal','long',50,'저점 유동성스윕(반전)');
+        if(last.type==='bearish_sweep'&&d[d.length-1].time-last.time<86400*3)add('reversal','short',50,'고점 유동성스윕(반전)');
     }
 
-    // 10) 와이코프 VSA
+    // 10) 와이코프 VSA  [반전]
     const wyckoff=detectWyckoff(d);
     wyckoff.forEach(w=>{
-        if(w.type==='wyckoff_spring'){longScore+=w.strength;reasons.push('와이코프 스프링(축적)');}
-        if(w.type==='wyckoff_upthrust'){shortScore+=w.strength;reasons.push('와이코프 업스러스트(분배)');}
+        if(w.type==='wyckoff_spring')add('reversal','long',w.strength,'와이코프 스프링(축적)');
+        if(w.type==='wyckoff_upthrust')add('reversal','short',w.strength,'와이코프 업스러스트(분배)');
     });
 
-    // 11) FVG (비트코인 일루미나티 기법)
+    // 11) FVG  [레벨/불균형] - 가격 공백은 오실레이터와 독립적인 정보
     const fvgs=detectFVG(d);
     if(fvgs.length){
         const last=fvgs[fvgs.length-1];
         const p=d[d.length-1].close;
-        if(last.type==='bullish_fvg'&&p<=last.top&&p>=last.bottom){
-            longScore+=40;reasons.push('상승 FVG 영역 진입');}
-        if(last.type==='bearish_fvg'&&p>=last.bottom&&p<=last.top){
-            shortScore+=40;reasons.push('하락 FVG 영역 진입');}
+        if(last.type==='bullish_fvg'&&p<=last.top&&p>=last.bottom)add('level','long',40,'상승 FVG 영역 진입');
+        if(last.type==='bearish_fvg'&&p>=last.bottom&&p<=last.top)add('level','short',40,'하락 FVG 영역 진입');
     }
+
+    // ── 그룹 단위 집계 (다중공선성 제어의 핵심) ──
+    let longScore=0,shortScore=0;
+    const groupBreak=[],conflicts=[];
+    for(const g of Object.keys(SIG_GROUPS)){
+        const items=sigs.filter(s=>s.group===g);
+        if(!items.length)continue;
+        const r=collapseSignalGroup(items);
+        const cap=SIG_GROUPS[g].cap;
+        const lc=Math.min(Math.round(r.l),cap), sc=Math.min(Math.round(r.s),cap);
+        longScore+=lc; shortScore+=sc;
+        if(lc||sc)groupBreak.push(`${SIG_GROUPS[g].label} ${lc?'L'+lc:''}${lc&&sc?'/':''}${sc?'S'+sc:''}`);
+        if(r.conflict)conflicts.push(SIG_GROUPS[g].label);
+    }
+    const reasons=sigs.map(s=>s.label);
 
     // UI 업데이트
     const dirEl=document.getElementById('signalDirection');
@@ -1366,19 +1407,20 @@ function generateTradeSignal(d){
     const patternEl=document.getElementById('patternInfo');
 
     const net=longScore-shortScore;
-    if(net>50){
+    // 그룹 집계로 점수 스케일이 줄었으므로 임계값도 하향 재보정
+    if(net>40){
         dirEl.textContent='LONG 추천';dirEl.className='signal-badge long';
-    }else if(net<-50){
+    }else if(net<-40){
         dirEl.textContent='SHORT 추천';dirEl.className='signal-badge short';
-    }else if(net>20){
+    }else if(net>15){
         dirEl.textContent='약한 LONG';dirEl.className='signal-badge long';
-    }else if(net<-20){
+    }else if(net<-15){
         dirEl.textContent='약한 SHORT';dirEl.className='signal-badge short';
     }else{
         dirEl.textContent='관망';dirEl.className='signal-badge neutral';
     }
-    scoreEl.textContent=`롱: ${longScore}점 | 숏: ${shortScore}점 | 순: ${net>0?'+':''}${net}`;
-    // reasons에서 이모지 제거
+    const confTxt=conflicts.length?` | 모순상쇄: ${conflicts.join(',')}`:'';
+    scoreEl.textContent=`롱: ${longScore}점 | 숏: ${shortScore}점 | 순: ${net>0?'+':''}${net}  [${groupBreak.join(' · ')}]${confTxt}`;
     reasonEl.textContent=reasons.slice(0,8).map(r=>r.replace(/\[L\]|\[S\]|🟢|🔴|⚪/g,'').trim()).join(' | ');
     patternEl.innerHTML=patterns.length?
         '패턴: '+patterns.map(p=>`<span style="color:${p.type==='long'?G:R}">${p.name} [${p.type==='long'?'롱':'숏'}신호 ${p.strength}점]</span>`).join(' | '):
@@ -3130,8 +3172,9 @@ async function updateExpertConsensus(){
         const netMatch=sigScoreText.match(/순: ([+-]?\d+)/);
         if(netMatch){
             const net=parseInt(netMatch[1]);
-            // 점수를 0~100 범위로 변환 (-200~+200 → 0~100)
-            const techScore=Math.max(0,Math.min(100,50+net/4));
+            // 점수를 0~100 범위로 변환. 그룹 집계(다중공선성 제어) 이후 net 스케일이 축소돼
+            // 실효 범위가 대략 -100~+100 이므로 나눗수를 4에서 2로 재보정.
+            const techScore=Math.max(0,Math.min(100,50+net/2));
             score=score*0.5+techScore*0.5;
             factors.push(`기술:${net>0?'+':''}${net}`);
         }
