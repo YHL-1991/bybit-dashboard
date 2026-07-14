@@ -1143,6 +1143,31 @@ function detectWyckoff(d){
 /* ═══════════════════════════════════
    차트 패턴 감지 엔진 + 롱/숏 신호 시스템
    ═══════════════════════════════════ */
+// 이평선 눌림목/되돌림 (태원 기법: DEXE 예시). 정배열 추세의 상승 MA 되돌림 후 지지 = 롱,
+// 역배열 추세의 하락 MA 되돌림 후 저항 = 숏. 신호봉은 마지막 완성봉(직전봉).
+function detectMaPullback(d){
+    if(!d||d.length<55)return null;
+    const ma20a=calcSMA(d,20), ma50a=calcSMA(d,50);
+    if(ma20a.length<7||ma50a.length<7)return null;
+    const price=d[d.length-1].close;
+    const m20=ma20a[ma20a.length-1].value, m50=ma50a[ma50a.length-1].value;
+    const m50p=ma50a[ma50a.length-7].value;
+    const c=d[d.length-2]; // 마지막 완성봉 = 신호봉
+    const up50=m50>m50p;
+    // 상승추세: MA50 우상향 + 정배열 성향(MA20>MA50) + 현재가 MA50 위
+    if(up50&&m20>m50&&price>m50){
+        const t20=c.low<=m20*1.006&&c.close>=m20*0.997;
+        const t50=c.low<=m50*1.006&&c.close>=m50*0.997;
+        if(t20||t50)return {name:'상승 MA 눌림목',type:'long',side:'bull',strength:70,which:t50?'MA50':'MA20',lo:c.low,hi:c.high,desc:(t50?'MA50':'MA20')+' 되돌림 후 지지'};
+    }
+    // 하락추세: MA50 우하향 + 역배열 성향(MA20<MA50) + 현재가 MA50 아래
+    if(!up50&&m20<m50&&price<m50){
+        const r20=c.high>=m20*0.994&&c.close<=m20*1.003;
+        const r50=c.high>=m50*0.994&&c.close<=m50*1.003;
+        if(r20||r50)return {name:'하락 MA 되돌림',type:'short',side:'bear',strength:70,which:r50?'MA50':'MA20',lo:c.low,hi:c.high,desc:(r50?'MA50':'MA20')+' 되돌림 후 저항'};
+    }
+    return null;
+}
 function detectChartPatterns(d){
     const patterns=[];
     if(d.length<30)return patterns;
@@ -1224,6 +1249,9 @@ function detectChartPatterns(d){
         if(price>prev20High)patterns.push({name:'저항선 돌파',type:'long',strength:70,desc:'최근 고점 돌파'});
         if(price<prev20Low)patterns.push({name:'지지선 붕괴',type:'short',strength:70,desc:'최근 저점 하향 이탈'});
     }
+    // 11) 이평선 눌림목/되돌림 (태원 기법: DEXE 상승 MA 되돌림 매수)
+    const maPb=detectMaPullback(d);
+    if(maPb)patterns.push({name:maPb.name,type:maPb.type,strength:maPb.strength,desc:maPb.desc+' (추세 눌림)'});
 
     return patterns;
 }
@@ -6432,6 +6460,9 @@ async function updatePatternScan(){
             try{ d = stock ? await yahooKline(getYahooSym(sym),iv,300) : await bybitKline(sym,iv,300); }catch(e){ d=null; }
             if(!d||d.length<30){rows.push({label,pat:null});continue;}
             const pats=detectCandlePatterns(d);
+            // 태원 기법: 상승/하락 MA 눌림목도 후보에 포함 (신선한 신호로 취급)
+            const mp=detectMaPullback(d);
+            if(mp)pats.push({name:mp.name,side:mp.side,idx:d.length-2,barsAgo:1,lo:mp.lo,hi:mp.hi,base:mp.which+' 눌림',strength:3});
             pats.sort((a,b)=>a.barsAgo-b.barsAgo||b.strength-a.strength);
             const pat=pats[0]||null;
             if(!pat){rows.push({label,pat:null});continue;}
