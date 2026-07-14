@@ -5045,6 +5045,8 @@ async function refreshAll(){
     if(!stock&&(refreshCount%60===0||refreshCount===5)) tasks.push(updateEthBtcRegime());
     // 매 30초: 삼각수렴 멀티TF (코인만)
     if(!stock&&(refreshCount%30===0||refreshCount===6)) tasks.push(updateTriangleConvergence());
+    // 매 30초: 캔들 패턴 타점 (코인/주식 모두)
+    if(refreshCount%30===0||refreshCount===9) tasks.push(updatePatternScan());
     // 매 30초: 통합 펀딩비 (코인만)
     if(!stock&&(refreshCount%30===0||refreshCount===7)) tasks.push(updateFundingAggregated());
     // 매 5분: 통합 펀딩비 추이 히스토그램 (8h 정산이라 자주 안 변함)
@@ -6367,6 +6369,129 @@ async function updateTriangleConvergence(){
     }catch(e){console.warn('triangle',e);}
 }
 
+/* ═══════════════════════════════════
+   캔들/차트 패턴 타점 감지 (패턴 + 위치 + 확인신호 겹침)
+   ── 가설 플래그일 뿐 매매신호 아님. 패턴은 '레벨'에서만 의미.
+   ═══════════════════════════════════ */
+function _rsiCalc(closes,p=14){
+    if(!closes||closes.length<p+1)return null;
+    let g=0,l=0;
+    for(let i=1;i<=p;i++){const ch=closes[i]-closes[i-1];if(ch>=0)g+=ch;else l-=ch;}
+    g/=p;l/=p;
+    for(let i=p+1;i<closes.length;i++){const ch=closes[i]-closes[i-1];const up=ch>0?ch:0,dn=ch<0?-ch:0;g=(g*(p-1)+up)/p;l=(l*(p-1)+dn)/p;}
+    if(l===0)return 100;
+    return 100-100/(1+g/l);
+}
+function _smaCalc(arr,p){if(!arr||arr.length<p)return null;let s=0;for(let i=arr.length-p;i<arr.length;i++)s+=arr[i];return s/p;}
+function _candleShape(c){
+    const body=Math.abs(c.close-c.open);
+    const range=(c.high-c.low)||1e-9;
+    return {body,range,up:c.high-Math.max(c.open,c.close),dn:Math.min(c.open,c.close)-c.low,bull:c.close>=c.open,bodyPct:body/range};
+}
+// 최근 완성봉에서 캔들 반전 패턴을 찾는다. 마지막 봉은 형성중이라 직전 봉을 신호봉으로.
+function detectCandlePatterns(d){
+    if(!d||d.length<25)return [];
+    const n=d.length, out=[];
+    for(let k=n-2;k>=n-4&&k>=5;k--){
+        const c=d[k],p1=d[k-1],p2=d[k-2];
+        const s=_candleShape(c),sp=_candleShape(p1),s2=_candleShape(p2);
+        const barsAgo=(n-1)-k;
+        const prior=d[k-5]?((c.close-d[k-5].close)/d[k-5].close):0; // 선행 5봉 추세
+        // 강세/약세 장악형 (2봉)
+        if(!sp.bull&&s.bull&&c.close>=p1.open&&c.open<=p1.close&&s.body>sp.body&&prior<-0.004)
+            out.push({name:'강세 장악형',side:'bull',idx:k,barsAgo,lo:Math.min(c.low,p1.low),hi:c.high,base:'2봉 반전',strength:2});
+        if(sp.bull&&!s.bull&&c.close<=p1.open&&c.open>=p1.close&&s.body>sp.body&&prior>0.004)
+            out.push({name:'약세 장악형',side:'bear',idx:k,barsAgo,lo:c.low,hi:Math.max(c.high,p1.high),base:'2봉 반전',strength:2});
+        // 해머 / 슈팅스타 (핀바)
+        if(s.dn>=s.body*2&&s.up<=s.body*0.7&&s.body>0&&prior<-0.008)
+            out.push({name:'해머(핀바)',side:'bull',idx:k,barsAgo,lo:c.low,hi:c.high,base:'긴 아래꼬리',strength:1});
+        if(s.up>=s.body*2&&s.dn<=s.body*0.7&&s.body>0&&prior>0.008)
+            out.push({name:'슈팅스타(핀바)',side:'bear',idx:k,barsAgo,lo:c.low,hi:c.high,base:'긴 위꼬리',strength:1});
+        // 모닝스타 / 이브닝스타 (3봉)
+        if(!s2.bull&&sp.bodyPct<0.35&&s.bull&&c.close>(p2.open+p2.close)/2&&prior<-0.004)
+            out.push({name:'모닝스타',side:'bull',idx:k,barsAgo,lo:Math.min(c.low,p1.low,p2.low),hi:c.high,base:'3봉 반전',strength:2});
+        if(s2.bull&&sp.bodyPct<0.35&&!s.bull&&c.close<(p2.open+p2.close)/2&&prior>0.004)
+            out.push({name:'이브닝스타',side:'bear',idx:k,barsAgo,lo:c.low,hi:Math.max(c.high,p1.high,p2.high),base:'3봉 반전',strength:2});
+        // 도지 (인디시전) - 레벨에서만 의미
+        if(s.bodyPct<0.1)
+            out.push({name:'도지',side:'neutral',idx:k,barsAgo,lo:c.low,hi:c.high,base:'몸통 극소',strength:0});
+    }
+    return out;
+}
+// 종합: 현재 종목을 3개 TF로 돌려 패턴+위치+RSI 확인신호를 겹친다.
+async function updatePatternScan(){
+    const el=document.getElementById('patternContent');
+    const badge=document.getElementById('patternBadge');
+    if(!el)return;
+    const sym=currentSymbol, stock=isStock(sym);
+    const TFs=stock?[['1d','D'],['4h','240'],['1h','60']]:[['4h','240'],['1h','60'],['15m','15']];
+    try{
+        const rows=[];
+        for(const [label,iv] of TFs){
+            let d=null;
+            try{ d = stock ? await yahooKline(getYahooSym(sym),iv,300) : await bybitKline(sym,iv,300); }catch(e){ d=null; }
+            if(!d||d.length<30){rows.push({label,pat:null});continue;}
+            const pats=detectCandlePatterns(d);
+            pats.sort((a,b)=>a.barsAgo-b.barsAgo||b.strength-a.strength);
+            const pat=pats[0]||null;
+            if(!pat){rows.push({label,pat:null});continue;}
+            const closes=d.map(x=>x.close);
+            const rsi=_rsiCalc(closes.slice(0,pat.idx+1),14);
+            const piv=findPivots(d.slice(-120),4,4);
+            const cur=d[d.length-1].close;
+            const nearLevel=(price,levels)=>{let best=null;for(const lv of levels){const dist=Math.abs(price-lv.price)/price;if(dist<0.02&&(best==null||dist<best.dist))best={price:lv.price,dist};}return best;};
+            let atLevel=null;
+            if(pat.side==='bull')atLevel=nearLevel(pat.lo,piv.lows);
+            else if(pat.side==='bear')atLevel=nearLevel(pat.hi,piv.highs);
+            else atLevel=nearLevel(cur,[...piv.lows,...piv.highs]);
+            let conf=pat.strength; const notes=[];
+            if(atLevel){conf+=2;notes.push(pat.side==='bear'?'저항 근접':(pat.side==='bull'?'지지 근접':'레벨 근접'));}
+            if(pat.side==='bull'&&rsi!=null&&rsi<38){conf+=2;notes.push('RSI 과매도');}
+            if(pat.side==='bear'&&rsi!=null&&rsi>62){conf+=2;notes.push('RSI 과매수');}
+            // 진입참고 / 무효화 / 타겟(반대편 최근 레벨)
+            let entry,stopP,tgt=null;
+            if(pat.side==='bull'){entry=pat.hi;stopP=pat.lo*0.997;const r=piv.highs.filter(h=>h.price>cur).sort((a,b)=>a.price-b.price)[0];tgt=r?r.price:null;}
+            else if(pat.side==='bear'){entry=pat.lo;stopP=pat.hi*1.003;const r=piv.lows.filter(l=>l.price<cur).sort((a,b)=>b.price-a.price)[0];tgt=r?r.price:null;}
+            rows.push({label,pat,rsi,atLevel,conf,notes,cur,entry,stopP,tgt});
+        }
+        // 종합 배지
+        const valid=rows.filter(r=>r.pat&&r.pat.side!=='neutral');
+        if(badge){
+            if(!valid.length){badge.innerHTML='<span style="color:var(--text-secondary)">감지된 반전 패턴 없음</span>';}
+            else{
+                const best=valid.slice().sort((a,b)=>b.conf-a.conf)[0];
+                const bulls=valid.filter(r=>r.pat.side==='bull').length, bears=valid.filter(r=>r.pat.side==='bear').length;
+                const aligned=(bulls>=2||bears>=2);
+                const col=best.pat.side==='bull'?'#00d26a':'#FF69B4';
+                const dir=best.pat.side==='bull'?'롱 반전 후보':'숏 반전 후보';
+                let tag=best.conf>=4?'강한 셋업':(best.conf>=2?'약한 셋업':'단순 패턴');
+                if(aligned)tag='멀티TF 정렬 · '+tag;
+                badge.innerHTML=`<span style="color:${col};font-weight:700;">${dir} (${best.label}) · ${tag}</span>`;
+            }
+        }
+        // 테이블
+        let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 6px;">TF</th><th style="text-align:left;padding:4px 6px;">패턴</th><th style="text-align:left;padding:4px 6px;">확인신호(겹침)</th><th style="text-align:right;padding:4px 6px;">진입참고</th><th style="text-align:right;padding:4px 6px;">무효화</th><th style="text-align:right;padding:4px 6px;">타겟</th></tr></thead><tbody>';
+        for(const r of rows){
+            if(!r.pat){html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);"><td style="padding:5px 6px;font-weight:600;">${r.label}</td><td colspan="5" style="padding:5px 6px;color:var(--text-secondary);">패턴 없음</td></tr>`;continue;}
+            const col=r.pat.side==='bull'?'#00d26a':(r.pat.side==='bear'?'#FF69B4':'var(--text-secondary)');
+            const sideTxt=r.pat.side==='bull'?'▲롱':(r.pat.side==='bear'?'▼숏':'―중립');
+            const confBadge=r.conf>=4?`<span style="color:#FFD700;font-weight:700;">강 ${r.conf}</span>`:(r.conf>=2?`<span style="color:var(--text-primary);">중 ${r.conf}</span>`:`<span style="color:var(--text-secondary);">약 ${r.conf}</span>`);
+            const notes=r.notes.length?r.notes.join(', '):'단독(레벨 확인 없음)';
+            const rsiTxt=r.rsi!=null?` · RSI ${r.rsi.toFixed(0)}`:'';
+            html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                <td style="padding:5px 6px;font-weight:600;">${r.label}</td>
+                <td style="padding:5px 6px;color:${col};font-weight:600;">${r.pat.name} <span style="color:var(--text-secondary);font-weight:400;">${sideTxt} · ${r.pat.barsAgo===0?'현재봉':r.pat.barsAgo+'봉전'}</span></td>
+                <td style="padding:5px 6px;">${confBadge} <span style="color:var(--text-secondary);">${notes}${rsiTxt}</span></td>
+                <td style="padding:5px 6px;text-align:right;font-variant-numeric:tabular-nums;">${r.entry!=null?fp(r.entry):'-'}</td>
+                <td style="padding:5px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#FF69B4;">${r.stopP!=null?fp(r.stopP):'-'}</td>
+                <td style="padding:5px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#00d26a;">${r.tgt!=null?fp(r.tgt):'-'}</td>
+            </tr>`;
+        }
+        html+='</tbody></table>';
+        el.innerHTML=html;
+    }catch(e){console.warn('patternScan',e);el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:10px;">패턴 분석 실패</div>';}
+}
+
 /* ───── 초기화 ───── */
 (async function(){
     await initTVChart();initRSIChart();initMACDChart();
@@ -6375,6 +6500,7 @@ async function updateTriangleConvergence(){
     updateExpertConsensus();updateMacroData();updateOnchainData();updateCoinnessNews();
     // 초기 로드: ETH/BTC 국면 + 삼각수렴 멀티TF (코인만)
     if(!isStock(currentSymbol)){setTimeout(()=>{updateEthBtcRegime();updateTriangleConvergence();updateFundingAggregated();updateFundingHistory();},1500);}
+    setTimeout(()=>{try{updatePatternScan();}catch(e){}},2200);
     // 스마트머니 스캐너: 무거우니 12초 뒤 1회 자동 실행 (이후는 버튼)
     if(!isStock(currentSymbol)){setTimeout(()=>{try{scanSmartMoneyDivergence();}catch(e){}},12000);}
     // 초기 로드: MTF + 다중구간/거래소 청산 + 종목 스캐너

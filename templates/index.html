@@ -235,6 +235,20 @@
         </div>
     </div>
 
+    <!-- 캔들 패턴 타점 감지 (패턴 + 위치 + 확인신호 겹침) -->
+    <div class="section-full">
+        <div class="card" style="border-color:#f0b90b;">
+            <div class="card-title">
+                <span class="dot" style="background:#f0b90b"></span> 캔들 패턴 타점 (4h / 1h / 15m) — 패턴 × 지지·저항 × RSI 겹침
+                <span id="patternBadge" style="font-size:11px;margin-left:auto;font-weight:700;"></span>
+            </div>
+            <div id="patternContent" style="font-size:12px;">
+                <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:12px;">로딩 중...</div>
+            </div>
+            <p class="hint">가설 플래그일 뿐 매매신호 아님. 캔들 패턴은 단독으로 의미 없고, 지지/저항 레벨에서 나오고 RSI가 겹칠 때만 점수(확인신호)가 올라갑니다. '강 4+'와 멀티TF 정렬만 참고하고, 반드시 반전 확인(진입참고 돌파/무효화 이탈) 후 진입하세요.</p>
+        </div>
+    </div>
+
     <!-- Coinglass 외부 링크 (iframe은 보안 정책상 로그인 유지 불가) -->
     <div class="section-full">
         <div class="card">
@@ -564,6 +578,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260709a"></script>
+    <script src="/static/app.js?v=20260714a"></script>
 </body>
 </html>
