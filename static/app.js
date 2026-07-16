@@ -1203,7 +1203,15 @@ function _quadFit(pts){
     for(const p of pts){ssRes+=Math.pow(p.y-at(p.x),2);ssTot+=Math.pow(p.y-ym,2);}
     return {a,b,c,at,r2:ssTot>0?1-ssRes/ssTot:0};
 }
-function detectCleaver(d,lookback=90){
+// 봉 간격 문자열 → 분
+function _ivToMin(iv){
+    const m={'1':1,'3':3,'5':5,'15':15,'30':30,'60':60,'120':120,'240':240,'360':360,'720':720,'D':1440,'W':10080,'M':43200};
+    return m[String(iv)]||null;
+}
+function detectCleaver(d,opts){
+    opts=opts||{};
+    const lookback=opts.lookback||90;
+    const tfMin=opts.tfMin||null; // 신뢰도(1): 큰 타임프레임일수록 신뢰
     if(!d||d.length<45)return null;
     const slc=d.slice(-Math.min(lookback,d.length));
     const n=slc.length;
@@ -1301,20 +1309,76 @@ function detectCleaver(d,lookback=90){
         }
         // 곡률이 뚜렷할수록(현 대비 12% 이상 처짐) 정통 식칼에 가까움
         const deepCurve=Math.abs(sagRatio)>=0.12;
-        if(strength>0&&deepCurve)strength+=10;
+
+        /* ── 신뢰도 (태원 추가 룰) ──
+           (1) 큰 타임프레임 / 큰 파동일수록 신뢰도 높음
+           (2) 거래량이 '시작부분에 제일 많이 터지고' 모양을 그리는 동안 '서서히 줄어야' 함
+               → 거꾸로 거래량이 늘면서 모양을 그리면 매집이 아니라 분산이므로 강한 감점 */
+        // 기저 20. 보너스 합이 커서 기저가 높으면 전부 100에 붙어 변별력이 사라진다.
+        const conf={score:20,parts:[]};
+        const bump=(v,t)=>{conf.score+=v;conf.parts.push(`${t} ${v>=0?'+':''}${v}`);};
+        // (1a) 타임프레임
+        if(tfMin){
+            if(tfMin>=1440)bump(20,'일봉+');
+            else if(tfMin>=240)bump(14,'4h');
+            else if(tfMin>=60)bump(8,'1h');
+            else if(tfMin>=15)bump(3,'15m');
+            else bump(-5,'초단타TF');
+        }
+        // (1b) 파동 크기 (매물대 대비 식칼 높이 %)
+        const wavePct=lvl>0?height/lvl*100:0;
+        if(wavePct>=15)bump(14,`큰 파동 ${wavePct.toFixed(1)}%`);
+        else if(wavePct>=7)bump(8,`중간 파동 ${wavePct.toFixed(1)}%`);
+        else if(wavePct>=3)bump(3,`작은 파동 ${wavePct.toFixed(1)}%`);
+        else bump(-8,`미세 파동 ${wavePct.toFixed(1)}%`);
+        // (2) 거래량 감쇠: 패턴 구간을 3등분해 평균 비교 + 인덱스-거래량 상관계수로 교차 확인
+        const patEnd=(brokeIdx!=null?brokeIdx:lastIdx)+1; // 모양을 '그리는 동안'만 측정 (돌파 거래량 제외)
+        const patBars=slc.slice(startIdx,Math.max(startIdx+6,patEnd));
+        let volRatio=null,volCorr=null,volMono=false;
+        if(patBars.length>=9){
+            const th=Math.floor(patBars.length/3);
+            const avg=a=>a.reduce((s,c)=>s+(c.volume||0),0)/(a.length||1);
+            const v1=avg(patBars.slice(0,th)),v2=avg(patBars.slice(th,th*2)),v3=avg(patBars.slice(th*2));
+            if(v3>0){volRatio=v1/v3;volMono=(v1>v2&&v2>v3);}
+            // 피어슨 상관 (인덱스 vs 거래량). 음수 = 감소 추세
+            const xs=patBars.map((_,i)=>i),ys=patBars.map(c=>c.volume||0);
+            const mx=xs.reduce((a,b)=>a+b,0)/xs.length,my=ys.reduce((a,b)=>a+b,0)/ys.length;
+            let num=0,dx=0,dy=0;
+            for(let i=0;i<xs.length;i++){num+=(xs[i]-mx)*(ys[i]-my);dx+=Math.pow(xs[i]-mx,2);dy+=Math.pow(ys[i]-my,2);}
+            if(dx>0&&dy>0)volCorr=num/Math.sqrt(dx*dy);
+        }
+        if(volRatio!=null&&volCorr!=null){
+            // volRatio = 초반평균/후반평균. >1 이면 감소(정석), <1 이면 증가(룰 위반).
+            if(volRatio>=1.8&&volCorr<-0.25)bump(18,`거래량 급감 ${volRatio.toFixed(1)}배`);
+            else if(volRatio>=1.3&&volCorr<-0.10)bump(12,`거래량 감소 ${volRatio.toFixed(1)}배`);
+            else if(volRatio>=1.05)bump(2,`거래량 소폭감소 ${volRatio.toFixed(1)}배`);
+            else if(volRatio>=0.9)bump(-6,'거래량 평탄 (감소 없음)');
+            else bump(-20,`거래량 ${(1/volRatio).toFixed(1)}배 증가 (룰 위반: 매집 아님)`);
+            if(volMono&&volRatio>=1.3)bump(5,'단조 감소');
+        }else{
+            bump(-5,'거래량 판정 불가');
+        }
+        if(deepCurve)bump(8,'뚜렷한 곡선');
+        if(touches>=5)bump(6,`매물대 ${touches}회`);
+        conf.score=Math.max(0,Math.min(100,Math.round(conf.score)));
+        // 신뢰도로 신호 강도를 조절 (신뢰도 낮으면 매매신호 기여도도 낮아야 정직하다)
+        if(strength>0)strength=Math.round(strength*(0.4+0.6*conf.score/100));
+
         // (5) TP = 식칼 높이 x2
         const tp1=dir==='up'?lvl+height:lvl-height;
         const tp2=dir==='up'?lvl+height*2:lvl-height*2;
         const curveNow=q.at(lastIdx);
         const stop=dir==='up'?Math.min(lvl*0.99,curveNow*0.997):Math.max(lvl*1.01,curveNow*1.003);
+        const confTier=conf.score>=70?'높음':(conf.score>=45?'보통':'낮음');
         return {
             name:dir==='up'?'상승 식칼':'하락 식칼',
             side:dir==='up'?'bull':'bear',
             type:dir==='up'?'long':'short',
             stage,lvl,height,tp1,tp2,entry:lvl,stop,touches,fakeouts,curved,
             barsToApex,progress,tradeable,sagRatio,deepCurve,
+            conf:conf.score,confTier,confParts:conf.parts,wavePct,volRatio,volCorr,volMono,tfMin,
             strength:Math.min(strength,90),
-            desc:`${deepCurve?'뚜렷한 곡선':'완만한 곡선'} · 매물대 ${touches}회 두드림${fakeouts?` (가짜돌파 ${fakeouts})`:''} · ${stage}`
+            desc:`${deepCurve?'뚜렷한 곡선':'완만한 곡선'} · 매물대 ${touches}회 두드림${fakeouts?` (가짜돌파 ${fakeouts})`:''} · 신뢰도 ${confTier}(${conf.score}) · ${stage}`
         };
     };
     const up=build('up'), dn=build('down');
@@ -1407,7 +1471,7 @@ function detectChartPatterns(d){
     if(maPb)patterns.push({name:maPb.name,type:maPb.type,strength:maPb.strength,desc:maPb.desc+' (추세 눌림)'});
 
     // 12) 식칼 패턴 (태원 기법). 소진/돌파실패(strength 0)는 매매 대상 아니므로 제외.
-    const clv=detectCleaver(d);
+    const clv=detectCleaver(d,{tfMin:_ivToMin(currentInterval)});
     if(clv&&clv.tradeable&&clv.strength>0)
         patterns.push({name:clv.name,type:clv.type,strength:clv.strength,desc:clv.desc});
 
@@ -6668,7 +6732,7 @@ async function updatePatternScan(){
             const mp=detectMaPullback(d);
             if(mp)pats.push({name:mp.name,side:mp.side,idx:d.length-2,barsAgo:1,lo:mp.lo,hi:mp.hi,base:mp.which+' 눌림',strength:3});
             // 태원 기법: 식칼 패턴 (별도 섹션에도 표시)
-            const clv=detectCleaver(d);
+            const clv=detectCleaver(d,{tfMin:_ivToMin(iv)});
             if(clv)cleavers.push({label,clv});
             pats.sort((a,b)=>a.barsAgo-b.barsAgo||b.strength-a.strength);
             const pat=pats[0]||null;
@@ -6695,11 +6759,12 @@ async function updatePatternScan(){
         // 종합 배지
         const valid=rows.filter(r=>r.pat&&r.pat.side!=='neutral');
         // 식칼 '되돌림 진입존'은 태원 기법의 핵심 타점이라 배지에서 최우선 표시
-        const clvHit=cleavers.filter(c=>c.clv.tradeable&&c.clv.strength>=60)
-            .sort((a,b)=>b.clv.strength-a.clv.strength)[0];
+        // 신뢰도 55 미만(낮음)은 헤드라인으로 올리지 않는다 — 큰TF/큰파동/거래량감쇠를 못 만족한 식칼
+        const clvHit=cleavers.filter(c=>c.clv.tradeable&&c.clv.strength>=40&&c.clv.conf>=60)
+            .sort((a,b)=>(b.clv.conf-a.clv.conf)||(b.clv.strength-a.clv.strength))[0];
         if(badge&&clvHit){
             const c=clvHit.clv;
-            badge.innerHTML=`<span style="color:${c.side==='bull'?'#00d26a':'#FF69B4'};font-weight:700;">${c.name} ${c.stage} (${clvHit.label})</span>`;
+            badge.innerHTML=`<span style="color:${c.side==='bull'?'#00d26a':'#FF69B4'};font-weight:700;">${c.name} ${c.stage} · 신뢰도 ${c.confTier}(${c.conf}) (${clvHit.label})</span>`;
         }else if(badge){
             if(!valid.length){badge.innerHTML='<span style="color:var(--text-secondary)">감지된 반전 패턴 없음</span>';}
             else{
@@ -6717,23 +6782,29 @@ async function updatePatternScan(){
         let html='';
         if(cleavers.length){
             html+='<div style="margin-bottom:10px;border:1px solid rgba(240,185,11,0.35);border-radius:6px;padding:8px 10px;background:rgba(240,185,11,0.04);">';
-            html+='<div style="font-size:10px;font-weight:700;color:#f0b90b;margin-bottom:6px;">식칼 패턴 (수평 매물대 + 곡선 저점 + 칼끝 직전 돌파 + 되돌림, TP=높이×2)</div>';
-            html+='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:3px 6px;">TF</th><th style="text-align:left;padding:3px 6px;">형태</th><th style="text-align:left;padding:3px 6px;">단계</th><th style="text-align:right;padding:3px 6px;">매물대</th><th style="text-align:right;padding:3px 6px;">칼끝</th><th style="text-align:right;padding:3px 6px;">되돌림존(타점)</th><th style="text-align:right;padding:3px 6px;">TP×2</th><th style="text-align:right;padding:3px 6px;">손절</th></tr></thead><tbody>';
+            html+='<div style="font-size:10px;font-weight:700;color:#f0b90b;margin-bottom:6px;">식칼 패턴 (수평 매물대 + 곡선 저점 + 칼끝 직전 돌파 + 되돌림, TP=높이×2) · 신뢰도: 큰TF/큰파동/거래량 감쇠일수록 높음</div>';
+            html+='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:3px 6px;">TF</th><th style="text-align:left;padding:3px 6px;">형태</th><th style="text-align:left;padding:3px 6px;">단계</th><th style="text-align:center;padding:3px 6px;">신뢰도</th><th style="text-align:right;padding:3px 6px;">매물대</th><th style="text-align:right;padding:3px 6px;">칼끝</th><th style="text-align:right;padding:3px 6px;">되돌림존(타점)</th><th style="text-align:right;padding:3px 6px;">TP×2</th><th style="text-align:right;padding:3px 6px;">손절</th></tr></thead><tbody>';
             for(const {label,clv} of cleavers){
                 const col=clv.side==='bull'?'#00d26a':'#FF69B4';
                 const stageCol=!clv.tradeable?'var(--text-secondary)':(clv.stage.includes('타점')?'#FFD700':col);
                 const apexTxt=clv.barsToApex!=null?(clv.barsToApex>0?`${clv.barsToApex}봉 후`:'도달'):'-';
                 const prog=clv.progress!=null?` (${Math.round(Math.min(clv.progress,1.5)*100)}%)`:'';
+                const cCol=clv.conf>=70?'#00d26a':(clv.conf>=45?'#FFD700':'#ff9f43');
+                const volTxt=clv.volRatio==null?'거래량 판정불가'
+                    :(clv.volRatio>=1.05?`거래량 ${clv.volRatio.toFixed(1)}배 감소`
+                    :(clv.volRatio>=0.9?'거래량 평탄':`거래량 ${(1/clv.volRatio).toFixed(1)}배 증가(룰위반)`));
                 html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
                     <td style="padding:4px 6px;font-weight:600;">${label}</td>
-                    <td style="padding:4px 6px;color:${col};font-weight:600;">${clv.name} <span style="color:var(--text-secondary);font-weight:400;">${clv.curved?'곡선형':'직선형'}·${clv.touches}회${clv.fakeouts?`·가짜${clv.fakeouts}`:''}</span></td>
+                    <td style="padding:4px 6px;color:${col};font-weight:600;">${clv.name} <span style="color:var(--text-secondary);font-weight:400;">${clv.deepCurve?'뚜렷곡선':'완만곡선'}·${clv.touches}회${clv.fakeouts?`·가짜${clv.fakeouts}`:''}</span></td>
                     <td style="padding:4px 6px;color:${stageCol};font-weight:${clv.stage.includes('타점')?'700':'400'};">${clv.stage}</td>
+                    <td style="padding:4px 6px;text-align:center;color:${cCol};font-weight:700;" title="${clv.confParts.join(' | ')}">${clv.confTier} ${clv.conf}</td>
                     <td style="padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;">${fp(clv.lvl)}</td>
                     <td style="padding:4px 6px;text-align:right;color:var(--text-secondary);">${apexTxt}${prog}</td>
                     <td style="padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#FFD700;">${fp(clv.entry)}</td>
                     <td style="padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#00d26a;">${fp(clv.tp2)}</td>
                     <td style="padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#FF69B4;">${fp(clv.stop)}</td>
-                </tr>`;
+                </tr>
+                <tr><td colspan="9" style="padding:0 6px 5px 6px;font-size:9px;color:var(--text-secondary);">파동 ${clv.wavePct.toFixed(1)}% · ${volTxt}${clv.volMono?' (단조)':''} · ${clv.confParts.join(', ')}</td></tr>`;
             }
             html+='</tbody></table></div>';
         }
