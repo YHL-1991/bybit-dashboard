@@ -1168,6 +1168,159 @@ function detectMaPullback(d){
     }
     return null;
 }
+/* ── 식칼 패턴 (태원 기법) ──
+   상승 식칼 정의:
+   (1) 위쪽 수평 매물대를 여러 번 두드린다 (가끔 꼬리로만 뚫고 종가는 아래로 복귀 = 가짜돌파)
+   (2) 저점을 올리는데 '직선 추세선'이 아니라 '완만한 곡선'으로 올린다  ← 상승삼각형과의 결정적 차이
+   (3) 식칼 끝(apex) 도달 '좀 전에' 뚫어버린다                          ← 타이밍 조건
+   (4) 뚫기 직전 부근으로 되돌아오는 성질 (retest) = 실제 타점
+   (5) TP = 식칼 높이 x2
+   하락 식칼은 전부 거울상 (수평 지지 + 곡선으로 낮아지는 고점).
+   ※ 가설일 뿐 매매신호 아님. */
+function _solve3(A,B){ // 3x3 크라메르
+    const det=m=>m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])
+                -m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])
+                +m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+    const D=det(A);
+    if(!isFinite(D)||Math.abs(D)<1e-12)return null;
+    const rep=i=>{const m=A.map(r=>r.slice());for(let r=0;r<3;r++)m[r][i]=B[r];return m;};
+    return [det(rep(0))/D,det(rep(1))/D,det(rep(2))/D];
+}
+// 2차 곡선 회귀 (저점의 '곡선' 여부 판정용)
+function _quadFit(pts){
+    if(!pts||pts.length<3)return null;
+    const n=pts.length;
+    const x0=pts[0].x; // 수치 안정화: x를 0 기준으로 이동
+    let Sx=0,Sx2=0,Sx3=0,Sx4=0,Sy=0,Sxy=0,Sx2y=0;
+    for(const p of pts){const x=p.x-x0,y=p.y,x2=x*x;
+        Sx+=x;Sx2+=x2;Sx3+=x2*x;Sx4+=x2*x2;Sy+=y;Sxy+=x*y;Sx2y+=x2*y;}
+    const sol=_solve3([[Sx4,Sx3,Sx2],[Sx3,Sx2,Sx],[Sx2,Sx,n]],[Sx2y,Sxy,Sy]);
+    if(!sol||sol.some(v=>!isFinite(v)))return null;
+    const [a,b,c]=sol;
+    const at=x=>{const t=x-x0;return a*t*t+b*t+c;};
+    const ym=Sy/n;
+    let ssRes=0,ssTot=0;
+    for(const p of pts){ssRes+=Math.pow(p.y-at(p.x),2);ssTot+=Math.pow(p.y-ym,2);}
+    return {a,b,c,at,r2:ssTot>0?1-ssRes/ssTot:0};
+}
+function detectCleaver(d,lookback=90){
+    if(!d||d.length<45)return null;
+    const slc=d.slice(-Math.min(lookback,d.length));
+    const n=slc.length;
+    const pv=findPivots(slc,3,3);
+    const cur=slc[n-1].close;
+
+    const build=dir=>{
+        // dir 'up'   = 상승 식칼: 수평 저항(고점 군집) + 곡선으로 상승하는 저점
+        // dir 'down' = 하락 식칼: 수평 지지(저점 군집) + 곡선으로 하락하는 고점
+        const flatPvs = dir==='up'?pv.highs:pv.lows;
+        // 곡선 판정에는 점이 많이 필요하다. 3-3 피벗이 부족하면 2-2로 완화해서 다시 뽑는다.
+        let curvePvs = dir==='up'?pv.lows:pv.highs;
+        if(curvePvs.length<4){
+            const pv2=findPivots(slc,2,2);
+            const alt=dir==='up'?pv2.lows:pv2.highs;
+            if(alt.length>curvePvs.length)curvePvs=alt;
+        }
+        if(flatPvs.length<3||curvePvs.length<3)return null;
+        // (1) 수평 매물대: 피벗 군집 중 최다 터치 레벨
+        let best=null;
+        for(const c of flatPvs){
+            const grp=flatPvs.filter(h=>Math.abs(h.price-c.price)/c.price<0.008);
+            if(!best||grp.length>best.grp.length)best={grp};
+        }
+        if(!best||best.grp.length<3)return null; // '여러 번 두드린다' = 최소 3회
+        const lvl=best.grp.reduce((a,b)=>a+b.price,0)/best.grp.length;
+        const touches=best.grp.length;
+        // 가짜돌파: 꼬리로 뚫었지만 종가는 복귀
+        let fakeouts=0;
+        for(const c of slc){
+            if(dir==='up'&&c.high>lvl*1.001&&c.close<lvl)fakeouts++;
+            if(dir==='down'&&c.low<lvl*0.999&&c.close>lvl)fakeouts++;
+        }
+        // (2) 저점(고점)을 완만한 '곡선'으로 올림(내림)
+        const sp=curvePvs.slice(-7).map(p=>({x:p.idx,y:p.price}));
+        if(sp.length<3)return null;
+        const movedRight = dir==='up' ? sp[sp.length-1].y>sp[0].y : sp[sp.length-1].y<sp[0].y;
+        if(!movedRight)return null;
+        const lastIdx=n-1, startIdx=sp[0].x;
+        // 식칼 높이 = 수평 레벨과 패턴 최저(최고)점 차
+        const seg=slc.slice(Math.max(0,startIdx));
+        if(!seg.length)return null;
+        const height = dir==='up' ? lvl-Math.min(...seg.map(c=>c.low)) : Math.max(...seg.map(c=>c.high))-lvl;
+        if(!(height>0))return null;
+        // 곡선성 판정(기하): 중간 저점들이 시작-끝을 잇는 '현(chord)' 대비 얼마나 처졌는가.
+        // 상승 식칼이면 중간 저점이 현보다 아래 = 볼록(가속 상승) → sagRatio 음수.
+        // 2차항 부호만 보면 노이즈에서 반반 확률로 통과하므로 기하 측정이 더 정직하다.
+        const x1=sp[0].x,y1=sp[0].y,x2=sp[sp.length-1].x,y2=sp[sp.length-1].y;
+        if(x2===x1)return null;
+        let sagSum=0,sagCnt=0;
+        for(let i=1;i<sp.length-1;i++){
+            const chord=y1+(y2-y1)*(sp[i].x-x1)/(x2-x1);
+            sagSum+=(sp[i].y-chord);sagCnt++;
+        }
+        if(!sagCnt)return null;
+        // 정규화는 '패턴 전체 높이'가 아니라 '저점들이 실제로 오른 폭(현의 높이)' 기준이어야 한다.
+        // 전체 높이로 나누면 곡률이 희석돼 진짜 곡선도 직선처럼 보인다.
+        const sagDen=Math.max(Math.abs(y2-y1),height*0.05);
+        const sagRatio=(sagSum/sagCnt)/sagDen;
+        // 하드 게이트: 곡선이 아니면 식칼이 아니다. (직선이면 '상승/하강 삼각형'이 이미 따로 잡는다)
+        const curved = dir==='up' ? sagRatio<-0.05 : sagRatio>0.05;
+        if(!curved)return null;
+        // (3) 칼끝(apex) = 곡선이 수평 레벨에 닿는 지점
+        const q=_quadFit(sp);
+        if(!q)return null;
+        let apexIdx=null;
+        for(let x=sp[sp.length-1].x;x<sp[sp.length-1].x+120;x++){
+            const v=q.at(x);
+            if(!isFinite(v))break;
+            if(dir==='up'?v>=lvl:v<=lvl){apexIdx=x;break;}
+        }
+        const barsToApex=apexIdx!=null?Math.round(apexIdx-lastIdx):null;
+        const progress=(apexIdx!=null&&apexIdx>startIdx)?(lastIdx-startIdx)/(apexIdx-startIdx):null;
+        // 돌파 시점 탐색
+        let brokeIdx=null;
+        for(let i=Math.max(1,startIdx);i<n;i++){
+            if(dir==='up'&&slc[i].close>lvl*1.002){brokeIdx=i;break;}
+            if(dir==='down'&&slc[i].close<lvl*0.998){brokeIdx=i;break;}
+        }
+        // (4) 되돌림: 돌파 후 '뚫기 직전 부근'으로 복귀했는가
+        const inRetest = dir==='up' ? (cur<=lvl*1.004&&cur>=lvl*0.99) : (cur>=lvl*0.996&&cur<=lvl*1.01);
+        let stage,strength,tradeable=true;
+        if(brokeIdx!=null){
+            const barsSince=lastIdx-brokeIdx;
+            const beyond = dir==='up'?cur>lvl*1.002:cur<lvl*0.998;
+            if(inRetest&&barsSince>=1){stage='되돌림 진입존 (타점)';strength=80;}
+            else if(beyond){stage='돌파 후 진행';strength=60;}
+            else {stage='돌파 실패 (레벨 안으로 복귀)';strength=0;tradeable=false;}
+        }else if(progress!=null&&progress>1.0){
+            stage='칼끝 도달, 무돌파 (소진)';strength=0;tradeable=false;
+        }else if(progress!=null&&progress>=0.6){
+            stage='돌파 임박 (칼끝 근접)';strength=45;
+        }else{
+            stage='형성중';strength=25;
+        }
+        // 곡률이 뚜렷할수록(현 대비 12% 이상 처짐) 정통 식칼에 가까움
+        const deepCurve=Math.abs(sagRatio)>=0.12;
+        if(strength>0&&deepCurve)strength+=10;
+        // (5) TP = 식칼 높이 x2
+        const tp1=dir==='up'?lvl+height:lvl-height;
+        const tp2=dir==='up'?lvl+height*2:lvl-height*2;
+        const curveNow=q.at(lastIdx);
+        const stop=dir==='up'?Math.min(lvl*0.99,curveNow*0.997):Math.max(lvl*1.01,curveNow*1.003);
+        return {
+            name:dir==='up'?'상승 식칼':'하락 식칼',
+            side:dir==='up'?'bull':'bear',
+            type:dir==='up'?'long':'short',
+            stage,lvl,height,tp1,tp2,entry:lvl,stop,touches,fakeouts,curved,
+            barsToApex,progress,tradeable,sagRatio,deepCurve,
+            strength:Math.min(strength,90),
+            desc:`${deepCurve?'뚜렷한 곡선':'완만한 곡선'} · 매물대 ${touches}회 두드림${fakeouts?` (가짜돌파 ${fakeouts})`:''} · ${stage}`
+        };
+    };
+    const up=build('up'), dn=build('down');
+    if(up&&dn)return up.strength>=dn.strength?up:dn;
+    return up||dn;
+}
 function detectChartPatterns(d){
     const patterns=[];
     if(d.length<30)return patterns;
@@ -1253,6 +1406,11 @@ function detectChartPatterns(d){
     const maPb=detectMaPullback(d);
     if(maPb)patterns.push({name:maPb.name,type:maPb.type,strength:maPb.strength,desc:maPb.desc+' (추세 눌림)'});
 
+    // 12) 식칼 패턴 (태원 기법). 소진/돌파실패(strength 0)는 매매 대상 아니므로 제외.
+    const clv=detectCleaver(d);
+    if(clv&&clv.tradeable&&clv.strength>0)
+        patterns.push({name:clv.name,type:clv.type,strength:clv.strength,desc:clv.desc});
+
     return patterns;
 }
 
@@ -1278,6 +1436,8 @@ const PATTERN_GROUP={
     '상승 삼각형':'trend','하강 삼각형':'trend','불 플래그':'trend','베어 플래그':'trend',
     '저항선 돌파':'trend','지지선 붕괴':'trend',
     '상승 MA 눌림목':'trend','하락 MA 되돌림':'trend',
+    // 식칼 돌파와 '저항선 돌파'는 사실상 같은 사건이므로 동일 그룹에 둬서 중복 카운트를 막는다
+    '상승 식칼':'trend','하락 식칼':'trend',
 };
 // 그룹 내부: 강한 순으로 체감가중 적용 후, 롱/숏 모순분 상쇄
 function collapseSignalGroup(items){
@@ -6498,6 +6658,7 @@ async function updatePatternScan(){
     const TFs=stock?[['1d','D'],['4h','240'],['1h','60']]:[['4h','240'],['1h','60'],['15m','15']];
     try{
         const rows=[];
+        const cleavers=[];
         for(const [label,iv] of TFs){
             let d=null;
             try{ d = stock ? await yahooKline(getYahooSym(sym),iv,300) : await bybitKline(sym,iv,300); }catch(e){ d=null; }
@@ -6506,6 +6667,9 @@ async function updatePatternScan(){
             // 태원 기법: 상승/하락 MA 눌림목도 후보에 포함 (신선한 신호로 취급)
             const mp=detectMaPullback(d);
             if(mp)pats.push({name:mp.name,side:mp.side,idx:d.length-2,barsAgo:1,lo:mp.lo,hi:mp.hi,base:mp.which+' 눌림',strength:3});
+            // 태원 기법: 식칼 패턴 (별도 섹션에도 표시)
+            const clv=detectCleaver(d);
+            if(clv)cleavers.push({label,clv});
             pats.sort((a,b)=>a.barsAgo-b.barsAgo||b.strength-a.strength);
             const pat=pats[0]||null;
             if(!pat){rows.push({label,pat:null});continue;}
@@ -6530,7 +6694,13 @@ async function updatePatternScan(){
         }
         // 종합 배지
         const valid=rows.filter(r=>r.pat&&r.pat.side!=='neutral');
-        if(badge){
+        // 식칼 '되돌림 진입존'은 태원 기법의 핵심 타점이라 배지에서 최우선 표시
+        const clvHit=cleavers.filter(c=>c.clv.tradeable&&c.clv.strength>=60)
+            .sort((a,b)=>b.clv.strength-a.clv.strength)[0];
+        if(badge&&clvHit){
+            const c=clvHit.clv;
+            badge.innerHTML=`<span style="color:${c.side==='bull'?'#00d26a':'#FF69B4'};font-weight:700;">${c.name} ${c.stage} (${clvHit.label})</span>`;
+        }else if(badge){
             if(!valid.length){badge.innerHTML='<span style="color:var(--text-secondary)">감지된 반전 패턴 없음</span>';}
             else{
                 const best=valid.slice().sort((a,b)=>b.conf-a.conf)[0];
@@ -6543,8 +6713,32 @@ async function updatePatternScan(){
                 badge.innerHTML=`<span style="color:${col};font-weight:700;">${dir} (${best.label}) · ${tag}</span>`;
             }
         }
+        // ── 식칼 패턴 전용 섹션 (태원 기법: 단계 / 칼끝 / 되돌림존 / TP x2) ──
+        let html='';
+        if(cleavers.length){
+            html+='<div style="margin-bottom:10px;border:1px solid rgba(240,185,11,0.35);border-radius:6px;padding:8px 10px;background:rgba(240,185,11,0.04);">';
+            html+='<div style="font-size:10px;font-weight:700;color:#f0b90b;margin-bottom:6px;">식칼 패턴 (수평 매물대 + 곡선 저점 + 칼끝 직전 돌파 + 되돌림, TP=높이×2)</div>';
+            html+='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:3px 6px;">TF</th><th style="text-align:left;padding:3px 6px;">형태</th><th style="text-align:left;padding:3px 6px;">단계</th><th style="text-align:right;padding:3px 6px;">매물대</th><th style="text-align:right;padding:3px 6px;">칼끝</th><th style="text-align:right;padding:3px 6px;">되돌림존(타점)</th><th style="text-align:right;padding:3px 6px;">TP×2</th><th style="text-align:right;padding:3px 6px;">손절</th></tr></thead><tbody>';
+            for(const {label,clv} of cleavers){
+                const col=clv.side==='bull'?'#00d26a':'#FF69B4';
+                const stageCol=!clv.tradeable?'var(--text-secondary)':(clv.stage.includes('타점')?'#FFD700':col);
+                const apexTxt=clv.barsToApex!=null?(clv.barsToApex>0?`${clv.barsToApex}봉 후`:'도달'):'-';
+                const prog=clv.progress!=null?` (${Math.round(Math.min(clv.progress,1.5)*100)}%)`:'';
+                html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                    <td style="padding:4px 6px;font-weight:600;">${label}</td>
+                    <td style="padding:4px 6px;color:${col};font-weight:600;">${clv.name} <span style="color:var(--text-secondary);font-weight:400;">${clv.curved?'곡선형':'직선형'}·${clv.touches}회${clv.fakeouts?`·가짜${clv.fakeouts}`:''}</span></td>
+                    <td style="padding:4px 6px;color:${stageCol};font-weight:${clv.stage.includes('타점')?'700':'400'};">${clv.stage}</td>
+                    <td style="padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;">${fp(clv.lvl)}</td>
+                    <td style="padding:4px 6px;text-align:right;color:var(--text-secondary);">${apexTxt}${prog}</td>
+                    <td style="padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#FFD700;">${fp(clv.entry)}</td>
+                    <td style="padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#00d26a;">${fp(clv.tp2)}</td>
+                    <td style="padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#FF69B4;">${fp(clv.stop)}</td>
+                </tr>`;
+            }
+            html+='</tbody></table></div>';
+        }
         // 테이블
-        let html='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 6px;">TF</th><th style="text-align:left;padding:4px 6px;">패턴</th><th style="text-align:left;padding:4px 6px;">확인신호(겹침)</th><th style="text-align:right;padding:4px 6px;">진입참고</th><th style="text-align:right;padding:4px 6px;">무효화</th><th style="text-align:right;padding:4px 6px;">타겟</th></tr></thead><tbody>';
+        html+='<table style="width:100%;font-size:11px;border-collapse:collapse;"><thead><tr style="color:var(--text-secondary);font-size:9px;border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px 6px;">TF</th><th style="text-align:left;padding:4px 6px;">패턴</th><th style="text-align:left;padding:4px 6px;">확인신호(겹침)</th><th style="text-align:right;padding:4px 6px;">진입참고</th><th style="text-align:right;padding:4px 6px;">무효화</th><th style="text-align:right;padding:4px 6px;">타겟</th></tr></thead><tbody>';
         for(const r of rows){
             if(!r.pat){html+=`<tr style="border-bottom:1px solid rgba(255,255,255,0.05);"><td style="padding:5px 6px;font-weight:600;">${r.label}</td><td colspan="5" style="padding:5px 6px;color:var(--text-secondary);">패턴 없음</td></tr>`;continue;}
             const col=r.pat.side==='bull'?'#00d26a':(r.pat.side==='bear'?'#FF69B4':'var(--text-secondary)');
