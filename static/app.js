@@ -6780,6 +6780,15 @@ async function updatePatternScan(){
         }
         // ── 식칼 패턴 전용 섹션 (태원 기법: 단계 / 칼끝 / 되돌림존 / TP x2) ──
         let html='';
+        if(!cleavers.length){
+            // 감지 0건이어도 섹션은 그린다. 안 그리면 기능이 있는지 없는지 알 수 없다.
+            html+='<div style="margin-bottom:10px;border:1px solid rgba(240,185,11,0.35);border-radius:6px;padding:8px 10px;background:rgba(240,185,11,0.04);">'
+                +'<div style="font-size:10px;font-weight:700;color:#f0b90b;margin-bottom:4px;">식칼 패턴 (태원 기법)</div>'
+                +'<div style="font-size:11px;color:var(--text-secondary);">'
+                +'현재 4h/1h/15m 어디에도 식칼 없음. 필요 조건: 수평 매물대 3회 이상 두드림 + 저점이 <b>직선이 아닌 곡선</b>으로 상승(현 대비 5%+ 처짐). '
+                +'직선이면 식칼이 아니라 아래 표의 삼각형/추세 패턴으로 잡힙니다.'
+                +'</div></div>';
+        }
         if(cleavers.length){
             html+='<div style="margin-bottom:10px;border:1px solid rgba(240,185,11,0.35);border-radius:6px;padding:8px 10px;background:rgba(240,185,11,0.04);">';
             html+='<div style="font-size:10px;font-weight:700;color:#f0b90b;margin-bottom:6px;">식칼 패턴 (수평 매물대 + 곡선 저점 + 칼끝 직전 돌파 + 되돌림, TP=높이×2) · 신뢰도: 큰TF/큰파동/거래량 감쇠일수록 높음</div>';
