@@ -1609,15 +1609,60 @@ function generateTradeSignal(d){
         if(last.type==='bearish_fvg'&&p>=last.bottom&&p<=last.top)add('level','short',40,'하락 FVG 영역 진입');
     }
 
+    /* ── 국면(regime) 게이트 ──
+       반전/과매수(과매도) 신호는 '추세가 꺾인 뒤'에만 유효한 도구다.
+       포물선 상승에서 RSI 70+는 며칠씩 유지되므로 "과매수=숏"은 정밀도가 0에 수렴한다.
+       따라서 강한 추세가 살아있고(구조 미붕괴) 있을 때는 역추세 반전/모멘텀 점수를 감쇠한다.
+       추세가 실제로 꺾인 증거(직전 스윙 이탈 or LH&LL/HH&HL 전환)가 있으면 게이트를 풀어 full weight. */
+    let regimeDir='neutral', regimeBroken=false, regimeStrong=false;
+    {
+        let ht='neutral'; try{ ht=detectHigherTFTrend(d)||'neutral'; }catch(e){}
+        const m7=ma7.length?ma7[ma7.length-1].value:price;
+        const m20=ma20.length?ma20[ma20.length-1].value:price;
+        const m100=ma100.length?ma100[ma100.length-1].value:price;
+        const bullStack=price>m20&&m20>m100;
+        const bearStack=price<m20&&m20<m100;
+        if(ht==='bull'&&bullStack)regimeDir='bull';
+        else if(ht==='bear'&&bearStack)regimeDir='bear';
+        else if(bullStack&&price>m7)regimeDir='bull';
+        else if(bearStack&&price<m7)regimeDir='bear';
+        // 강한 추세 = MA20에서 5%+ 이격 (포물선 국면)
+        regimeStrong = regimeDir==='bull' ? price>m20*1.05 : (regimeDir==='bear'? price<m20*0.95 : false);
+        // 구조 붕괴 판정
+        const pv=findPivots(d.slice(-60),4,4);
+        if(regimeDir==='bull'){
+            const lo=pv.lows.length?pv.lows[pv.lows.length-1].price:null;
+            const structDown=pv.highs.length>=2&&pv.lows.length>=2&&
+                pv.highs[pv.highs.length-1].price<pv.highs[pv.highs.length-2].price&&
+                pv.lows[pv.lows.length-1].price<pv.lows[pv.lows.length-2].price;
+            regimeBroken=(lo!=null&&price<lo)||structDown;
+        }else if(regimeDir==='bear'){
+            const hi=pv.highs.length?pv.highs[pv.highs.length-1].price:null;
+            const structUp=pv.highs.length>=2&&pv.lows.length>=2&&
+                pv.highs[pv.highs.length-1].price>pv.highs[pv.highs.length-2].price&&
+                pv.lows[pv.lows.length-1].price>pv.lows[pv.lows.length-2].price;
+            regimeBroken=(hi!=null&&price>hi)||structUp;
+        }
+    }
+    const gateActive=(regimeDir==='bull'||regimeDir==='bear')&&!regimeBroken;
+    const counterDamp=regimeStrong?0.25:0.45; // 강한 추세일수록 역추세 반전을 더 강하게 억제
+
     // ── 그룹 단위 집계 (다중공선성 제어의 핵심) ──
     let longScore=0,shortScore=0;
     const groupBreak=[],conflicts=[];
+    let gatedNote='';
     for(const g of Object.keys(SIG_GROUPS)){
         const items=sigs.filter(s=>s.group===g);
         if(!items.length)continue;
         const r=collapseSignalGroup(items);
         const cap=SIG_GROUPS[g].cap;
-        const lc=Math.min(Math.round(r.l),cap), sc=Math.min(Math.round(r.s),cap);
+        let lVal=r.l, sVal=r.s;
+        // 국면 게이트: 강한 추세 미붕괴 시 역추세 반전/모멘텀만 감쇠 (추세/거래량/레벨은 건드리지 않음)
+        if(gateActive&&(g==='reversal'||g==='momentum')){
+            if(regimeDir==='bull'&&sVal>0){sVal*=counterDamp;gatedNote='숏';}
+            else if(regimeDir==='bear'&&lVal>0){lVal*=counterDamp;gatedNote='롱';}
+        }
+        const lc=Math.min(Math.round(lVal),cap), sc=Math.min(Math.round(sVal),cap);
         longScore+=lc; shortScore+=sc;
         if(lc||sc)groupBreak.push(`${SIG_GROUPS[g].label} ${lc?'L'+lc:''}${lc&&sc?'/':''}${sc?'S'+sc:''}`);
         if(r.conflict)conflicts.push(SIG_GROUPS[g].label);
@@ -1644,7 +1689,14 @@ function generateTradeSignal(d){
         dirEl.textContent='관망';dirEl.className='signal-badge neutral';
     }
     const confTxt=conflicts.length?` | 모순상쇄: ${conflicts.join(',')}`:'';
-    scoreEl.textContent=`롱: ${longScore}점 | 숏: ${shortScore}점 | 순: ${net>0?'+':''}${net}  [${groupBreak.join(' · ')}]${confTxt}`;
+    let regimeTxt='';
+    if(gateActive&&gatedNote){
+        const dirWord=regimeDir==='bull'?'상승추세':'하락추세';
+        regimeTxt=` | 국면: ${regimeStrong?'강한 ':''}${dirWord} 유지 (역추세 ${gatedNote} 감쇠 x${counterDamp})`;
+    }else if(regimeBroken&&(regimeDir==='bull'||regimeDir==='bear')){
+        regimeTxt=` | 국면: 추세 붕괴 감지 (반전 신호 정상 반영)`;
+    }
+    scoreEl.textContent=`롱: ${longScore}점 | 숏: ${shortScore}점 | 순: ${net>0?'+':''}${net}  [${groupBreak.join(' · ')}]${confTxt}${regimeTxt}`;
     reasonEl.textContent=reasons.slice(0,8).map(r=>r.replace(/\[L\]|\[S\]|🟢|🔴|⚪/g,'').trim()).join(' | ');
     patternEl.innerHTML=patterns.length?
         '패턴: '+patterns.map(p=>`<span style="color:${p.type==='long'?G:R}">${p.name} [${p.type==='long'?'롱':'숏'}신호 ${p.strength}점]</span>`).join(' | '):
