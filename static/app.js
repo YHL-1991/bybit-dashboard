@@ -4,6 +4,123 @@
    +Williams%R+공포탐욕+청산히트맵+알람+하모닉패턴
    ═══════════════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════
+   i18n 레이어 (KO/EN 토글)
+   ── 878개 한글 리터럴을 건드리지 않고, 렌더된 DOM을 훑어 치환한다.
+   한글이 원본이므로 KO 복귀는 새로고침, EN 전환은 번역 패스 + MutationObserver.
+   ═══════════════════════════════════════════════════ */
+let VELOX_LANG=(function(){try{return localStorage.getItem('velox_lang')||'ko';}catch(e){return 'ko';}})();
+// 숫자 보간 문자열 (구절 치환 전에 먼저 처리)
+const I18N_RE=[
+    {re:/([+-]?\d[\d,]*\.?\d*)점/g, fn:(_,n)=>n+'pt'},
+    {re:/(\d+)봉\s*후/g, fn:(_,n)=>'in '+n+' bars'},
+    {re:/(\d+)봉전/g, fn:(_,n)=>n+' bars ago'},
+    {re:/(\d+)봉/g, fn:(_,n)=>n+' bars'},
+    {re:/(\d+)회/g, fn:(_,n)=>n+'x'},
+    {re:/(\d+)건/g, fn:(_,n)=>n+' hits'},
+    {re:/분석 (\d+)/g, fn:(_,n)=>'analyzed '+n},
+];
+// 한글 구절 → 영어 (긴 구절부터 치환하도록 정렬해서 부분문자열 충돌 방지)
+const I18N={
+    // 헤더/티커
+    "종목 검색 (예: BTC, 삼성, 현대)":"Search (e.g. BTC, Samsung)","현재가":"Price","24h 변동":"24h Chg","24h 거래량":"24h Vol",
+    "미결제약정":"OI","펀딩비":"Funding","공포탐욕지수":"Fear&Greed","김프":"Kimchi","ETH 가격":"ETH Price","블록 #":"Block #","CEX 순흐름":"CEX Netflow",
+    "코인 선물":"Crypto Perps","주식":"Stocks",
+    // 매매 신호
+    "매매 신호":"Signal","분석 중...":"Analyzing...","LONG 추천":"LONG","SHORT 추천":"SHORT","약한 LONG":"Weak LONG","약한 SHORT":"Weak SHORT","관망":"Neutral",
+    "롱: ":"Long: ","숏: ":"Short: ","순: ":"Net: ","모순상쇄":"conflict offset","국면: ":"Regime: ",
+    "강한 상승추세 유지":"strong uptrend intact","상승추세 유지":"uptrend intact","강한 하락추세 유지":"strong downtrend intact","하락추세 유지":"downtrend intact",
+    "추세 붕괴 감지 (반전 신호 정상 반영)":"trend break (reversal active)","역추세 숏 감쇠 x":"counter-trend short damped x","역추세 롱 감쇠 x":"counter-trend long damped x",
+    "추세/구조":"Trend","모멘텀":"Momentum","반전":"Reversal","거래량":"Volume","레벨":"Level",
+    "패턴: 감지된 패턴 없음":"Pattern: none","패턴: ":"Pattern: ","롱신호":"long","숏신호":"short",
+    // 지표/사유
+    "RSI 과매도":"RSI oversold","RSI 과매수":"RSI overbought","RSI 약세구간":"RSI weak","RSI 강세과열":"RSI hot",
+    "RSI 상승다이버전스":"RSI bull div","RSI 하락다이버전스":"RSI bear div","MACD 골든크로스":"MACD golden cross","MACD 데드크로스":"MACD death cross",
+    "MACD 히스토그램 상승":"MACD hist up","MACD 히스토그램 하락":"MACD hist down","MA 정배열":"MA aligned up","MA 역배열":"MA aligned down",
+    "거래량 급증+양봉":"vol spike+green","거래량 급증+음봉":"vol spike+red","CCI 과매도":"CCI oversold","CCI 과매수":"CCI overbought","W%R 과매도":"W%R oversold","W%R 과매수":"W%R overbought",
+    "저점 유동성스윕(반전)":"low liquidity sweep","고점 유동성스윕(반전)":"high liquidity sweep","와이코프 스프링(축적)":"Wyckoff spring","와이코프 업스러스트(분배)":"Wyckoff upthrust",
+    "상승 FVG 영역 진입":"bullish FVG fill","하락 FVG 영역 진입":"bearish FVG fill",
+    // 차트 패턴
+    "더블 바텀":"Double Bottom","더블 톱":"Double Top","상승 삼각형":"Ascending Triangle","하강 삼각형":"Descending Triangle","불 플래그":"Bull Flag","베어 플래그":"Bear Flag",
+    "저항선 돌파":"Resistance break","지지선 붕괴":"Support break","상승 MA 눌림목":"MA pullback (long)","하락 MA 되돌림":"MA pullback (short)","상승 식칼":"Rising Cleaver","하락 식칼":"Falling Cleaver",
+    "강세 장악형":"Bullish Engulfing","약세 장악형":"Bearish Engulfing","해머(핀바)":"Hammer (pin)","슈팅스타(핀바)":"Shooting Star","모닝스타":"Morning Star","이브닝스타":"Evening Star","도지":"Doji",
+    // 식칼 세부
+    "되돌림 진입존 (타점)":"Retest zone (entry)","돌파 후 진행":"Post-breakout","돌파 실패 (레벨 안으로 복귀)":"Breakout failed","칼끝 도달, 무돌파 (소진)":"Apex reached, no break","돌파 임박 (칼끝 근접)":"Break imminent","형성중":"Forming",
+    "신뢰도 높음":"conf High","신뢰도 보통":"conf Med","신뢰도 낮음":"conf Low","뚜렷한 곡선":"strong curve","완만한 곡선":"mild curve","뚜렷곡선":"strong curve","완만곡선":"mild curve",
+    "매물대":"supply zone","가짜돌파":"fakeout","두드림":"taps","단조 감소":"monotonic decay",
+    "가격↑":"price up","가격↓":"price down","급등":"pump","급락":"dump","반등":"bounce","진행":"progress","소진":"exhausted","거래량 급감":"vol drop","거래량 감소":"vol down","거래량 평탄 (감소 없음)":"vol flat","큰 파동":"big wave","중간 파동":"mid wave","작은 파동":"small wave","미세 파동":"tiny wave",
+    "높음":"High","보통":"Med","낮음":"Low",
+    // 스캐너/8분면
+    "스마트머니 다이버전스 스캐너":"Smart-Money Divergence Scanner","스캔":"Scan","고래 주도 급등":"Whale-led pump","강한 롱":"Strong Long","강한 숏":"Strong Short","불트랩 숏주의":"Bull-trap (short risk)","약한 롱 확인":"Weak long","숏 반전확인":"Short (reversal)","베어트랩 롱주의":"Bear-trap (long risk)","롱 바닥확인":"Long bottom","중립/약한 숏":"Neutral/weak short",
+    "고래":"Whale","개미":"Retail","전 종목을 훑습니다":"scanning all symbols",
+    // 패널 제목/공통
+    "삼각수렴 멀티타임프레임":"Triangle Convergence MTF","캔들·이평선 패턴 타점":"Candle·MA Pattern Entries","식칼 · 캔들 · 이평선 눌림목 패턴 타점":"Cleaver·Candle·MA Pattern Entries","다중 시간프레임":"Multi-timeframe","코인니스 속보":"Coinness News","통합 펀딩비":"Aggregated Funding","다거래소 포지션 심리":"Multi-exchange Positioning","시장 국면":"Market Regime",
+    "로딩 중...":"Loading...","데이터 부족":"insufficient data","감지된 패턴 없음":"no pattern","감지 안 됨":"none","패턴 없음":"none","해당 없음":"N/A","가설일 뿐 매매신호 아님":"hypothesis only, not a signal",
+    "진입참고":"Entry","무효화":"Invalidation","타겟":"Target","단계":"Stage","형태":"Type","확인신호":"Confluence","지지 근접":"near support","저항 근접":"near resistance","레벨 근접":"near level",
+    "상승":"up","하락":"down","중립":"neutral","돌파":"breakout","이탈":"breakdown",
+    // 방향 단어 (짧은 것은 마지막에 정리되도록; 긴 구절 우선)
+    "풀롱":"Full Long","풀숏":"Full Short","고점":"high","저점":"low","전고":"prior high","롱":"Long","숏":"Short",
+};
+let _i18nKeys=Object.keys(I18N).sort((a,b)=>b.length-a.length);
+let _i18nBusy=false, _i18nObserver=null, _i18nTimer=null;
+function _i18nText(t){
+    if(!t)return t;
+    let s=t;
+    for(const r of I18N_RE)s=s.replace(r.re,r.fn);
+    for(const k of _i18nKeys)if(s.indexOf(k)>=0)s=s.split(k).join(I18N[k]);
+    return s;
+}
+function _i18nWalk(node){
+    if(!node)return;
+    if(node.nodeType===3){
+        const t=node.nodeValue;
+        if(t&&/[가-힣]/.test(t)){const n=_i18nText(t);if(n!==t)node.nodeValue=n;}
+        return;
+    }
+    if(node.nodeType===1){
+        const tag=node.tagName;
+        if(tag==='SCRIPT'||tag==='STYLE')return;
+        // placeholder / title 속성도 번역
+        for(const a of ['placeholder','title']){
+            const v=node.getAttribute&&node.getAttribute(a);
+            if(v&&/[가-힣]/.test(v)){const n=_i18nText(v);if(n!==v)node.setAttribute(a,n);}
+        }
+        for(let c=node.firstChild;c;c=c.nextSibling)_i18nWalk(c);
+    }
+}
+function veloxTranslateDOM(root){
+    if(VELOX_LANG!=='en'||_i18nBusy)return;
+    _i18nBusy=true;
+    try{_i18nWalk(root||document.body);}catch(e){}
+    _i18nBusy=false;
+}
+function _i18nScheduleTranslate(){
+    if(VELOX_LANG!=='en')return;
+    if(_i18nTimer)return;
+    _i18nTimer=setTimeout(()=>{_i18nTimer=null;veloxTranslateDOM(document.body);},180);
+}
+function _i18nStartObserver(){
+    if(_i18nObserver||typeof MutationObserver==='undefined')return;
+    _i18nObserver=new MutationObserver(muts=>{if(_i18nBusy)return;_i18nScheduleTranslate();});
+    _i18nObserver.observe(document.body,{childList:true,subtree:true,characterData:true});
+}
+function setVeloxLang(l){
+    try{localStorage.setItem('velox_lang',l);}catch(e){}
+    if(l==='ko'){location.reload();return;} // 한글이 원본이므로 새로고침으로 원복
+    VELOX_LANG='en';
+    const btn=document.getElementById('langToggle');if(btn)btn.textContent='KO';
+    veloxTranslateDOM(document.body);
+    _i18nStartObserver();
+}
+function initVeloxLang(){
+    const btn=document.getElementById('langToggle');
+    if(btn){
+        btn.textContent=VELOX_LANG==='en'?'KO':'EN';
+        btn.onclick=()=>setVeloxLang(VELOX_LANG==='en'?'ko':'en');
+    }
+    if(VELOX_LANG==='en'){veloxTranslateDOM(document.body);_i18nStartObserver();}
+}
+
 let currentSymbol='BTCUSDT',currentInterval='60',ws=null,refreshInterval=null;
 let tvChartObj=null,candleSeries=null,volumeSeries=null,maSeries={};
 let ichimokuSenkouA=null,ichimokuSenkouB=null,ichimokuTenkan=null,ichimokuKijun=null;
@@ -6894,6 +7011,7 @@ async function updatePatternScan(){
 
 /* ───── 초기화 ───── */
 (async function(){
+    initVeloxLang(); // KO/EN 토글 초기화 (저장된 언어가 en이면 번역 시작)
     await initTVChart();initRSIChart();initMACDChart();
     await updateTVChart();refreshAll();connectWS();
     // 초기 로드: 컨센서스, 매크로, 온체인, 코인니스 속보
