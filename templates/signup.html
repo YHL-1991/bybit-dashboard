@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Velox · 무료체험 시작</title>
+    <link rel="stylesheet" href="/static/style.css?v=20260605b">
+    <link rel="stylesheet" href="/static/auth.css?v=20260929">
+</head>
+<body class="auth-body">
+    <div class="auth-card">
+        <img src="/static/logo.png" alt="Velox" class="auth-logo">
+        <div class="auth-title">{{ trial_days }}일 무료체험</div>
+        <div class="auth-sub">카드 등록 없이 바로 시작합니다<br>체험이 끝나면 자동 결제되지 않습니다</div>
+        <form id="signupForm">
+            <input id="emailInput" class="auth-input" type="email" placeholder="이메일" autocomplete="email" autofocus>
+            <input id="pwInput" class="auth-input" type="password" placeholder="비밀번호 (8자 이상)" autocomplete="new-password">
+            <input id="pw2Input" class="auth-input" type="password" placeholder="비밀번호 확인" autocomplete="new-password">
+            <label class="auth-check">
+                <input id="agreeInput" type="checkbox">
+                <span>Velox는 시장 데이터 분석 도구이며 투자 자문이나 매매 대행이 아닙니다. 모든 매매 판단과 손익 책임은 본인에게 있다는 이용약관과 면책조항에 동의합니다</span>
+            </label>
+            <button class="auth-btn" type="submit">무료체험 시작</button>
+        </form>
+        <div id="authErr" class="auth-err"></div>
+        <div class="auth-alt">이미 계정이 있으신가요? <a href="/login">로그인</a></div>
+    </div>
+    <script>
+        const form=document.getElementById('signupForm');
+        const err=document.getElementById('authErr');
+        form.addEventListener('submit', async e=>{
+            e.preventDefault();
+            const email=document.getElementById('emailInput').value.trim();
+            const password=document.getElementById('pwInput').value;
+            const pw2=document.getElementById('pw2Input').value;
+            const agree=document.getElementById('agreeInput').checked;
+            if(!email||!password){err.textContent='이메일과 비밀번호를 입력하세요.';return;}
+            if(password.length<8){err.textContent='비밀번호는 8자 이상이어야 합니다.';return;}
+            if(password!==pw2){err.textContent='비밀번호가 서로 다릅니다.';return;}
+            if(!agree){err.textContent='약관에 동의해야 가입할 수 있습니다.';return;}
+            const btn=form.querySelector('button');
+            btn.disabled=true; err.textContent='';
+            try{
+                const r=await fetch('/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password,agree})});
+                const d=await r.json().catch(()=>({}));
+                if(r.ok){ window.location.href=d.next||'/dashboard'; return; }
+                err.textContent=d.message||'가입에 실패했습니다.';
+            }catch(_){ err.textContent='연결 오류입니다. 다시 시도하세요.'; }
+            btn.disabled=false;
+        });
+    </script>
+</body>
+</html>

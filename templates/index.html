@@ -40,6 +40,7 @@
                 <option value="D">1D</option><option value="W">1W</option>
             </select>
             <button id="langToggle" class="symbol-select" type="button" title="KO/EN" style="min-width:44px;cursor:pointer;font-weight:700;">EN</button>
+            {% if account_status %}<a href="/account" class="symbol-select" style="text-decoration:none;">{{ account_status }} · 내 계정</a>{% endif %}
         </div>
     </div>
 

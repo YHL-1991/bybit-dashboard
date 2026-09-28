@@ -1,68 +1,68 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Velox · Invite Only</title>
+    <title>Velox · 로그인</title>
     <link rel="stylesheet" href="/static/style.css?v=20260605b">
-    <style>
-        body { display:flex; align-items:center; justify-content:center; min-height:100vh; }
-        .login-card {
-            background:var(--bg-card); border:1px solid var(--border); border-radius:12px;
-            padding:36px 32px; width:100%; max-width:380px; text-align:center;
-            box-shadow:0 12px 40px rgba(0,0,0,0.5);
-        }
-        .login-logo { height:56px; object-fit:contain; margin-bottom:18px; }
-        .login-title { font-size:15px; font-weight:700; color:var(--text-primary); margin-bottom:4px; }
-        .login-sub { font-size:12px; color:var(--text-secondary); margin-bottom:24px; line-height:1.5; }
-        .login-input {
-            width:100%; padding:12px 14px; background:var(--bg-primary); color:var(--text-primary);
-            border:1px solid var(--border); border-radius:8px; font-size:14px; outline:none;
-            box-sizing:border-box; margin-bottom:12px; text-align:center; letter-spacing:0.5px;
-        }
-        .login-input:focus { border-color:var(--yellow); }
-        .login-btn {
-            width:100%; padding:12px; background:var(--yellow); color:#000; border:none;
-            border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; transition:opacity .15s;
-        }
-        .login-btn:hover { opacity:0.88; }
-        .login-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        .login-err { color:var(--red); font-size:12px; margin-top:14px; min-height:16px; }
-        .login-foot { color:var(--text-secondary); font-size:10px; margin-top:20px; opacity:0.7; }
-    </style>
+    <link rel="stylesheet" href="/static/auth.css?v=20260929">
 </head>
-<body>
-    <div class="login-card">
-        <img src="/static/logo.png" alt="Velox" class="login-logo">
-        <div class="login-title">Invite-Only Dashboard</div>
-        <div class="login-sub">Enter your invite code to continue.<br>Access is limited to invited users.</div>
-        <form id="loginForm" autocomplete="off">
-            <input id="codeInput" class="login-input" type="password" placeholder="Invite code" autocomplete="off" autofocus>
-            <button id="loginBtn" class="login-btn" type="submit">Enter</button>
+<body class="auth-body">
+    <div class="auth-card">
+        <img src="/static/logo.png" alt="Velox" class="auth-logo">
+        {% if billing_on %}
+        <div class="auth-title">로그인</div>
+        <div class="auth-sub">가입한 이메일로 로그인하세요</div>
+        <form id="userForm">
+            <input id="emailInput" class="auth-input" type="email" placeholder="이메일" autocomplete="email" autofocus>
+            <input id="pwInput" class="auth-input" type="password" placeholder="비밀번호" autocomplete="current-password">
+            <button class="auth-btn" type="submit">로그인</button>
         </form>
-        <div id="loginErr" class="login-err">{% if invite_error %}{{ invite_error }}{% endif %}</div>
-        <div class="login-foot">Velox Trading Dashboard — Unauthorized access prohibited</div>
+        <div class="auth-alt">아직 계정이 없으신가요? <a href="/signup">무료체험 시작</a></div>
+        {% endif %}
+
+        {% if codes_on %}
+        {% if billing_on %}<details class="auth-code"><summary>초대코드로 입장</summary>{% else %}
+        <div class="auth-title">Invite-Only Dashboard</div>
+        <div class="auth-sub">Enter your invite code to continue.<br>Access is limited to invited users.</div>{% endif %}
+        <form id="codeForm" autocomplete="off">
+            <input id="codeInput" class="auth-input center" type="password" placeholder="Invite code" autocomplete="off" {% if not billing_on %}autofocus{% endif %}>
+            <button class="auth-btn" type="submit">Enter</button>
+        </form>
+        {% if billing_on %}</details>{% endif %}
+        {% endif %}
+
+        <div id="authErr" class="auth-err">{% if invite_error %}{{ invite_error }}{% endif %}</div>
+        <div class="auth-foot">Velox Trading Dashboard</div>
     </div>
     <script>
-        const form=document.getElementById('loginForm');
-        const input=document.getElementById('codeInput');
-        const btn=document.getElementById('loginBtn');
-        const err=document.getElementById('loginErr');
-        form.addEventListener('submit', async (e)=>{
-            e.preventDefault();
-            const code=input.value.trim();
-            if(!code){err.textContent='Please enter your code.';return;}
+        const err=document.getElementById('authErr');
+        async function submitLogin(form, payload){
+            const btn=form.querySelector('button');
             btn.disabled=true; err.textContent='';
             try{
-                const r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
-                if(r.ok){ window.location.href='/dashboard'; }
-                else{
-                    const d=await r.json().catch(()=>({}));
-                    err.textContent=d.message||'Invalid invite code.';
-                    input.value=''; input.focus();
-                }
-            }catch(_){ err.textContent='Connection error. Please try again.'; }
+                const r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+                const d=await r.json().catch(()=>({}));
+                if(r.ok){ window.location.href=d.next||'/dashboard'; return; }
+                err.textContent=d.message||'로그인에 실패했습니다.';
+            }catch(_){ err.textContent='연결 오류입니다. 다시 시도하세요.'; }
             btn.disabled=false;
+        }
+        const userForm=document.getElementById('userForm');
+        if(userForm) userForm.addEventListener('submit',e=>{
+            e.preventDefault();
+            const email=document.getElementById('emailInput').value.trim();
+            const password=document.getElementById('pwInput').value;
+            if(!email||!password){err.textContent='이메일과 비밀번호를 입력하세요.';return;}
+            submitLogin(userForm,{email,password});
+        });
+        const codeForm=document.getElementById('codeForm');
+        if(codeForm) codeForm.addEventListener('submit',e=>{
+            e.preventDefault();
+            const input=document.getElementById('codeInput');
+            const code=input.value.trim();
+            if(!code){err.textContent='Please enter your code.';return;}
+            submitLogin(codeForm,{code}).then(()=>{input.value='';});
         });
     </script>
 </body>

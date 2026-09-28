@@ -29,6 +29,55 @@
     <h1>Velox Admin</h1>
     <div class="sub">데모 신청 리드 + 매직링크 초대 발급</div>
 
+    {% if billing_on %}
+    <div class="card">
+        <h2>결제 요청 ({{ orders|selectattr('status','equalto','pending')|list|length }}건 대기)</h2>
+        {% if orders %}
+        <table>
+            <thead><tr><th>시각</th><th>주문번호</th><th>이메일</th><th>요금제</th><th>금액</th><th>입금자명 / TxID</th><th>상태</th><th></th></tr></thead>
+            <tbody>
+            {% for o in orders %}
+                <tr>
+                    <td style="color:var(--text-secondary);white-space:nowrap;" data-ts="{{ o.created }}">{{ o.created }}</td>
+                    <td>{{ o.id }}</td>
+                    <td>{{ o.email }}</td>
+                    <td>{{ plans[o.plan].name if o.plan in plans else o.plan }}</td>
+                    <td style="white-space:nowrap;">{{ "{:,}".format(o.amount|int) if o.currency == 'KRW' else o.amount }} {{ o.currency }}</td>
+                    <td class="link-out">{{ o.payer_ref }}</td>
+                    <td>{% if o.status == 'paid' %}<span class="tag new">완료</span>{% elif o.status == 'pending' %}<span class="tag used">대기</span>{% else %}<span class="tag rev">취소</span>{% endif %}</td>
+                    <td style="white-space:nowrap;">{% if o.status == 'pending' %}<button class="mini" style="background:var(--green);color:#000;" onclick="orderAct('confirm','{{ o.id }}')">입금 확인</button> <button class="mini" onclick="orderAct('cancel','{{ o.id }}')">취소</button>{% endif %}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}<div class="empty">아직 결제 요청 없음</div>{% endif %}
+    </div>
+
+    <div class="card">
+        <h2>회원 ({{ users|length }})</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+            <input id="extEmail" type="email" placeholder="이메일" style="flex:1;min-width:200px;">
+            <input id="extDays" type="number" placeholder="일수" style="width:90px;">
+            <button onclick="extendUser()">기간 수동 연장</button>
+        </div>
+        {% if users %}
+        <table>
+            <thead><tr><th>가입</th><th>이메일</th><th>등급</th><th>이용 가능</th></tr></thead>
+            <tbody>
+            {% for u in users %}
+                <tr>
+                    <td style="color:var(--text-secondary);white-space:nowrap;" data-ts="{{ u.created }}">{{ u.created }}</td>
+                    <td>{{ u.email }}</td>
+                    <td>{% if u.status == 'Pro' %}<span class="tag new">Pro</span>{% elif u.status == '무료체험' %}<span class="tag used">무료체험</span>{% else %}<span class="tag rev">만료</span>{% endif %}</td>
+                    <td style="color:var(--text-secondary);white-space:nowrap;" data-ts="{{ u.until }}">{{ u.until }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}<div class="empty">아직 가입자 없음</div>{% endif %}
+    </div>
+    {% endif %}
+
     <div class="card">
         <h2>매직링크 발급</h2>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
@@ -92,6 +141,24 @@
             if(d.ok){
                 document.getElementById('newLink').innerHTML='<div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;">아래 링크를 초대할 사람에게 보내세요:</div><div class="link-out" style="padding:8px;background:var(--bg-primary);border-radius:6px;">'+d.link+'</div>';
             } else { document.getElementById('newLink').textContent=d.message||'실패'; }
+        }
+        async function adminPost(path, body){
+            const r=await fetch(path+'?key='+encodeURIComponent(KEY),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+            return r.json().catch(()=>({ok:false}));
+        }
+        async function orderAct(act, order_id){
+            if(!confirm(act==='confirm'?`${order_id} 입금을 확인했나요? 이용 기간이 연장됩니다`:`${order_id} 요청을 취소할까요?`))return;
+            const d=await adminPost('/admin/order/'+act,{order_id});
+            if(!d.ok)alert(d.message||'실패');
+            location.reload();
+        }
+        async function extendUser(){
+            const email=document.getElementById('extEmail').value.trim();
+            const days=parseInt(document.getElementById('extDays').value)||0;
+            if(!email||!days)return alert('이메일과 일수를 입력하세요');
+            const d=await adminPost('/admin/user/extend',{email,days});
+            if(!d.ok)return alert(d.message||'실패');
+            location.reload();
         }
         async function revoke(token){
             if(!confirm('이 초대를 취소할까요?'))return;

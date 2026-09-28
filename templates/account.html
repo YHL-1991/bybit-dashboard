@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Velox · 내 계정</title>
+    <link rel="stylesheet" href="/static/style.css?v=20260605b">
+    <link rel="stylesheet" href="/static/auth.css?v=20260929">
+</head>
+<body>
+<div class="page">
+    <div class="page-top">
+        <a href="/"><img src="/static/logo.png" alt="Velox"></a>
+        <nav><a href="/dashboard">대시보드</a><a href="/pricing">요금제</a><a href="/logout">로그아웃</a></nav>
+    </div>
+
+    <h1>내 계정</h1>
+    <p class="lead">{{ user.email }}</p>
+
+    <div class="box">
+        <h2>이용 상태</h2>
+        <dl class="kv">
+            <dt>등급</dt><dd><span class="tag {{ status }}">{{ status }}</span></dd>
+            <dt>이용 가능</dt><dd data-ts="{{ until }}">{{ until }}</dd>
+        </dl>
+        {% if status != 'Pro' %}
+        <a class="auth-btn" style="display:block;text-align:center;text-decoration:none;color:#000;margin-top:16px;" href="/pricing">Pro 결제하기</a>
+        {% endif %}
+    </div>
+
+    {% set pending = orders|selectattr('status','equalto','pending')|list %}
+    {% if pending %}{% set o = pending[0] %}
+    <div class="box">
+        <h2>확인 대기 중인 결제</h2>
+        <p class="note">주문번호 <b style="color:var(--text-primary)">{{ o.id }}</b> · {{ plans[o.plan].name }} · {{ "{:,}".format(o.amount|int) if o.currency == 'KRW' else o.amount }} {{ '원' if o.currency == 'KRW' else o.currency }}</p>
+        <div class="pay-to">{{ pay[o.method] }}</div>
+        <p class="note">{{ methods[o.method].ref_label }}: {{ o.payer_ref }}<br>입금이 확인되면 이용 기간이 자동으로 늘어납니다</p>
+    </div>
+    {% endif %}
+
+    <div class="box">
+        <h2>결제 내역</h2>
+        {% if orders %}
+        <div class="tbl-wrap"><table class="tbl">
+            <thead><tr><th>주문번호</th><th>요금제</th><th>수단</th><th>금액</th><th>상태</th><th>요청일</th></tr></thead>
+            <tbody>
+            {% for o in orders %}
+            <tr>
+                <td>{{ o.id }}</td>
+                <td>{{ plans[o.plan].name if o.plan in plans else o.plan }}</td>
+                <td>{{ methods[o.method].name if o.method in methods else o.method }}</td>
+                <td>{{ "{:,}".format(o.amount|int) if o.currency == 'KRW' else o.amount }} {{ '원' if o.currency == 'KRW' else o.currency }}</td>
+                <td><span class="tag {{ o.status }}">{{ {'pending':'확인 대기','paid':'완료','cancelled':'취소'}[o.status] }}</span></td>
+                <td data-ts="{{ o.created }}">{{ o.created }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table></div>
+        {% else %}<p class="note">아직 결제 내역이 없습니다</p>{% endif %}
+    </div>
+</div>
+<script>
+    document.querySelectorAll('[data-ts]').forEach(el=>{
+        const ts=parseInt(el.getAttribute('data-ts'))||0;
+        el.textContent=ts>0?new Date(ts*1000).toLocaleString('ko-KR'):'-';
+    });
+</script>
+</body>
+</html>

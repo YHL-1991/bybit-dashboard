@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
+import billing
 import bybit_api
 from liquidation import estimate_liquidation_levels
 from auto_trader import (
@@ -64,18 +65,30 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 #     ACCESS_CODES  콤마구분 초대코드 (미설정 시 게이트 비활성 = 전체 공개)
 #     ADMIN_KEY     /admin 접근 키 (미설정 시 admin 비활성)
 #     TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID  request-access 알림용
-#     SESSION_SECRET  쿠키 서명 비밀 (미설정 시 ACCESS_CODES 기반 파생)
+#     SESSION_SECRET  쿠키 서명 비밀 (미설정 시 ACCESS_CODES 기반 파생, 코드도 없으면 재시작마다 랜덤)
+#   유료 구독 (billing.py):
+#     BILLING=on    이메일 가입 + 구독 게이트 활성. 초대 세션은 그대로 통과
+#     BANK_ACCOUNT  무통장입금 안내 문구 (예: "국민 000-00-0000 링크아시아랩스")
+#     USDT_ADDRESS  USDT 입금 주소 (네트워크 표기 포함 권장)
 # ─────────────────────────────────────────────────────────────────────────
 ACCESS_CODES = [c.strip() for c in os.environ.get("ACCESS_CODES", "").split(",") if c.strip()]
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
+BILLING_ON = os.environ.get("BILLING", "").lower() == "on"
+BANK_ACCOUNT = os.environ.get("BANK_ACCOUNT", "")
+USDT_ADDRESS = os.environ.get("USDT_ADDRESS", "")
 _SESSION_SECRET = os.environ.get("SESSION_SECRET", "") or (
-    "velox-gate-" + hashlib.sha256(("|".join(ACCESS_CODES) or "novar").encode()).hexdigest()[:40]
+    "velox-gate-" + hashlib.sha256("|".join(ACCESS_CODES).encode()).hexdigest()[:40]
+    if ACCESS_CODES else secrets.token_hex(32)  # 추측 가능한 고정값 금지
 )
 _SESSION_TTL = 60 * 60 * 24 * 30   # 세션 쿠키 30일
 _INVITE_TTL = 60 * 60 * 24 * 14    # 매직링크 토큰 14일 (첫 사용까지)
 _COOKIE_NAME = "velox_session"
+_USER_COOKIE = "velox_user"
 # 게이트를 통과시키는(=세션 불필요) 경로. 나머지 중 _GATED_PREFIXES만 보호.
 _GATED_PREFIXES = ("/dashboard", "/api", "/ws")
+_GATE_ON = bool(ACCESS_CODES) or BILLING_ON
+
+billing.init_db()
 
 
 def _data_path(name: str) -> str:
@@ -127,6 +140,55 @@ def _set_session_cookie(resp, request):
     return resp
 
 
+def _user_sig(payload: str) -> str:
+    # 초대 세션 서명과 섞이지 않도록 접두어를 붙여 서명
+    return hmac.new(_SESSION_SECRET.encode(), ("u|" + payload).encode(), hashlib.sha256).hexdigest()
+
+
+def _session_user(request):
+    """회원 세션 쿠키(uid.ts.sig) 검증 후 사용자 dict, 아니면 None"""
+    cookie = request.cookies.get(_USER_COOKIE, "")
+    parts = cookie.split(".")
+    if len(parts) != 3:
+        return None
+    uid, ts, sig = parts
+    if not hmac.compare_digest(sig, _user_sig(f"{uid}.{ts}")):
+        return None
+    try:
+        if _time0.time() - int(ts) > _SESSION_TTL:
+            return None
+        return billing.get_user(int(uid))
+    except Exception:
+        return None
+
+
+def _set_user_cookie(resp, request, uid: int):
+    payload = f"{uid}.{int(_time0.time())}"
+    resp.set_cookie(_USER_COOKIE, f"{payload}.{_user_sig(payload)}", max_age=_SESSION_TTL,
+                    httponly=True, samesite="lax", secure=request.url.scheme == "https")
+    return resp
+
+
+# 로그인 무차별 대입 방지: IP당 10분에 실패 8회까지
+_LOGIN_FAILS = {}
+
+
+def _client_ip(request) -> str:
+    ip = request.headers.get("x-forwarded-for", "") or (request.client.host if request.client else "")
+    return ip.split(",")[0].strip()
+
+
+def _login_blocked(ip: str) -> bool:
+    now = _time0.time()
+    fails = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < 600]
+    _LOGIN_FAILS[ip] = fails
+    return len(fails) >= 8
+
+
+def _login_failed(ip: str):
+    _LOGIN_FAILS.setdefault(ip, []).append(_time0.time())
+
+
 def _log_access(kind, request, extra=""):
     try:
         log = _load_json("velox_access.json", [])
@@ -154,28 +216,38 @@ async def _notify_telegram(text: str):
 
 @app.middleware("http")
 async def _access_gate(request: Request, call_next):
-    # 게이트 비활성(ACCESS_CODES 미설정) → 전체 공개 (개발/락아웃 방지)
-    if not ACCESS_CODES:
+    # 게이트 비활성(ACCESS_CODES, BILLING 모두 미설정) → 전체 공개 (개발/락아웃 방지)
+    if not _GATE_ON:
         return await call_next(request)
     path = request.url.path
     if not any(path.startswith(p) for p in _GATED_PREFIXES):
         return await call_next(request)  # 랜딩/로그인/초대/admin/정적 등은 통과
     if _valid_session(request.cookies.get(_COOKIE_NAME, "")):
-        return await call_next(request)
+        return await call_next(request)  # 초대 세션
+    is_api = path.startswith("/api") or path.startswith("/ws")
+    if BILLING_ON:
+        user = _session_user(request)
+        if billing.is_active(user):
+            return await call_next(request)
+        if user:  # 로그인은 했지만 체험/구독 만료
+            if is_api:
+                return JSONResponse({"error": "subscription_required", "message": "구독이 만료되었습니다."}, status_code=402)
+            return RedirectResponse(url="/pricing", status_code=302)
     # 미인증: API/WS는 401, 대시보드 HTML은 로그인으로
-    if path.startswith("/api") or path.startswith("/ws"):
-        return JSONResponse({"error": "unauthorized", "message": "초대 인증 필요"}, status_code=401)
+    if is_api:
+        return JSONResponse({"error": "unauthorized", "message": "로그인 필요"}, status_code=401)
     return RedirectResponse(url="/login", status_code=302)
 
 
-# ── 초대코드 직접 로그인 ──
+# ── 로그인 (이메일 계정 또는 초대코드) ──
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    if not ACCESS_CODES:
+    if not _GATE_ON:
         return RedirectResponse(url="/dashboard", status_code=302)
-    if _valid_session(request.cookies.get(_COOKIE_NAME, "")):
+    if _valid_session(request.cookies.get(_COOKIE_NAME, "")) or (BILLING_ON and billing.is_active(_session_user(request))):
         return RedirectResponse(url="/dashboard", status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse("login.html", {
+        "request": request, "billing_on": BILLING_ON, "codes_on": bool(ACCESS_CODES)})
 
 
 @app.post("/login")
@@ -184,12 +256,102 @@ async def login_submit(request: Request):
         body = await request.json()
     except Exception:
         body = {}
+    ip = _client_ip(request)
+    if _login_blocked(ip):
+        return JSONResponse({"ok": False, "message": "시도가 너무 많습니다. 10분 뒤 다시 시도하세요."}, status_code=429)
+
+    if BILLING_ON and body.get("email"):
+        user = billing.authenticate(body.get("email", ""), body.get("password", ""))
+        if not user:
+            _login_failed(ip)
+            return JSONResponse({"ok": False, "message": "이메일 또는 비밀번호가 맞지 않습니다."}, status_code=401)
+        _log_access("login_user", request, extra=user["email"])
+        nxt = "/dashboard" if billing.is_active(user) else "/pricing"
+        return _set_user_cookie(JSONResponse({"ok": True, "next": nxt}), request, user["id"])
+
     code = (body.get("code", "") or "").strip()
     ok = any(hmac.compare_digest(code, c) for c in ACCESS_CODES) if code else False
     if not ok:
+        _login_failed(ip)
         return JSONResponse({"ok": False, "message": "Invalid invite code."}, status_code=401)
     _log_access("login_code", request)
-    return _set_session_cookie(JSONResponse({"ok": True}), request)
+    return _set_session_cookie(JSONResponse({"ok": True, "next": "/dashboard"}), request)
+
+
+# ── 회원가입 (BILLING=on 일 때만) ──
+@app.get("/signup", response_class=HTMLResponse)
+async def signup_page(request: Request):
+    if not BILLING_ON:
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse("signup.html", {"request": request, "trial_days": billing.TRIAL_DAYS})
+
+
+@app.post("/signup")
+async def signup_submit(request: Request):
+    if not BILLING_ON:
+        return JSONResponse({"ok": False, "message": "가입이 열려 있지 않습니다."}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not body.get("agree"):
+        return JSONResponse({"ok": False, "message": "이용약관과 면책조항에 동의해야 합니다."}, status_code=400)
+    # 무료체험 반복 가입 억제: IP당 10분에 가입 시도 8회 (로그인 제한과 같은 창을 별도 키로 사용)
+    key = "signup:" + _client_ip(request)
+    if _login_blocked(key):
+        return JSONResponse({"ok": False, "message": "잠시 뒤 다시 시도하세요."}, status_code=429)
+    _login_failed(key)
+    user, err = billing.create_user(body.get("email", ""), body.get("password", ""))
+    if err:
+        return JSONResponse({"ok": False, "message": err}, status_code=400)
+    _log_access("signup", request, extra=user["email"])
+    await _notify_telegram(f"🆕 Velox 가입\n{user['email']}")
+    return _set_user_cookie(JSONResponse({"ok": True, "next": "/dashboard"}), request, user["id"])
+
+
+# ── 요금제 / 내 계정 / 결제 요청 ──
+def _payment_info() -> dict:
+    return {"bank": BANK_ACCOUNT or "(입금 계좌 미설정)", "usdt": USDT_ADDRESS or "(USDT 주소 미설정)"}
+
+
+@app.get("/pricing", response_class=HTMLResponse)
+async def pricing_page(request: Request):
+    user = _session_user(request) if BILLING_ON else None
+    return templates.TemplateResponse("pricing.html", {
+        "request": request, "billing_on": BILLING_ON, "user": user,
+        "status": billing.status_label(user) if user else "",
+        "plans": billing.PLANS, "methods": billing.PAYMENT_METHODS, "trial_days": billing.TRIAL_DAYS,
+        "pay": _payment_info() if user else {}})
+
+
+@app.get("/account", response_class=HTMLResponse)
+async def account_page(request: Request):
+    user = _session_user(request) if BILLING_ON else None
+    if not user:
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse("account.html", {
+        "request": request, "user": user, "status": billing.status_label(user),
+        "until": billing.access_until(user), "orders": billing.list_orders(user["id"]),
+        "plans": billing.PLANS, "methods": billing.PAYMENT_METHODS, "pay": _payment_info()})
+
+
+@app.post("/billing/order")
+async def billing_order(request: Request):
+    user = _session_user(request) if BILLING_ON else None
+    if not user:
+        return JSONResponse({"ok": False, "message": "로그인이 필요합니다."}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    order, err = billing.create_order(user["id"], body.get("plan", ""), body.get("method", ""), body.get("payer_ref", ""))
+    if err:
+        return JSONResponse({"ok": False, "message": err}, status_code=400)
+    await _notify_telegram(
+        f"💳 Velox 결제 요청 {order['id']}\n{user['email']}\n"
+        f"{billing.PLANS[order['plan']]['name']} / {billing.PAYMENT_METHODS[order['method']]['name']} "
+        f"{order['amount']:g} {order['currency']}\n참조: {order['payer_ref']}")
+    return JSONResponse({"ok": True, "order": order})
 
 
 # ── 매직링크 초대 (admin이 발급한 토큰 클릭) ──
@@ -200,13 +362,13 @@ async def invite_redeem(request: Request, token: str = ""):
     now = int(_time0.time())
     if not inv:
         return templates.TemplateResponse("login.html",
-            {"request": request, "invite_error": "Invalid invite link."}, status_code=403)
+            {"request": request, "billing_on": BILLING_ON, "codes_on": bool(ACCESS_CODES), "invite_error":"Invalid invite link."}, status_code=403)
     if inv.get("revoked"):
         return templates.TemplateResponse("login.html",
-            {"request": request, "invite_error": "This invite link has been revoked."}, status_code=403)
+            {"request": request, "billing_on": BILLING_ON, "codes_on": bool(ACCESS_CODES), "invite_error":"This invite link has been revoked."}, status_code=403)
     if now - int(inv.get("created", now)) > _INVITE_TTL and not inv.get("used"):
         return templates.TemplateResponse("login.html",
-            {"request": request, "invite_error": "This invite link has expired."}, status_code=403)
+            {"request": request, "billing_on": BILLING_ON, "codes_on": bool(ACCESS_CODES), "invite_error":"This invite link has expired."}, status_code=403)
     # 첫 사용 기록 + 세션 발급
     if not inv.get("used"):
         inv["used"] = now
@@ -221,6 +383,7 @@ async def invite_redeem(request: Request, token: str = ""):
 async def logout():
     resp = RedirectResponse(url="/", status_code=302)
     resp.delete_cookie(_COOKIE_NAME)
+    resp.delete_cookie(_USER_COOKIE)
     return resp
 
 
@@ -259,11 +422,61 @@ async def admin_page(request: Request, key: str = ""):
         return HTMLResponse("<h3 style='font-family:sans-serif'>403 — admin key 필요</h3>", status_code=403)
     leads = _load_json("velox_leads.json", [])
     invites = _load_json("velox_invites.json", {})
+    users = billing.list_users()
+    for u in users:
+        u["status"] = billing.status_label(u)
+        u["until"] = billing.access_until(u)
     return templates.TemplateResponse("admin.html", {
         "request": request, "key": key,
         "leads": list(reversed(leads)),
         "invites": [{"token": t, **v} for t, v in sorted(invites.items(), key=lambda kv: kv[1].get("created", 0), reverse=True)],
+        "billing_on": BILLING_ON, "users": users, "orders": billing.list_orders(),
+        "plans": billing.PLANS, "methods": billing.PAYMENT_METHODS,
     })
+
+
+async def _admin_body(request: Request, key: str):
+    if not _admin_ok(key):
+        return None
+    try:
+        return await request.json()
+    except Exception:
+        return {}
+
+
+@app.post("/admin/order/confirm")
+async def admin_order_confirm(request: Request, key: str = ""):
+    body = await _admin_body(request, key)
+    if body is None:
+        return JSONResponse({"ok": False, "message": "admin key 필요"}, status_code=403)
+    ok = billing.confirm_order(body.get("order_id", ""))
+    return JSONResponse({"ok": ok, "message": "" if ok else "대기 중인 주문이 아닙니다."})
+
+
+@app.post("/admin/order/cancel")
+async def admin_order_cancel(request: Request, key: str = ""):
+    body = await _admin_body(request, key)
+    if body is None:
+        return JSONResponse({"ok": False, "message": "admin key 필요"}, status_code=403)
+    ok = billing.cancel_order(body.get("order_id", ""))
+    return JSONResponse({"ok": ok, "message": "" if ok else "대기 중인 주문이 아닙니다."})
+
+
+@app.post("/admin/user/extend")
+async def admin_user_extend(request: Request, key: str = ""):
+    """결제 외 수동 연장 (보상, 테스트 등)"""
+    body = await _admin_body(request, key)
+    if body is None:
+        return JSONResponse({"ok": False, "message": "admin key 필요"}, status_code=403)
+    user = billing.get_user_by_email(body.get("email", ""))
+    try:
+        days = int(body.get("days", 0))
+    except Exception:
+        days = 0
+    if not user or not (1 <= days <= 3650):
+        return JSONResponse({"ok": False, "message": "이메일 또는 일수가 올바르지 않습니다."}, status_code=400)
+    billing.extend_user(user["id"], days)
+    return JSONResponse({"ok": True})
 
 
 @app.post("/admin/invite")
@@ -1083,7 +1296,9 @@ async def landing(request: Request):
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     # 실제 대시보드. ACCESS_CODES 설정 시 미들웨어가 세션 검사.
-    return templates.TemplateResponse("index.html", {"request": request, "symbols": SYMBOLS, "stocks": STOCKS})
+    user = _session_user(request) if BILLING_ON else None
+    return templates.TemplateResponse("index.html", {"request": request, "symbols": SYMBOLS, "stocks": STOCKS,
+                                                     "account_status": billing.status_label(user) if user else ""})
 
 
 # ─────────────────────────────────────────────────────────────────────────

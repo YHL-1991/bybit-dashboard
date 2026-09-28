@@ -20,3 +20,6 @@ build/
 *.swp
 *.swo
 .claude/
+
+# 회원/결제 DB (개인정보)
+data/velox.db

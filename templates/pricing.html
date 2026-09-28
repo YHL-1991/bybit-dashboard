@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Velox · 요금제</title>
+    <link rel="stylesheet" href="/static/style.css?v=20260605b">
+    <link rel="stylesheet" href="/static/auth.css?v=20260929">
+</head>
+<body>
+<div class="page">
+    <div class="page-top">
+        <a href="/"><img src="/static/logo.png" alt="Velox"></a>
+        <nav>
+            {% if user %}<a href="/dashboard">대시보드</a><a href="/account">내 계정</a><a href="/logout">로그아웃</a>
+            {% else %}<a href="/login">로그인</a>{% endif %}
+        </nav>
+    </div>
+
+    <h1>Velox Pro</h1>
+    <p class="lead">
+        멀티 거래소 파생 데이터, 청산 맵, 온체인 흐름, 멀티타임프레임 분석을 한 화면에서 봅니다<br>
+        {% if user and status == '만료' %}<b style="color:var(--red)">이용 기간이 끝났습니다. 이어서 쓰시려면 결제해 주세요</b>
+        {% elif not user %}처음이라면 {{ trial_days }}일 무료체험부터 시작하세요{% endif %}
+    </p>
+
+    <div class="plans" id="plans">
+        {% for pid, p in plans.items() %}
+        <button type="button" class="plan{% if loop.first %} sel{% endif %}" data-plan="{{ pid }}">
+            <div class="plan-name">{{ p.name }}</div>
+            <div class="plan-price">{{ "{:,}".format(p.krw) }}원</div>
+            <div class="plan-sub">또는 {{ p.usdt }} USDT · {{ p.days }}일</div>
+        </button>
+        {% endfor %}
+    </div>
+
+    {% if not billing_on %}
+    <div class="box note">지금은 결제를 받지 않고 있습니다</div>
+    {% elif not user %}
+    <div class="box">
+        <a class="auth-btn" style="display:block;text-align:center;text-decoration:none;color:#000;" href="/signup">{{ trial_days }}일 무료체험 시작</a>
+        <div class="auth-alt" style="text-align:center">이미 계정이 있으신가요? <a href="/login">로그인</a></div>
+    </div>
+    {% else %}
+    <div class="box">
+        <h2>결제 수단</h2>
+        <div class="seg" id="methods">
+            {% for mid, m in methods.items() %}
+            <button type="button" data-method="{{ mid }}" class="{% if loop.first %}sel{% endif %}">{{ m.name }}</button>
+            {% endfor %}
+        </div>
+        <div id="payGuide"></div>
+        <input id="refInput" class="auth-input" type="text">
+        <button id="orderBtn" class="auth-btn" type="button">결제 요청 보내기</button>
+        <div id="orderErr" class="auth-err"></div>
+        <p class="note">보내 주신 내용을 확인한 뒤 이용 기간이 연장됩니다. 보통 영업일 기준 하루 안에 처리되며 진행 상황은 <a href="/account">내 계정</a>에서 볼 수 있습니다</p>
+    </div>
+    {% endif %}
+
+    <p class="note">Velox는 시장 데이터 분석 도구이며 투자 자문, 매매 신호 판매, 매매 대행이 아닙니다. 모든 매매 판단과 손익 책임은 이용자 본인에게 있습니다</p>
+</div>
+
+{% if billing_on and user %}
+<script>
+    const PLANS={{ plans|tojson }}, METHODS={{ methods|tojson }}, PAY={{ pay|tojson }};
+    let plan=document.querySelector('.plan.sel').dataset.plan;
+    let method=document.querySelector('#methods .sel').dataset.method;
+    const guide=document.getElementById('payGuide'), ref=document.getElementById('refInput');
+    const err=document.getElementById('orderErr'), btn=document.getElementById('orderBtn');
+    function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+    function render(){
+        const p=PLANS[plan], m=METHODS[method];
+        const amount=m.currency==='KRW'?p.krw.toLocaleString()+'원':p.usdt+' USDT';
+        guide.innerHTML=`<div class="note">${esc(p.name)} 결제 금액 <b style="color:var(--text-primary)">${amount}</b>을 아래로 보내 주세요</div>`
+            +`<div class="pay-to">${esc(PAY[method]||'')}</div>`;
+        ref.placeholder=m.ref_label;
+    }
+    document.querySelectorAll('.plan').forEach(b=>b.onclick=()=>{
+        document.querySelectorAll('.plan').forEach(x=>x.classList.remove('sel'));
+        b.classList.add('sel'); plan=b.dataset.plan; render();
+    });
+    document.querySelectorAll('#methods button').forEach(b=>b.onclick=()=>{
+        document.querySelectorAll('#methods button').forEach(x=>x.classList.remove('sel'));
+        b.classList.add('sel'); method=b.dataset.method; ref.value=''; render();
+    });
+    btn.onclick=async()=>{
+        const payer_ref=ref.value.trim();
+        if(!payer_ref){err.textContent=METHODS[method].ref_label+'을(를) 입력하세요.';return;}
+        btn.disabled=true; err.textContent='';
+        try{
+            const r=await fetch('/billing/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan,method,payer_ref})});
+            const d=await r.json().catch(()=>({}));
+            if(r.ok){ window.location.href='/account'; return; }
+            err.textContent=d.message||'요청에 실패했습니다.';
+        }catch(_){ err.textContent='연결 오류입니다. 다시 시도하세요.'; }
+        btn.disabled=false;
+    };
+    render();
+</script>
+{% else %}
+<script>
+    document.querySelectorAll('.plan').forEach(b=>b.onclick=()=>{
+        document.querySelectorAll('.plan').forEach(x=>x.classList.remove('sel')); b.classList.add('sel');
+    });
+</script>
+{% endif %}
+</body>
+</html>
