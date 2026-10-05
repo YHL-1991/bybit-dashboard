@@ -23,9 +23,9 @@ from typing import Optional
 # ─── 요금제 ───
 # 초기 가격 (2026-09 결정). 바꿀 때는 이 표만 수정하면 된다.
 PLANS = {
-    "pro_1m": {"name": "Pro 1개월", "days": 30, "krw": 29000, "usdt": 20},
-    "pro_3m": {"name": "Pro 3개월", "days": 90, "krw": 79000, "usdt": 55},
-    "pro_12m": {"name": "Pro 12개월", "days": 365, "krw": 290000, "usdt": 200},
+    "pro_1m": {"name": "Pro — Monthly", "days": 30, "krw": 39000, "usdt": 29},
+    "pro_3m": {"name": "Pro — Quarterly", "days": 90, "krw": 109000, "usdt": 79},
+    "pro_12m": {"name": "Pro — Annual", "days": 365, "krw": 269000, "usdt": 199},
 }
 TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "7"))
 
