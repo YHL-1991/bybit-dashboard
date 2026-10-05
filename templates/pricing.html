@@ -50,6 +50,16 @@
             {% endfor %}
         </div>
         <div id="payGuide"></div>
+        {% if founding_remaining and founding_remaining > 0 %}
+        <div class="note" style="border:1px solid var(--yellow);border-radius:8px;padding:8px 10px;margin:6px 0 10px;color:var(--text-primary);">
+            창립 멤버 반값: 선착순 {{ coupons['FOUNDING50'].limit }}명 한정 <b>50% 할인</b> · <b id="foundLeft">{{ founding_remaining }}</b>명 남음. 쿠폰 코드 <b>FOUNDING50</b>
+        </div>
+        {% endif %}
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+            <input id="couponInput" class="auth-input" type="text" placeholder="쿠폰 코드 (선택)" style="flex:1;text-transform:uppercase;">
+            <button id="couponBtn" class="auth-btn" type="button" style="width:auto;padding:0 16px;white-space:nowrap;">적용</button>
+        </div>
+        <div id="couponMsg" class="note" style="min-height:15px;margin:-2px 0 8px;"></div>
         <input id="refInput" class="auth-input" type="text">
         <button id="orderBtn" class="auth-btn" type="button">결제 요청 보내기</button>
         <div id="orderErr" class="auth-err"></div>
@@ -68,13 +78,41 @@
     const guide=document.getElementById('payGuide'), ref=document.getElementById('refInput');
     const err=document.getElementById('orderErr'), btn=document.getElementById('orderBtn');
     function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+    let couponPct=0, couponCode='';
+    function fmtAmt(v,cur){return cur==='KRW'?v.toLocaleString()+'원':v+' USDT';}
+    function discAmt(base,cur){
+        const d=base*(100-couponPct)/100;
+        return cur==='KRW'?Math.round(d/100)*100:Math.round(d*10)/10;
+    }
     function render(){
         const p=PLANS[plan], m=METHODS[method];
-        const amount=m.currency==='KRW'?p.krw.toLocaleString()+'원':p.usdt+' USDT';
-        guide.innerHTML=`<div class="note">${esc(p.name)} 결제 금액 <b style="color:var(--text-primary)">${amount}</b>을 아래로 보내 주세요</div>`
+        const base=m.currency==='KRW'?p.krw:p.usdt;
+        let amtHtml;
+        if(couponPct>0){
+            amtHtml=`<s style="color:var(--text-secondary)">${fmtAmt(base,m.currency)}</s> `
+                +`<b style="color:var(--text-primary)">${fmtAmt(discAmt(base,m.currency),m.currency)}</b> `
+                +`<span style="color:var(--yellow)">(-${couponPct}%)</span>`;
+        }else{
+            amtHtml=`<b style="color:var(--text-primary)">${fmtAmt(base,m.currency)}</b>`;
+        }
+        guide.innerHTML=`<div class="note">${esc(p.name)} 결제 금액 ${amtHtml}을 아래로 보내 주세요</div>`
             +`<div class="pay-to">${esc(PAY[method]||'')}</div>`;
         ref.placeholder=m.ref_label;
     }
+    const cpnBtn=document.getElementById('couponBtn');
+    if(cpnBtn)cpnBtn.onclick=async()=>{
+        const code=document.getElementById('couponInput').value.trim().toUpperCase();
+        const msg=document.getElementById('couponMsg');
+        if(!code){couponPct=0;couponCode='';msg.textContent='';render();return;}
+        try{
+            const r=await fetch('/billing/coupon?code='+encodeURIComponent(code));
+            const d=await r.json().catch(()=>({}));
+            const left=document.getElementById('foundLeft'); if(left&&d.remaining!=null)left.textContent=d.remaining;
+            if(r.ok){couponPct=d.pct;couponCode=code;msg.style.color='#00d26a';msg.textContent=(d.label||'쿠폰')+' '+d.pct+'% 적용됨';}
+            else{couponPct=0;couponCode='';msg.style.color='#ff4757';msg.textContent=d.message||'쿠폰 오류';}
+        }catch(_){couponPct=0;couponCode='';msg.style.color='#ff4757';msg.textContent='연결 오류';}
+        render();
+    };
     document.querySelectorAll('.plan').forEach(b=>b.onclick=()=>{
         document.querySelectorAll('.plan').forEach(x=>x.classList.remove('sel'));
         b.classList.add('sel'); plan=b.dataset.plan; render();
@@ -88,7 +126,7 @@
         if(!payer_ref){err.textContent=METHODS[method].ref_label+'을(를) 입력하세요.';return;}
         btn.disabled=true; err.textContent='';
         try{
-            const r=await fetch('/billing/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan,method,payer_ref})});
+            const r=await fetch('/billing/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan,method,payer_ref,coupon:couponCode})});
             const d=await r.json().catch(()=>({}));
             if(r.ok){ window.location.href='/account'; return; }
             err.textContent=d.message||'요청에 실패했습니다.';

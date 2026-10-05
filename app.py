@@ -321,7 +321,19 @@ async def pricing_page(request: Request):
         "request": request, "billing_on": BILLING_ON, "user": user,
         "status": billing.status_label(user) if user else "",
         "plans": billing.PLANS, "methods": billing.PAYMENT_METHODS, "trial_days": billing.TRIAL_DAYS,
+        "founding_remaining": billing.founding_remaining(), "coupons": billing.COUPONS,
         "pay": _payment_info() if user else {}})
+
+
+@app.get("/billing/coupon")
+async def billing_coupon(request: Request, code: str = ""):
+    """쿠폰 유효성 + 남은 창립 슬롯 확인 (주문 전 미리보기)."""
+    user = _session_user(request) if BILLING_ON else None
+    cpn, err = billing.validate_coupon(code, user["id"] if user else None)
+    if err:
+        return JSONResponse({"ok": False, "message": err, "remaining": billing.founding_remaining()}, status_code=400)
+    return JSONResponse({"ok": True, "pct": cpn["pct"], "label": cpn["label"],
+                         "remaining": billing.founding_remaining()})
 
 
 @app.get("/account", response_class=HTMLResponse)
@@ -344,11 +356,13 @@ async def billing_order(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    order, err = billing.create_order(user["id"], body.get("plan", ""), body.get("method", ""), body.get("payer_ref", ""))
+    order, err = billing.create_order(user["id"], body.get("plan", ""), body.get("method", ""),
+                                      body.get("payer_ref", ""), body.get("coupon", ""))
     if err:
         return JSONResponse({"ok": False, "message": err}, status_code=400)
+    _cpn = f" [{order['coupon']}]" if order.get("coupon") else ""
     await _notify_telegram(
-        f"💳 Velox 결제 요청 {order['id']}\n{user['email']}\n"
+        f"💳 Velox 결제 요청 {order['id']}{_cpn}\n{user['email']}\n"
         f"{billing.PLANS[order['plan']]['name']} / {billing.PAYMENT_METHODS[order['method']]['name']} "
         f"{order['amount']:g} {order['currency']}\n참조: {order['payer_ref']}")
     return JSONResponse({"ok": True, "order": order})

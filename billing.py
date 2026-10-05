@@ -29,6 +29,15 @@ PLANS = {
 }
 TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "7"))
 
+# 쿠폰: 창립 멤버 반값 (선착순 한도). 한도/할인율은 환경변수로 조정 가능.
+COUPONS = {
+    "FOUNDING50": {
+        "pct": int(os.environ.get("FOUNDING_PCT", "50")),
+        "limit": int(os.environ.get("FOUNDING_LIMIT", "50")),
+        "label": "Founding Member",
+    },
+}
+
 PAYMENT_METHODS = {
     "bank": {"name": "무통장입금", "currency": "KRW", "ref_label": "입금자명"},
     "usdt": {"name": "USDT 송금", "currency": "USDT", "ref_label": "트랜잭션 해시(TxID)"},
@@ -80,6 +89,11 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
         """)
+        # 마이그레이션: 쿠폰 컬럼 (기존 DB에도 안전하게 추가)
+        try:
+            c.execute("ALTER TABLE orders ADD COLUMN coupon TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass  # 이미 존재
 
 
 # ─── 비밀번호 ───
@@ -179,7 +193,50 @@ def extend_user(uid: int, days: int):
 
 
 # ─── 주문 ───
-def create_order(uid: int, plan: str, method: str, payer_ref: str):
+def coupon_slots_used(code: str, exclude_uid: Optional[int] = None) -> int:
+    """해당 쿠폰을 점유한 구별 사용자 수 (pending + paid 주문 기준, 취소 제외)."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT DISTINCT user_id FROM orders WHERE coupon=? AND status IN ('pending','paid')",
+            (code,)).fetchall()
+    uids = {r[0] for r in rows}
+    if exclude_uid is not None:
+        uids.discard(exclude_uid)
+    return len(uids)
+
+
+def founding_remaining() -> int:
+    c = COUPONS.get("FOUNDING50")
+    if not c:
+        return 0
+    return max(0, c["limit"] - coupon_slots_used("FOUNDING50"))
+
+
+def validate_coupon(code: str, uid: Optional[int] = None):
+    """성공 시 (coupon_dict_with_code, None), 실패 시 (None, 메시지)."""
+    code = (code or "").strip().upper()
+    if not code:
+        return None, "쿠폰 코드가 비어 있습니다."
+    c = COUPONS.get(code)
+    if not c:
+        return None, "유효하지 않은 쿠폰 코드입니다."
+    used = coupon_slots_used(code, exclude_uid=uid)  # 본인 기존 점유는 제외
+    if used >= c["limit"]:
+        return None, "창립 멤버 선착순이 마감되었습니다."
+    return {**c, "code": code}, None
+
+
+def _apply_coupon(amount, coupon):
+    if not coupon:
+        return amount
+    disc = amount * (100 - coupon["pct"]) / 100.0
+    # USDT는 소수 1자리, KRW는 100원 단위로 정리
+    if amount >= 1000:
+        return int(round(disc / 100.0) * 100)
+    return round(disc, 1)
+
+
+def create_order(uid: int, plan: str, method: str, payer_ref: str, coupon_code: str = ""):
     """성공 시 (order, None), 실패 시 (None, 메시지)"""
     p = PLANS.get(plan)
     m = PAYMENT_METHODS.get(method)
@@ -188,14 +245,21 @@ def create_order(uid: int, plan: str, method: str, payer_ref: str):
     payer_ref = (payer_ref or "").strip()[:200]
     if not payer_ref:
         return None, f"{m['name']}에는 {m['ref_label']}이(가) 필요합니다."
-    amount = p["krw"] if m["currency"] == "KRW" else p["usdt"]
+    coupon = None
+    code = (coupon_code or "").strip().upper()
+    if code:
+        coupon, err = validate_coupon(code, uid)
+        if err:
+            return None, err
+    base = p["krw"] if m["currency"] == "KRW" else p["usdt"]
+    amount = _apply_coupon(base, coupon)
     oid = "VX" + time.strftime("%y%m%d") + secrets.token_hex(3).upper()
     with _conn() as c:
         # 같은 사용자의 대기 주문은 하나만 유지 (중복 신청 방지)
         c.execute("UPDATE orders SET status='cancelled' WHERE user_id=? AND status='pending'", (uid,))
         c.execute(
-            "INSERT INTO orders(id,user_id,plan,method,amount,currency,payer_ref,created) VALUES(?,?,?,?,?,?,?,?)",
-            (oid, uid, plan, method, amount, m["currency"], payer_ref, int(time.time())))
+            "INSERT INTO orders(id,user_id,plan,method,amount,currency,payer_ref,created,coupon) VALUES(?,?,?,?,?,?,?,?,?)",
+            (oid, uid, plan, method, amount, m["currency"], payer_ref, int(time.time()), code if coupon else ""))
     return get_order(oid), None
 
 
