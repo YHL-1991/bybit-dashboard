@@ -3261,6 +3261,18 @@ function drawBinanceWhaleCharts(b,agg){
                         afterDataLimits:scale=>{scale.min=Math.min(scale.min,0.5);scale.max=Math.max(scale.max,2);}},
                 },
             },
+            plugins:[{
+                id:'neutralLine10',
+                afterDraw(chart){
+                    const y=chart.scales.y; if(!y||!chart.chartArea)return;
+                    const yp=y.getPixelForValue(1.0), ctx=chart.ctx;
+                    const {left,right}=chart.chartArea;
+                    ctx.save();
+                    ctx.beginPath();ctx.moveTo(left,yp);ctx.lineTo(right,yp);
+                    ctx.lineWidth=2;ctx.strokeStyle='rgba(255,71,87,0.9)';ctx.stroke();
+                    ctx.restore();
+                }
+            }],
         });
     }
 }
