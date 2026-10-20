@@ -71,15 +71,6 @@
                     <select id="smMode" onchange="scanSmartMoneyDivergence()" class="symbol-select" style="font-size:11px;padding:4px 8px;">
                         <option value="retail_short">개미 숏 우위 (개미 L/S &lt; 1)</option>
                         <option value="retail_over_whale">개미 &gt; 고래 (개미 과열)</option>
-                        <option value="whalelead">고래 주도 급등 (가격↑ · 고래 ≫ 개미)</option>
-                        <option value="q1">1. ★강한 롱 (가격↑ · OI↑ · 고래롱우위)</option>
-                        <option value="q2">2. 불트랩 숏주의 (가격↑ · OI↑ · 고래숏우위)</option>
-                        <option value="q3">3. 약한 롱 확인 (가격↑ · OI↓ · 고래롱우위)</option>
-                        <option value="q4">4. 숏 반전확인 (가격↑ · OI↓ · 고래숏우위)</option>
-                        <option value="q5">5. ★강한 숏 (가격↓ · OI↑ · 고래숏우위)</option>
-                        <option value="q6">6. 베어트랩 롱주의 (가격↓ · OI↑ · 고래롱우위)</option>
-                        <option value="q7">7. 롱 바닥확인 (가격↓ · OI↓ · 고래롱우위)</option>
-                        <option value="q8">8. 중립/약한 숏 (가격↓ · OI↓ · 고래숏우위)</option>
                     </select>
                     <span id="smScanProgress" style="font-size:10px;color:var(--text-secondary);"></span>
                     <button id="smScanBtn" onclick="scanSmartMoneyDivergence()" style="padding:5px 12px;background:#a855f7;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;">스캔</button>
@@ -88,7 +79,7 @@
             <div id="smDivContent" style="font-size:12px;">
                 <div style="color:var(--text-secondary);font-size:11px;text-align:center;padding:14px;">"스캔"을 눌러 전 종목을 훑습니다 (~10초).</div>
             </div>
-            <p class="hint"><b>OI×가격×(고래vs개미) 8분면 분류.</b> OI×가격=돈의 흐름(신규진입/청산), 고래/개미=돈의 주인. L/S는 개미 3사(Bin·OKX·Bybit) vs 고래 2사(Bin·OKX) 평균, OI=Binance(▲증가/▼감소), 펀딩=8h율. <b>가격↑+OI↑</b>=신규진입(고래롱=강한롱1 / 고래숏=불트랩2). <b>가격↑+OI↓</b>=숏커버(고래롱=약한롱3 / 고래숏=숏4). <b>가격↓+OI↑</b>=신규숏(고래숏=강한숏5 / 고래롱=베어트랩6). <b>가격↓+OI↓</b>=청산소진(고래롱=롱바닥7 / 고래숏=중립8). <b>가설일 뿐 매매신호 아님</b> — 급등에 숏/급락에 롱은 스퀴즈 위험, 반전 확인 후 진입.</p>
+            <p class="hint"><b>개미비율(L/S) 기준 스캔.</b> L/S는 개미 3사(Bin·OKX·Bybit) vs 고래 2사(Bin·OKX) 평균. <b>개미 숏 우위</b>=개미 L/S&lt;1(개미 순숏) → 컨트래리언 롱 관점이나 고래 방향 반드시 확인. <b>개미 &gt; 고래</b>=개미가 고래보다 롱 우위(개미 과열) → 분산 경계 숏 관점. 가격 방향 무관, 거래량 많은 순으로 훑음. <b>가설일 뿐 매매신호 아님</b> — 급등에 숏/급락에 롱은 스퀴즈 위험, 추세 꺾임 확인 후 진입.</p>
         </div>
     </div>
 
@@ -582,6 +573,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20261020a"></script>
+    <script src="/static/app.js?v=20261020b"></script>
 </body>
 </html>

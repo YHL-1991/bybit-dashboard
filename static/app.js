@@ -6635,17 +6635,6 @@ async function loadMarketCaps(){
 
 // OI×가격×(고래vs개미) 8분면 신호 분류
 // dir: 가격방향 up/down / oi: OI 증가 true·감소 false / w: 고래 vs 개미 '>'(고래롱우위)·'<'(고래숏우위)
-const SM_QUAD={
-    q1:{dir:'up',  oi:true,  w:'>', side:'long',  label:'★강한 롱',       color:'#00d26a', desc:'신규 롱, 큰손 주도'},
-    q2:{dir:'up',  oi:true,  w:'<', side:'short', label:'불트랩(숏주의)',  color:'#ff9f43', desc:'신규 롱이 개미, 고래 분산'},
-    q3:{dir:'up',  oi:false, w:'>', side:'long',  label:'약한 롱(확인)',   color:'#FFD700', desc:'숏커버 약랠리, 큰손 지지'},
-    q4:{dir:'up',  oi:false, w:'<', side:'short', label:'숏(반전확인)',    color:'#FF69B4', desc:'숏커버 소진 + 고래 숏'},
-    q5:{dir:'down',oi:true,  w:'<', side:'short', label:'★강한 숏',       color:'#ff4757', desc:'신규 숏, 큰손 주도'},
-    q6:{dir:'down',oi:true,  w:'>', side:'long',  label:'베어트랩(롱주의)', color:'#22d3ee', desc:'신규 숏이 개미, 고래 매집'},
-    q7:{dir:'down',oi:false, w:'>', side:'long',  label:'롱(바닥확인)',    color:'#00d26a', desc:'롱청산 소진 + 큰손 롱'},
-    q8:{dir:'down',oi:false, w:'<', side:'short', label:'중립/약한 숏',    color:'#8b949e', desc:'하락 소진, 고래 아직 숏'},
-};
-
 let _smScanning=false;
 async function scanSmartMoneyDivergence(){
     if(_smScanning)return;
@@ -6653,7 +6642,7 @@ async function scanSmartMoneyDivergence(){
     const btn=document.getElementById('smScanBtn');
     const el=document.getElementById('smDivContent');
     const prog=document.getElementById('smScanProgress');
-    const mode=(document.getElementById('smMode')||{}).value||'whalelead';
+    const mode=(document.getElementById('smMode')||{}).value||'retail_short';
     if(btn){btn.disabled=true;btn.textContent='스캔 중...';}
     try{
         if(prog)prog.textContent='시총 로딩...';
@@ -6663,21 +6652,9 @@ async function scanSmartMoneyDivergence(){
         ]);
         if(!all||!Array.isArray(all)){if(el)el.innerHTML='<div style="color:var(--text-secondary);font-size:11px;padding:12px;">티커 조회 실패 (Binance)</div>';return;}
         const mcapOf=coin=>{let mc=mcaps[coin];if(mc==null)mc=mcaps[coin.replace(/^[0-9]+/,'')];return mc==null?null:mc;};
-        // 후보 필터 (가격 방향)
-        const Q=SM_QUAD[mode];
-        const retailMode=(mode==='retail_short'||mode==='retail_over_whale'); // 개미비율 기준 (가격 방향 무관)
-        const dirUp=mode==='whalelead'||(Q&&Q.dir==='up');
-        let cands=all.filter(x=>{
-            if(!x.symbol.endsWith('USDT')||parseFloat(x.quoteVolume)<=2e7)return false;
-            const ch=parseFloat(x.priceChangePercent);
-            if(mode==='whalelead')return ch>1;
-            if(retailMode)return true;            // 방향 무관, 거래량 많은 순으로 훑음
-            return Q.dir==='up'?ch>0.5:ch<-0.5;   // 8분면은 '방향'만 필요 → 문턱 완화(더 많이 스캔)
-        }).sort((a,b)=>retailMode
-            ?parseFloat(b.quoteVolume)-parseFloat(a.quoteVolume)
-            :(dirUp
-                ?parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent)
-                :parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent)))
+        // 후보 필터 (개미비율 모드: 가격 방향 무관, 거래량 많은 순으로 훑음)
+        let cands=all.filter(x=>x.symbol.endsWith('USDT')&&parseFloat(x.quoteVolume)>2e7)
+            .sort((a,b)=>parseFloat(b.quoteVolume)-parseFloat(a.quoteVolume))
             .slice(0,120);
         const rows=[];
         for(let i=0;i<cands.length;i+=3){
@@ -6710,26 +6687,18 @@ async function scanSmartMoneyDivergence(){
             if(prog)prog.textContent=`${Math.min(i+3,cands.length)}/${cands.length}`;
             await new Promise(r=>setTimeout(r,250));
         }
-        // 선별 (8분면 = OI방향 + 고래vs개미)
+        // 선별 (개미비율 기준)
         const dz=0.05;
         const setups=rows.filter(r=>{
             if(r.retail==null)return false;
             if(mode==='retail_short')return r.retail<1;               // 개미 L/S < 1 (개미 순숏)
             if(r.whale==null)return false;
-            if(mode==='retail_over_whale')return r.retail>r.whale+dz;  // 개미비율 > 고래비율 (개미 과열)
-            if(mode==='whalelead')return r.whale>=1.2&&(r.whale-r.retail)>=0.4&&r.oiUp!==false;
-            if(!Q)return false;
-            if(Q.oi===true&&r.oiUp!==true)return false;      // OI 증가 필요 (감소·미상 제외)
-            if(Q.oi===false&&r.oiUp!==false)return false;    // OI 감소 필요 (증가·미상 제외)
-            return Q.w==='>'?(r.whale>r.retail+dz):(r.whale<r.retail-dz);
+            return r.retail>r.whale+dz;                               // retail_over_whale: 개미비율 > 고래비율 (개미 과열)
         });
-        const side=mode==='whalelead'?'long'
-            :mode==='retail_short'?'long'          // 개미 순숏 → 컨트래리언 롱 관점
-            :mode==='retail_over_whale'?'short'    // 개미 과열(개미>고래) → 분산 경계 숏 관점
-            :(Q?Q.side:'long');
+        const side=mode==='retail_short'?'long':'short'; // 개미 순숏→컨트래리언 롱 / 개미 과열→분산 경계 숏
         const longSide=side==='long';
         setups.forEach(r=>{
-            r.gap=Math.abs(r.whale-r.retail);                        // 괴리 크기(방향 무관)
+            r.gap=(r.whale!=null)?Math.abs(r.whale-r.retail):0;      // 괴리 크기(고래 데이터 있을 때만)
             let s=r.gap*10+Math.min(Math.abs(r.chg),25);
             if(r.oiUp===true)s+=3;
             if(r.funding!=null){
@@ -6739,10 +6708,8 @@ async function scanSmartMoneyDivergence(){
             r.score=s;
         });
         setups.sort((a,b)=>b.score-a.score);
-        const sig=(mode==='whalelead')?{label:'고래 주도 급등',color:'#a855f7',desc:'급등 + 고래 ≫ 개미 (OI 감소 제외)'}
-            :(mode==='retail_short')?{label:'개미 숏 우위',color:'#22d3ee',desc:'개미 L/S < 1 (개미 순숏). 컨트래리언 롱 관점이나 고래 방향 반드시 확인'}
-            :(mode==='retail_over_whale')?{label:'개미 > 고래 (개미 과열)',color:'#ff9f43',desc:'개미가 고래보다 롱 우위. 분산 경계 숏 관점, 추세 꺾임 확인 후 진입'}
-            :(Q||{});
+        const sig=(mode==='retail_short')?{label:'개미 숏 우위',color:'#22d3ee',desc:'개미 L/S < 1 (개미 순숏). 컨트래리언 롱 관점이나 고래 방향 반드시 확인'}
+            :{label:'개미 > 고래 (개미 과열)',color:'#ff9f43',desc:'개미가 고래보다 롱 우위. 분산 경계 숏 관점, 추세 꺾임 확인 후 진입'};
         if(prog)prog.textContent=`${setups.length}건`;
         if(!setups.length){el.innerHTML=`<div style="color:var(--text-secondary);font-size:11px;padding:12px;text-align:center;"><b style="color:${sig.color};">${sig.label}</b> 조건 충족 종목 없음. 시장 상황에 따라 0건일 수 있습니다.</div>`;return;}
         // 페이지네이션용 저장 후 렌더
