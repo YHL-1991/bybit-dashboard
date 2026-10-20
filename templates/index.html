@@ -69,6 +69,8 @@
                 <span><span class="dot" style="background:#a855f7"></span> 스마트머니 다이버전스 스캐너</span>
                 <span style="display:flex;gap:8px;align-items:center;">
                     <select id="smMode" onchange="scanSmartMoneyDivergence()" class="symbol-select" style="font-size:11px;padding:4px 8px;">
+                        <option value="retail_short">개미 숏 우위 (개미 L/S &lt; 1)</option>
+                        <option value="retail_over_whale">개미 &gt; 고래 (개미 과열)</option>
                         <option value="whalelead">고래 주도 급등 (가격↑ · 고래 ≫ 개미)</option>
                         <option value="q1">1. ★강한 롱 (가격↑ · OI↑ · 고래롱우위)</option>
                         <option value="q2">2. 불트랩 숏주의 (가격↑ · OI↑ · 고래숏우위)</option>
@@ -580,6 +582,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260716e"></script>
+    <script src="/static/app.js?v=20261020a"></script>
 </body>
 </html>

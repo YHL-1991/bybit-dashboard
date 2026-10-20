@@ -51,7 +51,7 @@ const I18N={
     "가격↑":"price up","가격↓":"price down","급등":"pump","급락":"dump","반등":"bounce","진행":"progress","소진":"exhausted","거래량 급감":"vol drop","거래량 감소":"vol down","거래량 평탄 (감소 없음)":"vol flat","큰 파동":"big wave","중간 파동":"mid wave","작은 파동":"small wave","미세 파동":"tiny wave",
     "높음":"High","보통":"Med","낮음":"Low",
     // 스캐너/8분면
-    "스마트머니 다이버전스 스캐너":"Smart-Money Divergence Scanner","스캔":"Scan","고래 주도 급등":"Whale-led pump","강한 롱":"Strong Long","강한 숏":"Strong Short","불트랩 숏주의":"Bull-trap (short risk)","약한 롱 확인":"Weak long","숏 반전확인":"Short (reversal)","베어트랩 롱주의":"Bear-trap (long risk)","롱 바닥확인":"Long bottom","중립/약한 숏":"Neutral/weak short",
+    "스마트머니 다이버전스 스캐너":"Smart-Money Divergence Scanner","스캔":"Scan","고래 주도 급등":"Whale-led pump","개미 숏 우위":"Retail net-short","개미 > 고래 (개미 과열)":"Retail > Whale (overheated)","강한 롱":"Strong Long","강한 숏":"Strong Short","불트랩 숏주의":"Bull-trap (short risk)","약한 롱 확인":"Weak long","숏 반전확인":"Short (reversal)","베어트랩 롱주의":"Bear-trap (long risk)","롱 바닥확인":"Long bottom","중립/약한 숏":"Neutral/weak short",
     "고래":"Whale","개미":"Retail","전 종목을 훑습니다":"scanning all symbols",
     // 패널 제목/공통
     "삼각수렴 멀티타임프레임":"Triangle Convergence MTF","캔들·이평선 패턴 타점":"Candle·MA Pattern Entries","식칼 · 캔들 · 이평선 눌림목 패턴 타점":"Cleaver·Candle·MA Pattern Entries","다중 시간프레임":"Multi-timeframe","코인니스 속보":"Coinness News","통합 펀딩비":"Aggregated Funding","다거래소 포지션 심리":"Multi-exchange Positioning","시장 국면":"Market Regime",
@@ -6665,15 +6665,19 @@ async function scanSmartMoneyDivergence(){
         const mcapOf=coin=>{let mc=mcaps[coin];if(mc==null)mc=mcaps[coin.replace(/^[0-9]+/,'')];return mc==null?null:mc;};
         // 후보 필터 (가격 방향)
         const Q=SM_QUAD[mode];
+        const retailMode=(mode==='retail_short'||mode==='retail_over_whale'); // 개미비율 기준 (가격 방향 무관)
         const dirUp=mode==='whalelead'||(Q&&Q.dir==='up');
         let cands=all.filter(x=>{
             if(!x.symbol.endsWith('USDT')||parseFloat(x.quoteVolume)<=2e7)return false;
             const ch=parseFloat(x.priceChangePercent);
             if(mode==='whalelead')return ch>1;
+            if(retailMode)return true;            // 방향 무관, 거래량 많은 순으로 훑음
             return Q.dir==='up'?ch>0.5:ch<-0.5;   // 8분면은 '방향'만 필요 → 문턱 완화(더 많이 스캔)
-        }).sort((a,b)=>dirUp
-            ?parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent)
-            :parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent))
+        }).sort((a,b)=>retailMode
+            ?parseFloat(b.quoteVolume)-parseFloat(a.quoteVolume)
+            :(dirUp
+                ?parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent)
+                :parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent)))
             .slice(0,120);
         const rows=[];
         for(let i=0;i<cands.length;i+=3){
@@ -6709,14 +6713,20 @@ async function scanSmartMoneyDivergence(){
         // 선별 (8분면 = OI방향 + 고래vs개미)
         const dz=0.05;
         const setups=rows.filter(r=>{
-            if(r.whale==null||r.retail==null)return false;
+            if(r.retail==null)return false;
+            if(mode==='retail_short')return r.retail<1;               // 개미 L/S < 1 (개미 순숏)
+            if(r.whale==null)return false;
+            if(mode==='retail_over_whale')return r.retail>r.whale+dz;  // 개미비율 > 고래비율 (개미 과열)
             if(mode==='whalelead')return r.whale>=1.2&&(r.whale-r.retail)>=0.4&&r.oiUp!==false;
             if(!Q)return false;
             if(Q.oi===true&&r.oiUp!==true)return false;      // OI 증가 필요 (감소·미상 제외)
             if(Q.oi===false&&r.oiUp!==false)return false;    // OI 감소 필요 (증가·미상 제외)
             return Q.w==='>'?(r.whale>r.retail+dz):(r.whale<r.retail-dz);
         });
-        const side=mode==='whalelead'?'long':(Q?Q.side:'long');
+        const side=mode==='whalelead'?'long'
+            :mode==='retail_short'?'long'          // 개미 순숏 → 컨트래리언 롱 관점
+            :mode==='retail_over_whale'?'short'    // 개미 과열(개미>고래) → 분산 경계 숏 관점
+            :(Q?Q.side:'long');
         const longSide=side==='long';
         setups.forEach(r=>{
             r.gap=Math.abs(r.whale-r.retail);                        // 괴리 크기(방향 무관)
@@ -6729,7 +6739,10 @@ async function scanSmartMoneyDivergence(){
             r.score=s;
         });
         setups.sort((a,b)=>b.score-a.score);
-        const sig=(mode==='whalelead')?{label:'고래 주도 급등',color:'#a855f7',desc:'급등 + 고래 ≫ 개미 (OI 감소 제외)'}:(Q||{});
+        const sig=(mode==='whalelead')?{label:'고래 주도 급등',color:'#a855f7',desc:'급등 + 고래 ≫ 개미 (OI 감소 제외)'}
+            :(mode==='retail_short')?{label:'개미 숏 우위',color:'#22d3ee',desc:'개미 L/S < 1 (개미 순숏). 컨트래리언 롱 관점이나 고래 방향 반드시 확인'}
+            :(mode==='retail_over_whale')?{label:'개미 > 고래 (개미 과열)',color:'#ff9f43',desc:'개미가 고래보다 롱 우위. 분산 경계 숏 관점, 추세 꺾임 확인 후 진입'}
+            :(Q||{});
         if(prog)prog.textContent=`${setups.length}건`;
         if(!setups.length){el.innerHTML=`<div style="color:var(--text-secondary);font-size:11px;padding:12px;text-align:center;"><b style="color:${sig.color};">${sig.label}</b> 조건 충족 종목 없음. 시장 상황에 따라 0건일 수 있습니다.</div>`;return;}
         // 페이지네이션용 저장 후 렌더
