@@ -1,0 +1,33 @@
+name: CME gaps
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+permissions:
+  contents: write
+concurrency:
+  group: cme-gaps
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Fetch + compute CME gaps
+        run: python3 scripts/fetch_cme_gaps.py
+      - name: Publish cme_gaps.json to gh-data branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          test -f cme_gaps.json
+          mkdir -p out && cp cme_gaps.json out/cme_gaps.json
+          cd out
+          git init -q
+          git config user.name "cme-gaps-bot"
+          git config user.email "cme-gaps-bot@users.noreply.github.com"
+          git checkout -q -b gh-data
+          git add cme_gaps.json
+          git commit -q -m "CME gaps"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-data
