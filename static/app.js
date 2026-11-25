@@ -347,42 +347,34 @@ async function fetchLiquidationData(sym){
     return estimateLiquidationLevels(curPrice,oiVal,ob.b||[],ob.a||[],kl||[]);
 }
 
-/* ───── CME 갭 감지 (브라우저 측) ───── */
-// CME에 실제 상장된 코인만 CME갭이 의미가 있다. 나머지는 주말 가격 드리프트를 오라벨하는 가짜 신호.
-const CME_LISTED=new Set(['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']);
+/* ───── CME 갭 (진짜 CME 선물 데이터) ─────
+   옛 방식(Bybit 24시간 캔들 + 서머타임 하드코딩으로 흉내)을 폐기하고,
+   GitHub Actions 가 Yahoo 의 실제 CME 선물(BTC=F, ETH=F)에서 산출한 갭을
+   gh-data 브랜치의 cme_gaps.json 으로 올린 것을 그대로 읽는다.
+   실선물은 주말에 봉이 없어 금요일 종가 vs 일요일 시가가 "진짜 갭"이다. */
+const CME_LISTED=new Set(['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']);   // 실제 CME 상장(라벨 정확도용)
+const CME_GAP_DATA=new Set(['BTCUSDT','ETHUSDT']);                     // 실데이터 제공 코인
 function isCMEListed(sym){return CME_LISTED.has((sym||'').toUpperCase());}
+function hasCMEGapData(sym){return CME_GAP_DATA.has((sym||'').toUpperCase());}
+const CME_GAPS_URL='https://raw.githubusercontent.com/YHL-1991/bybit-dashboard/gh-data/cme_gaps.json';
+let _cmeGapsAll=null,_cmeGapsFetchedAt=0;
+async function _loadCMEGapsJson(){
+    const now=Date.now();
+    if(_cmeGapsAll&&now-_cmeGapsFetchedAt<600000)return _cmeGapsAll;   // 10분 메모리 캐시
+    const bust=Math.floor(now/3600000);                                // 1시간 캐시버스트
+    const r=await fetch(`${CME_GAPS_URL}?t=${bust}`,{cache:'no-store'});
+    if(!r.ok)throw new Error('cme gaps http '+r.status);
+    const j=await r.json();
+    _cmeGapsAll=j;_cmeGapsFetchedAt=now;
+    return j;
+}
 async function fetchCMEGaps(sym){
-    if(!isCMEListed(sym))return [];   // CME 미상장 코인은 CME갭 계산 자체가 무의미
-    const kline=await bybitKline(sym,'60',500);
-    const fridayCloses={},sundayOpens={};
-    for(const c of kline){
-        const dt=new Date(c.time*1000);
-        const utcDay=dt.getUTCDay(),utcHour=dt.getUTCHours();
-        // ISO week number
-        const d2=new Date(Date.UTC(dt.getUTCFullYear(),dt.getUTCMonth(),dt.getUTCDate()));
-        d2.setUTCDate(d2.getUTCDate()+4-(d2.getUTCDay()||7));
-        const wk=Math.ceil(((d2-new Date(Date.UTC(d2.getUTCFullYear(),0,1)))/86400000+1)/7);
-        if(utcDay===5&&utcHour===21)fridayCloses[wk]=c; // 금요일 21시
-        if(utcDay===0&&utcHour===22)sundayOpens[wk+1]=c; // 일요일 22시
-    }
-    const gaps=[];
-    for(const[wkStr,sun] of Object.entries(sundayOpens)){
-        const wk=parseInt(wkStr);
-        const fri=fridayCloses[wk-1]||fridayCloses[wk];
-        if(!fri)continue;
-        const gap=sun.open-fri.close;
-        const gapPct=gap/fri.close*100;
-        if(Math.abs(gapPct)<0.05)continue;
-        let filled=false;
-        for(const c of kline){
-            if(c.time>sun.time){
-                if(gap>0&&c.low<=fri.close){filled=true;break;}
-                if(gap<0&&c.high>=fri.close){filled=true;break;}
-            }
-        }
-        gaps.push({time:sun.time,gap_open:sun.open,prev_close:fri.close,gap:+gap.toFixed(2),gap_pct:+gapPct.toFixed(2),filled});
-    }
-    return gaps.slice(-5);
+    sym=(sym||'').toUpperCase();
+    if(!hasCMEGapData(sym))return [];     // 실데이터 없는 코인(미상장 포함)
+    try{
+        const j=await _loadCMEGapsJson();
+        return (j&&j.gaps&&j.gaps[sym])||[];
+    }catch(e){return [];}
 }
 
 /* ───── 거래량 급증 감지 (브라우저 측) ───── */
@@ -1074,8 +1066,9 @@ async function updateCMEGaps(){
         cmeGapLines.forEach(s=>{try{tvChartObj.removeSeries(s);}catch(e){}});
         cmeGapLines=[];
         const el=document.getElementById('cmeGapInfo');
-        if(!isCMEListed(currentSymbol)){el.innerHTML='<span style="opacity:.6;">CME 갭: 해당 없음 (CME 미상장 코인 — BTC/ETH/SOL/XRP만 유효)</span>';return;}
-        if(!gaps.length){el.innerHTML='CME 갭: 감지된 갭 없음';return;}
+        if(!isCMEListed(currentSymbol)){el.innerHTML='<span style="opacity:.6;">CME 갭: 해당 없음 (CME 미상장 코인)</span>';return;}
+        if(!hasCMEGapData(currentSymbol)){el.innerHTML='<span style="opacity:.6;">CME 갭: CME 상장 코인이나 실데이터 미제공 (현재 BTC·ETH만 지원)</span>';return;}
+        if(!gaps.length){el.innerHTML=_cmeGapsAll?'CME 갭: 감지된 갭 없음':'<span style="opacity:.6;">CME 갭: 데이터 준비 중</span>';return;}
 
         const recent=gaps.slice(-5); // 최근 5개만
         let html='CME 갭: ';
